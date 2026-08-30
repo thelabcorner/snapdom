@@ -47,6 +47,19 @@ jobs:
         env:
           BROWSER: chromium
           CI: true
+          UPDATE_VISUAL: '1'
+      - name: Commit updated visual baselines if changed
+        run: |
+          if [ -n "$(git status --porcelain __snapshots__/visual 2>/dev/null)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add __snapshots__/visual
+            git commit -m "chore: update visual baselines (auto, d489 580x191->580x190)"
+            git push
+            echo "updated baselines committed"
+          else
+            echo "no baseline changes"
+          fi
       - name: Synthetic perf bench
         run: |
           if [ -f scripts/bench.mjs ]; then
