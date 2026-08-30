@@ -1,0 +1,29 @@
+name: Micro Performance Race
+
+on:
+  push:
+    branches: [perf/iterative-optimization]
+    paths:
+      - 'scripts/perf/micro/**'
+      - '.github/workflows/micro-perf.yml'
+
+concurrency:
+  group: snapdom-micro-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  micro:
+    runs-on: [self-hosted, homelab]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Style signature race
+        run: node scripts/perf/micro/style-signature.mjs
