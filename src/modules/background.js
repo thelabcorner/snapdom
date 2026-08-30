@@ -162,17 +162,28 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
 export async function inlineBackgroundImages(source, clone, styleCache, options = {}, nodeMap = cache.session.nodeMap) {
   if (!clone) return
 
-  const jobs = []
-  if (source && needsBackgroundInline(source)) jobs.push([source, clone])
-  const stack = [clone]
-  while (stack.length) {
-    const cn = stack.pop()
-    if (!cn.children) continue
-    for (const child of cn.children) {
-      if (child.tagName === 'STYLE') continue
-      const src = nodeMap.get(child)
-      if (src && needsBackgroundInline(src)) jobs.push([src, child])
-      stack.push(child)
+  // walk-fusion: reuse pre-collected bg clones from deepClone if available
+  let jobs
+  if (Array.isArray(clone._snapdomCollect?.bgClones)) {
+    jobs = []
+    for (const c of clone._snapdomCollect.bgClones) {
+      const s = nodeMap.get(c)
+      if (s) jobs.push([s, c])
+      else if (c === clone && source && needsBackgroundInline(source)) jobs.push([source, c])
+    }
+  } else {
+    jobs = []
+    if (source && needsBackgroundInline(source)) jobs.push([source, clone])
+    const stack = [clone]
+    while (stack.length) {
+      const cn = stack.pop()
+      if (!cn.children) continue
+      for (const child of cn.children) {
+        if (child.tagName === 'STYLE') continue
+        const src = nodeMap.get(child)
+        if (src && needsBackgroundInline(src)) jobs.push([src, child])
+        stack.push(child)
+      }
     }
   }
 

@@ -3,7 +3,7 @@
  * @module clone
  */
 
-import { inlineAllStyles } from '../modules/styles.js'
+import { inlineAllStyles, needsBackgroundInline } from '../modules/styles.js'
 import { NO_CAPTURE_TAGS } from '../utils/css.js'
 import { resolveCSSVars, isInSvgTemplate } from '../modules/CSSVar.js'
 import { debugWarn, getStyle } from '../utils/index.js'
@@ -275,6 +275,7 @@ export async function deepClone(node, sessionCache, options) {
           sessionCache.nodeMap.set(out, node)
           inlineAllStyles(node, /** @type {Element} */ (out), sessionCache, options)
           _trackTree(/** @type {Element} */ (out))
+          try { if (needsBackgroundInline(node) && sessionCache.bgClones) sessionCache.bgClones.push(/** @type {Element} */ (out)) } catch {}
         }
         return out
       }
@@ -286,7 +287,10 @@ export async function deepClone(node, sessionCache, options) {
     if (preHandler) {
       const handled = await preHandler(node, sessionCache, options)
       if (handled !== undefined) {
-        if (handled instanceof Element) _trackTree(handled)
+        if (handled instanceof Element) {
+          _trackTree(handled)
+          try { if (needsBackgroundInline(node) && sessionCache.bgClones) sessionCache.bgClones.push(handled) } catch {}
+        }
         return handled
       }
     }
@@ -310,7 +314,10 @@ export async function deepClone(node, sessionCache, options) {
     if (handler) {
       const handled = await handler(node, sessionCache, options)
       if (handled !== undefined) {
-        if (handled instanceof Element) _trackTree(handled)
+        if (handled instanceof Element) {
+          _trackTree(handled)
+          try { if (needsBackgroundInline(node) && sessionCache.bgClones) sessionCache.bgClones.push(handled) } catch {}
+        }
         return handled
       }
     }
@@ -461,6 +468,8 @@ export async function deepClone(node, sessionCache, options) {
     inlineAllStyles(node, clone, sessionCache, options)
   }
   if (applyInputVisual) { applyInputVisual() }
+  // walk-fusion: collect background-inline candidates to avoid later tree walk
+  try { if (needsBackgroundInline(node) && sessionCache.bgClones) sessionCache.bgClones.push(clone) } catch {}
   // #365: SVG painting elements — CSS rules override presentation attributes but aren't captured
   // via the class-based mechanism (NO_DEFAULTS_TAGS returns '' key). Copy key SVG presentation
   // properties from computed style as inline styles to ensure CSS-driven fills/strokes survive.

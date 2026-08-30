@@ -38,6 +38,7 @@ export async function prepareClone(element, options = {}) {
     shadowStyleNodes: [],
     imgClones: [],
     svgImageClones: [],
+    bgClones: [],
     options
   }
 
@@ -359,6 +360,7 @@ export async function prepareClone(element, options = {}) {
     clone._snapdomCollect = {
       imgClones: sessionCache.imgClones,
       svgImageClones: sessionCache.svgImageClones,
+      bgClones: sessionCache.bgClones,
     }
   }
   return {
@@ -369,6 +371,7 @@ export async function prepareClone(element, options = {}) {
     tagSet: sessionCache.tagSet,
     imgClones: sessionCache.imgClones,
     svgImageClones: sessionCache.svgImageClones,
+    bgClones: sessionCache.bgClones,
     reconcileRisk: sessionCache.reconcileRisk || 0,
     clipWindow,
   }
