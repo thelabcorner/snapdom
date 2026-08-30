@@ -331,20 +331,25 @@ export async function captureDOM(element, options) {
             const wrap = elDoc.createElement('div')
             wrap.setAttribute('data-snapdom-internal', '')
             wrap.style.cssText = 'position:absolute!important;left:-9999px!important;top:0!important;width:' + w0 + 'px!important;overflow:visible!important;visibility:hidden!important;'
-            // Shadow DOM: keeps baseCSS's global tag rules from restyling the live page
-            // while this mount is attached (#474) — same isolation as reconcileCloneLayout.
             const mShadow = wrap.attachShadow({ mode: 'open' })
             const styleNode = elDoc.createElement('style')
             styleNode.textContent = (state.scrollbarCSS || '') + state.baseCSS + 'svg{overflow:visible;} foreignObject{overflow:visible;}' + state.classCSS
             mShadow.appendChild(styleNode)
-            mShadow.appendChild(state.clone.cloneNode(true))
+            // PERF: measure the real clone, not a cloneNode(true) copy — halves this phase.
+            // The clone is detached; mounting it for measure then detaching keeps it intact.
+            const _cloneForMeasure = state.clone
+            mShadow.appendChild(_cloneForMeasure)
             elDoc.body.appendChild(wrap)
             const csh = wrap.scrollHeight
             const csw = wrap.scrollWidth
+            // detach clone to reuse as the capture tree (wrap removal would discard it inside shadow)
+            try { mShadow.removeChild(_cloneForMeasure) } catch {}
             elDoc.body.removeChild(wrap)
             cache.measureHints.set(state.element, { cssLen, w0, csh, csw })
             if (csh > 0) h0 = Math.max(h0, limitDecimals(csh))
             if (csw > 0) w0 = Math.max(w0, limitDecimals(csw))
+            // re-attach reference (still detached, will be appended to foreignObject later)
+            state.clone = _cloneForMeasure
           }
         } catch { /* fallback: use doc dimensions above */ }
       }
