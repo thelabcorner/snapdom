@@ -10,6 +10,41 @@ import { isIconFont } from '../modules/iconFonts.js'
 import { snapFetch } from './snapFetch.js'
 import { nextFrame } from '../utils/browser.js'
 
+// perf: memoize hot font helper string transforms (few unique values)
+const _pickAllCache = new Map()
+const _normWeightCache = new Map()
+const _normStyleCache = new Map()
+const _normStretchCache = new Map()
+
+// lightweight pseudo preflight without importing pseudo.js (avoid cycle)
+// returns true if document likely contains ::before/::after/::first-letter or counters
+let _pseudoPreflightCache = new WeakMap()
+function hasPseudoInDoc(doc) {
+  try {
+    const cached = _pseudoPreflightCache.get(doc)
+    if (cached !== undefined) return cached
+    const needles = ['::before','::after','::first-letter',':before',':after',':first-letter','counter(','counters(']
+    // 1) inline <style> text
+    const styles = doc.querySelectorAll('style')
+    for (let i=0;i<styles.length;i++) {
+      const t = styles[i].textContent || ''
+      for (const n of needles) if (t.includes(n)) { _pseudoPreflightCache.set(doc, true); return true }
+    }
+    // 2) adoptedStyleSheets
+    const ass = doc.adoptedStyleSheets
+    if (Array.isArray(ass) && ass.length) {
+      for (const sh of ass) {
+        try {
+          const css = Array.from(sh.cssRules||[]).map(r => r.cssText||'').join(' ')
+          for (const n of needles) if (css.includes(n)) { _pseudoPreflightCache.set(doc, true); return true }
+        } catch {}
+      }
+    }
+    _pseudoPreflightCache.set(doc, false)
+    return false
+  } catch { return true }
+}
+
 /**
  * Converts a unicode character from an icon font into a data URL image.
  *
@@ -100,12 +135,15 @@ function pickPrimaryFamily(familyList) {
  */
 function pickAllFamilies(familyList) {
   if (!familyList) return []
+  const c = _pickAllCache.get(familyList)
+  if (c) return c
   const out = []
   for (let raw of familyList.split(',')) {
     let f = raw.trim().replace(/^['"]+|['"]+$/g, '')
     if (!f) continue
     if (!GENERIC_FAMILIES.has(f.toLowerCase())) out.push(f)
   }
+  _pickAllCache.set(familyList, out)
   return out
 }
 
@@ -114,11 +152,19 @@ function pickAllFamilies(familyList) {
  * @param {string|number} w
  */
 function normWeight(w) {
-  const t = String(w ?? '400').trim().toLowerCase()
-  if (t === 'normal') return 400
-  if (t === 'bold') return 700
-  const n = parseInt(t, 10)
-  return Number.isFinite(n) ? Math.min(900, Math.max(100, n)) : 400
+  const k = String(w ?? '400')
+  const c = _normWeightCache.get(k)
+  if (c !== undefined) return c
+  const t = k.trim().toLowerCase()
+  let r
+  if (t === 'normal') r = 400
+  else if (t === 'bold') r = 700
+  else {
+    const n = parseInt(t, 10)
+    r = Number.isFinite(n) ? Math.min(900, Math.max(100, n)) : 400
+  }
+  _normWeightCache.set(k, r)
+  return r
 }
 
 /**
@@ -127,10 +173,15 @@ function normWeight(w) {
  * @returns {"normal"|"italic"|"oblique"}
  */
 function normStyle(s) {
-  const t = String(s ?? 'normal').trim().toLowerCase()
-  if (t.startsWith('italic')) return 'italic'
-  if (t.startsWith('oblique')) return 'oblique'
-  return 'normal'
+  const k = String(s ?? 'normal')
+  const c = _normStyleCache.get(k)
+  if (c) return c
+  const t = k.trim().toLowerCase()
+  let r = 'normal'
+  if (t.startsWith('italic')) r = 'italic'
+  else if (t.startsWith('oblique')) r = 'oblique'
+  _normStyleCache.set(k, r)
+  return r
 }
 
 /**
@@ -139,8 +190,13 @@ function normStyle(s) {
  * @returns {number}
  */
 function normStretchPct(st) {
-  const m = String(st ?? '100%').match(/(\d+(?:\.\d+)?)\s*%/)
-  return m ? Math.max(50, Math.min(200, parseFloat(m[1]))) : 100
+  const k = String(st ?? '100%')
+  const c = _normStretchCache.get(k)
+  if (c !== undefined) return c
+  const m = k.match(/(\d+(?:\.\d+)?)\s*%/)
+  const r = m ? Math.max(50, Math.min(200, parseFloat(m[1]))) : 100
+  _normStretchCache.set(k, r)
+  return r
 }
 
 function parseWeightSpec(spec) {
@@ -1047,6 +1103,8 @@ export function collectFontUsage(root, keep) {
   const required = /* @__PURE__ */ new Set()
   const usedCodepoints = /* @__PURE__ */ new Set()
   if (!root) return { required, usedCodepoints }
+  const _doc = root.ownerDocument || document
+  const _hasPseudos = hasPseudoInDoc(_doc)
 
   const pushText = (txt) => {
     if (!txt) return
@@ -1063,6 +1121,7 @@ export function collectFontUsage(root, keep) {
   }
   const visitElement = (el) => {
     addFromStyle(getStyle(el))
+    if (!_hasPseudos) return
     for (const pseudo of ['::before', '::after']) {
       const cs = getStyle(el, pseudo)
       const c = cs && cs.content
