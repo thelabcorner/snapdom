@@ -373,13 +373,31 @@ export function generateDedupedBaseCSS(usedTagNames) {
  *
  * @returns {Map} Map of style keys to class names
  */
+const _globalKeyToClass = new Map()
+let _nextClassId = 1
+const MAX_GLOBAL_CLASSES = 5000
 export function generateCSSClasses(styleMap) {
   const keys = Array.from(new Set(styleMap.values()))
     .filter(Boolean)
-    .sort()                 // ← orden estable
+    .sort()
   const classMap = new Map()
-  let i = 1
-  for (const k of keys) classMap.set(k, `c${i++}`)
+  for (const k of keys) {
+    let cls = _globalKeyToClass.get(k)
+    if (!cls) {
+      if (_globalKeyToClass.size >= MAX_GLOBAL_CLASSES) {
+        // simple eviction: clear oldest half
+        const toDelete = Math.floor(MAX_GLOBAL_CLASSES / 2)
+        let i = 0
+        for (const key of _globalKeyToClass.keys()) {
+          if (i++ >= toDelete) break
+          _globalKeyToClass.delete(key)
+        }
+      }
+      cls = `c${_nextClassId++}`
+      _globalKeyToClass.set(k, cls)
+    }
+    classMap.set(k, cls)
+  }
   return classMap
 }
 
