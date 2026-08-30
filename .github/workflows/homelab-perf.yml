@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: npm }
       - name: Install deps
@@ -47,7 +49,7 @@ jobs:
         env:
           BROWSER: chromium
           CI: true
-          UPDATE_VISUAL: '1'
+          VITE_UPDATE_VISUAL: '1'
       - name: Commit updated visual baselines if changed
         run: |
           if [ -n "$(git status --porcelain __snapshots__/visual 2>/dev/null)" ]; then
