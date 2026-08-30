@@ -25,5 +25,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Style signature race
-        run: node scripts/perf/micro/style-signature.mjs
+      - name: Run micro-race corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bench in scripts/perf/micro/*.mjs; do
+            echo "::group::$bench"
+            node "$bench"
+            echo "::endgroup::"
+          done
