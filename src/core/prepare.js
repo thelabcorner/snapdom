@@ -35,6 +35,7 @@ export async function prepareClone(element, options = {}) {
     styleCache: session.styleCache,
     nodeMap: session.nodeMap,
     tagSet: new Set(),
+    shadowStyleNodes: [],
     options
   }
 
@@ -214,10 +215,13 @@ export async function prepareClone(element, options = {}) {
   // --- Pull shadow-scoped CSS out of the clone (avoid visible CSS text) ---
 
   try {
-    const styleNodes = clone.querySelectorAll('style[data-sd]')
+    // walk-fusion: reuse shadow style nodes collected during deepClone (avoids querySelectorAll)
+    const styleNodes = (sessionCache.shadowStyleNodes && sessionCache.shadowStyleNodes.length)
+      ? sessionCache.shadowStyleNodes
+      : (clone.querySelectorAll ? clone.querySelectorAll('style[data-sd]') : [])
     for (const s of styleNodes) {
       shadowScopedCSS += s.textContent || ''
-      s.remove() // Do not leave <style> inside the visual clone
+      try { s.remove() } catch {}
     }
   } catch (e) {
     debugWarn(sessionCache, 'Failed to extract shadow CSS from style[data-sd]', e)

@@ -498,7 +498,8 @@ export async function deepClone(node, sessionCache, options) {
     const rewritten = rewriteShadowCSS(rawCSS, scopeSelector, scopeId)
     const neededVars = collectCustomPropsFromCSS(rawCSS)
     const seed = buildSeedCustomPropsRule(node, neededVars, scopeSelector)
-    injectScopedStyle(clone, seed + rewritten, scopeId)
+    const _injected = injectScopedStyle(clone, seed + rewritten, scopeId)
+    if (_injected && sessionCache.shadowStyleNodes) sessionCache.shadowStyleNodes.push(_injected)
     const shadowFrag = document.createDocumentFragment()
     // const, not a declaration: esbuild lowers block-level function declarations to a
     // hoisted `var` of the same name, which would clobber the walker below.

@@ -153,12 +153,13 @@ export function extractShadowCSS(sr) {
  * @param {string} scopeId like s1
  */
 export function injectScopedStyle(hostClone, cssText, scopeId) {
-  if (!cssText) return
+  if (!cssText) return null
   const style = document.createElement('style')
   style.setAttribute('data-sd', scopeId)
   style.textContent = cssText
   // prepend to ensure it wins over later subtree
   hostClone.insertBefore(style, hostClone.firstChild || null)
+  return style
 }
 
 /**
