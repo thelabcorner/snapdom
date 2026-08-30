@@ -613,11 +613,24 @@ export async function captureDOM(element, options) {
         : limitDecimals(outH + pad * 2)
 
       const rootFontSize = parseFloat(getStyle(elDoc.documentElement)?.fontSize) || 16
-      const svgHeader = `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`
-      const svgFooter = '</svg>'
-      svgString = svgHeader + foString + svgFooter
-      dataURL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`
-      state = { svgString, dataURL, ...state }
+      // Chunked serialize structure (§4): split SVG into independently reusable segments.
+      // Header (geometry), style block (patchable class rules), body (clone content), footer.
+      // Dirty tracking per segment enables future delta splice: only rebuild dirty chunks,
+      // merge unchanged encoded segments, and join. Keeps behavior identical today.
+      // Chunked serialize structure (§4): split SVG into independently reusable segments.
+      // Today behavior-identical: header + body (foString, which includes inner style) + footer.
+      // Style rules are stable (interned class names) so future dirty tracking only rebuilds
+      // the generated-class segment without renumbering every other segment.
+      const segments = [
+        `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`,
+        foString,
+        '</svg>',
+      ]
+      const segmentDirty = [false, false, false]
+      const combinedString = segments.join('')
+      svgString = combinedString
+      dataURL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(combinedString)}`
+      state = { svgString, dataURL, segments, segmentDirty, ...state }
       resolve()
     }, { fast })
   })
