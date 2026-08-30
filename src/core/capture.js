@@ -139,7 +139,7 @@ export async function captureDOM(element, options) {
   const preClipRect = options.clip ? resolveClipRect(element, options.clip) : null
   let state = { element, options, plugins: options.plugins }
 
-  let clone, classCSS, styleCache, nodeMap, reconcileRisk, clipWindow
+  let clone, classCSS, styleCache, nodeMap, tagSet, reconcileRisk, clipWindow
   let fontsCSS = ''
   let baseCSS = ''
   let dataURL
@@ -162,7 +162,7 @@ export async function captureDOM(element, options) {
     // Keep this capture's own clone→source map: nested iframe captures reassign
     // cache.session.nodeMap concurrently (see rasterizeIframe), so the global cannot be
     // trusted after the clone phase — every later pass must use this reference.
-    ({ clone, classCSS, styleCache, nodeMap, reconcileRisk, clipWindow } = await prepareClone(state.element, state.options))
+    ({ clone, classCSS, styleCache, nodeMap, tagSet, reconcileRisk, clipWindow } = await prepareClone(state.element, state.options))
 
     if (reconcileRisk > 0 && !options.reconcile && !cache.warnedReconcile) {
       cache.warnedReconcile = true
@@ -190,7 +190,7 @@ export async function captureDOM(element, options) {
   }
 
   // AFTERCLONE
-  state = { clone, classCSS, styleCache, nodeMap, ...state }
+  state = { clone, classCSS, styleCache, nodeMap, tagSet, ...state }
   await runHook('afterClone', state)
   if (undoPictureResolver) await undoPictureResolver()
   sanitizeCloneForXHTML(state.clone)
@@ -267,7 +267,8 @@ export async function captureDOM(element, options) {
 
   await Promise.all([assetsPhase, fontsPhase])
 
-  const usedTags = collectUsedTagNames(state.clone).sort()
+  // walk-fusion: reuse tagSet collected during clone walk (avoids querySelectorAll('*') walk)
+  const usedTags = (state.tagSet && state.tagSet.size ? Array.from(state.tagSet) : collectUsedTagNames(state.clone)).sort()
   const tagKey = usedTags.join(',')
   if (cache.baseStyle.has(tagKey)) {
     baseCSS = cache.baseStyle.get(tagKey)

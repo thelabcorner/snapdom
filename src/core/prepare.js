@@ -34,6 +34,7 @@ export async function prepareClone(element, options = {}) {
     styleMap: session.styleMap,
     styleCache: session.styleCache,
     nodeMap: session.nodeMap,
+    tagSet: new Set(),
     options
   }
 
@@ -349,6 +350,7 @@ export async function prepareClone(element, options = {}) {
     classCSS,
     styleCache: sessionCache.styleCache,
     nodeMap: sessionCache.nodeMap,
+    tagSet: sessionCache.tagSet,
     reconcileRisk: sessionCache.reconcileRisk || 0,
     clipWindow,
   }

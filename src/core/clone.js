@@ -176,6 +176,8 @@ export async function deepClone(node, sessionCache, options) {
   const clonedAssignedNodes = new Set()
   let pendingSelectValue = null
   let pendingTextAreaValue = null
+  // walk-fusion helper: register clone tag for later baseCSS generation (avoids querySelectorAll('*'))
+  const _track = (el) => { try { if (el && el.tagName && sessionCache.tagSet) sessionCache.tagSet.add(el.tagName.toLowerCase()) } catch {} }
   if (node.nodeType === Node.ELEMENT_NODE) {
     const tag = (node.localName || node.tagName || '').toLowerCase()
     if (node.id === 'snapdom-sandbox' || node.hasAttribute('data-snapdom-sandbox')) {
@@ -245,7 +247,9 @@ export async function deepClone(node, sessionCache, options) {
   // Clip mode: prune subtrees painting entirely outside the window (before any plugin
   // hooks or tag handlers — no per-node work is spent on culled content).
   if (sessionCache.clip && isOutsideClip(node, sessionCache.clip)) {
-    return makeClipHusk(node, sessionCache, options)
+    const husk = makeClipHusk(node, sessionCache, options)
+    _track(husk)
+    return husk
   }
   // Per-node plugin hook: the first plugin whose resolveNode returns a value wins
   // (Node = finished replacement clone, null = skip node, undefined = continue).
@@ -259,10 +263,11 @@ export async function deepClone(node, sessionCache, options) {
       if (out === null) return null
       if (out instanceof Node) {
         if (out.nodeType === Node.ELEMENT_NODE) {
-          // Same treatment as built-in tag handlers: map to the source and carry its box
-          // styles so the replacement keeps the original layout.
           sessionCache.nodeMap.set(out, node)
           inlineAllStyles(node, /** @type {Element} */ (out), sessionCache, options)
+          _track(/** @type {Element} */ (out))
+          // also track descendants of the replacement (e.g. a wrapper with inner img)
+          try { out.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
         }
         return out
       }
@@ -273,7 +278,10 @@ export async function deepClone(node, sessionCache, options) {
     const preHandler = PRE_PLACEHOLDER_TAGS.has(node.tagName) && tagHandlers.get(node.tagName)
     if (preHandler) {
       const handled = await preHandler(node, sessionCache, options)
-      if (handled !== undefined) return handled
+      if (handled !== undefined) {
+        if (handled instanceof Element) { _track(handled); try { handled.querySelectorAll?.('*').forEach(el => _track(el)) } catch {} }
+        return handled
+      }
     }
   }
 
@@ -281,10 +289,12 @@ export async function deepClone(node, sessionCache, options) {
     const clone2 = node.cloneNode(false)
     sessionCache.nodeMap.set(clone2, node)
     inlineAllStyles(node, clone2, sessionCache, options)
+    _track(clone2)
     const placeholder = document.createElement('div')
     placeholder.textContent = node.getAttribute('data-placeholder-text') || ''
     placeholder.style.cssText = 'color:#666;font-size:12px;text-align:center;line-height:1.4;padding:0.5em;box-sizing:border-box;'
     clone2.appendChild(placeholder)
+    _track(placeholder)
     return clone2
   }
 
@@ -292,13 +302,17 @@ export async function deepClone(node, sessionCache, options) {
     const handler = !PRE_PLACEHOLDER_TAGS.has(node.tagName) && tagHandlers.get(node.tagName)
     if (handler) {
       const handled = await handler(node, sessionCache, options)
-      if (handled !== undefined) return handled
+      if (handled !== undefined) {
+        if (handled instanceof Element) { _track(handled); try { handled.querySelectorAll?.('*').forEach(el => _track(el)) } catch {} }
+        return handled
+      }
     }
   }
 
   let clone
   try {
     clone = node.cloneNode(false)
+    _track(clone)
     // ROB-3: strip XML 1.0 invalid control characters from attribute values.
     // These characters are legal in HTML but rejected by XMLSerializer, breaking the SVG output.
     // Most common in data-* attributes with user-generated content.
@@ -385,6 +399,7 @@ export async function deepClone(node, sessionCache, options) {
     if (isCheckboxOrRadio && isFirefox()) {
       const { el: replacement, applyVisual } = createCheckboxRadioReplacement(node)
       sessionCache.nodeMap.set(replacement, node)
+      _track(replacement); try { replacement.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
       applyInputVisual = applyVisual
       clone = replacement
     } else {
