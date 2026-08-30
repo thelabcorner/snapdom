@@ -1,0 +1,140 @@
+name: Performance Lab
+
+on:
+  push:
+    branches: [perf/iterative-optimization]
+  workflow_dispatch:
+
+concurrency:
+  group: snapdom-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scientist:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)
+    runs-on: [self-hosted, homelab]
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      BROWSER: chromium
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install benchmark browser
+        run: npx playwright install chromium
+
+      - name: Static correctness gates
+        run: |
+          npm run lint
+          npm run test:types
+          npm run test:bundle
+
+      - name: Browser correctness suite
+        run: npx vitest run --browser.headless --reporter=dot
+
+      - name: Prepare immediate-parent baseline
+        id: parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_dir="$RUNNER_TEMP/snapdom-parent-$GITHUB_RUN_ID"
+          rm -rf "$base_dir"
+          git worktree add --detach "$base_dir" HEAD^
+          cp __tests__/perf.scientist.benchmark.js "$base_dir/__tests__/perf.scientist.benchmark.js"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$base_dir/node_modules"
+          echo "base_dir=$base_dir" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect runtime-code change
+        id: runtime
+        shell: bash
+        run: |
+          if git diff --quiet HEAD^ HEAD -- src; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run paired A/B benchmarks
+        shell: bash
+        env:
+          BASE_DIR: ${{ steps.parent.outputs.base_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p .perf-results
+
+          run_bench() {
+            local cwd="$1"
+            local output="$2"
+            (
+              cd "$cwd"
+              BROWSER=chromium npx vitest bench __tests__/perf.scientist.benchmark.js \
+                --browser.headless \
+                --watch=false \
+                --outputJson="$output"
+            )
+          }
+
+          # ABBA-ish ordering counters thermal and temporal drift across process launches.
+          run_bench "$BASE_DIR" "$GITHUB_WORKSPACE/.perf-results/base-1.json"
+          run_bench "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.perf-results/candidate-1.json"
+          run_bench "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.perf-results/candidate-2.json"
+          run_bench "$BASE_DIR" "$GITHUB_WORKSPACE/.perf-results/base-2.json"
+          run_bench "$BASE_DIR" "$GITHUB_WORKSPACE/.perf-results/base-3.json"
+          run_bench "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.perf-results/candidate-3.json"
+
+      - name: Scientist accept or reject
+        shell: bash
+        run: |
+          node scripts/perf/compare-benchmarks.mjs \
+            --baseline=.perf-results/base-1.json,.perf-results/base-2.json,.perf-results/base-3.json \
+            --candidate=.perf-results/candidate-1.json,.perf-results/candidate-2.json,.perf-results/candidate-3.json \
+            --require-gain=${{ steps.runtime.outputs.changed }} \
+            --json=.perf-results/comparison.json
+
+      - name: Record benchmark metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p .perf-results
+          {
+            echo "baseline=${{ steps.parent.outputs.base_sha }}"
+            echo "candidate=${{ steps.parent.outputs.candidate_sha }}"
+            echo "runtime_changed=${{ steps.runtime.outputs.changed }}"
+            echo "runner=${{ runner.name }}"
+            node --version
+            npm --version
+          } > .perf-results/metadata.txt
+
+      - name: Upload performance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapdom-performance-${{ github.sha }}
+          path: .perf-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove parent worktree
+        if: always() && steps.parent.outputs.base_dir != ''
+        shell: bash
+        run: git worktree remove --force "${{ steps.parent.outputs.base_dir }}" || true
