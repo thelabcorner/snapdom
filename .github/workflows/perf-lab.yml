@@ -47,9 +47,6 @@ jobs:
           npm run test:types
           npm run test:bundle
 
-      - name: Browser correctness suite
-        run: npx vitest run --browser.headless --reporter=dot
-
       - name: Prepare immediate-parent baseline
         id: parent
         shell: bash
@@ -63,6 +60,40 @@ jobs:
           echo "base_dir=$base_dir" >> "$GITHUB_OUTPUT"
           echo "base_sha=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Browser correctness suite (candidate)
+        id: browser_candidate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p .perf-results
+          npx vitest run --browser.headless --reporter=verbose 2>&1 | tee .perf-results/browser-candidate.log
+
+      - name: Browser correctness suite (parent diagnostic)
+        id: browser_parent
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_DIR: ${{ steps.parent.outputs.base_dir }}
+        run: |
+          set -o pipefail
+          (
+            cd "$BASE_DIR"
+            npx vitest run --browser.headless --reporter=verbose
+          ) 2>&1 | tee .perf-results/browser-parent.log
+
+      - name: Browser correctness gate
+        shell: bash
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.browser_candidate.outcome }}
+          PARENT_OUTCOME: ${{ steps.browser_parent.outcome }}
+        run: |
+          echo "candidate=$CANDIDATE_OUTCOME parent=$PARENT_OUTCOME" | tee .perf-results/browser-outcomes.txt
+          if [ "$CANDIDATE_OUTCOME" != "success" ]; then
+            echo "Candidate browser suite failed. Parent result is diagnostic only; refusing to benchmark a failing candidate."
+            exit 1
+          fi
 
       - name: Detect runtime-code change
         id: runtime
