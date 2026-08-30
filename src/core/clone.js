@@ -96,7 +96,7 @@ function intersectsClip(b, rect) {
  * @param {{rect: {left:number,top:number,right:number,bottom:number}, root: Element}} clip
  * @returns {boolean}
  */
-function _nodeBox(node, rect) {
+function _nodeBox(node, _rect) {
   let r; try { r = node.getBoundingClientRect() } catch { return null }
   if (r.width === 0 && r.height === 0) return null
   const cs = getStyle(node)

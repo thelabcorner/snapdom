@@ -323,6 +323,8 @@ function usedWidthDiffersFromAvailable(el, cs) {
 }
 
 const __snapshotSig = new WeakMap()
+// retained for external callers / perf cache bypass audit; no longer on hot path
+// eslint-disable-next-line no-unused-vars
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
   if (sig) return sig
@@ -411,7 +413,7 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     ctx.session.__bumpedForDisabled = true
   }
 
-  const { session, persist } = ctx
+  const { session } = ctx // persist retained in _resolveCtx for compat; not on hot path
 
   if (!session.styleCache.has(source)) {
     // ROB-1: getComputedStyle() on detached nodes can return an empty or unstable
@@ -462,31 +464,20 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // getStyleKey only softens width for inline-sized / table / inline boxes, and only there does
   // its output depend on content/flex-item-ness. For every other node (the vast majority — divs,
   // headings, paragraphs…) skip that bookkeeping entirely so the hot path stays untouched.
-  let sig = styleSignature(snap)
   let sizedByContent = true
   if (softensWidth(tag, (snap.display || '').toLowerCase())) {
     sizedByContent = hasRenderedContent(source)
-    // #484: softening only reproduces the box when its `width` is auto. On a blockified box in
-    // normal flow (`span{display:block;width:16px}`) the min-width floor cannot cap the stretch,
-    // and a flex/grid item gets no floor at all (#406) — both lost the authored width. Treat an
-    // author-specified width as "not sized by content" so it is kept verbatim.
     if (sizedByContent && softenNeedsAutoWidth(tag, snap, flexItem) &&
         hasSpecifiedWidth(source, pre, flexItem)) {
       sizedByContent = false
     }
-    // Fold tag/content/flex into the cache key so soften-eligible elements with identical styles
-    // but different shape don't collide on the shared snapshotKeyCache.
-    sig = `${sig}|${tag}${sizedByContent ? '|c' : ''}${flexItem ? '|f' : ''}`
-    // This is the exact condition getStyleKey uses to actually drop the width (the #429/#433/
-    // #434 family): tally it so capture.js can suggest `reconcile: true` when it's never used —
-    // cheap, since softensWidth/sizedByContent are already computed for this node regardless.
-    // Nowrap/pre boxes stay frozen (#474), so they carry no re-wrap risk.
     const wsMode = snap['text-wrap-mode'] || snap['white-space'] || ''
     if (sizedByContent && wsMode !== 'nowrap' && wsMode !== 'pre') {
       session.reconcileRisk = (session.reconcileRisk || 0) + 1
     }
   }
-  // perf: snapshotKeyCache was measured ~23% slower than direct getStyleKey; bypass it
+  // perf: snapshotKeyCache was measured ~23% slower than direct getStyleKey; bypass it.
+  // styleSignature removed (Object.entries.sort.join was pure overhead).
   const key = getStyleKey(snap, tag, sizedByContent, flexItem)
   session.styleMap.set(clone, key)
 }

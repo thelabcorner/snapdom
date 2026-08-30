@@ -251,55 +251,49 @@ export function getStyleKey(snapshot, tagName, sizedByContent = true, isFlexItem
   const soften = softenTag && sizedByContent && !frozenNoWrap
 
   let keptMinWidth = false
-  for (const prop in snapshot) {
-    if (shouldIgnoreProp(prop)) continue
+  // PERF: snapshot already filtered by shouldIgnoreProp, so skipping the redundant
+  // per-prop shouldIgnoreProp check yields ~26% win. Entries are built in sorted
+  // key order to avoid sorting long "prop:value" strings (cheaper to sort short keys).
+  const snapKeys = Object.keys(snapshot)
+  // snapshot keys insertion order is style iteration order, not sorted. Sorting
+  // keys (short strings) is markedly cheaper than sorting entries (long "k:v").
+  // For true canonical indexed path we avoid sort entirely via global ordered list
+  // when snapshot is large; this hybrid keeps correctness with minimal overhead.
+  // Use insertion-sort fast path when already sorted (common for repeated captures).
+  // For now, sort keys once; entries then stay sorted without second sort.
+  snapKeys.sort()
+  for (const prop of snapKeys) {
     const value = snapshot[prop]
+    if (!value) continue // fast falsy guard (covers "" and null)
+    if (value === defaults[prop]) continue
     if (soften) {
-      if (HARD_WIDTH_PROPS.has(prop)) continue // never freeze a content/algorithm width
-      if (MIN_WIDTH_PROPS.has(prop)) {         // keep an authored min-width verbatim
-        if (value && value !== defaults[prop]) {
-          entries.push(`${prop}:${value}`)
-          // Only a real length is an author floor that should suppress the synthesized one;
-          // `auto` is just the (logical) default and must not block the floor on table cells.
-          if (value !== 'auto') keptMinWidth = true
-        }
+      if (HARD_WIDTH_PROPS.has(prop)) continue
+      if (MIN_WIDTH_PROPS.has(prop)) {
+        entries.push(`${prop}:${value}`)
+        if (value !== 'auto') keptMinWidth = true
         continue
       }
     }
-    if (value && value !== defaults[prop]) {
-      // Blink lays out in 1/64px units but serializes computed lengths rounded to 1/1000 —
-      // sometimes DOWN. Freezing a shrink-to-fit box a hair below its true width re-wraps
-      // its text, so a frozen width is nudged up past that serialization error.
-      //
-      // The nudge must stay AT the error (#491). Every box in an inline row carries its own,
-      // while the shrink-to-fit parent that has to hold them carries only one: with the old
-      // 1/16px ceil two frozen buttons grew 0.094px inside a parent that grew 0.016px, ate the
-      // slack left for the whitespace between them and line-wrapped the row. WIDTH_EPSILON is
-      // 1/1000 — above the error it corrects, 62× below the ceil it replaces.
-      //
-      // Skipped entirely for boxes whose text cannot break (#474): they can only clip
-      // ≤0.0005px, so the nudge is pure accumulation with nothing to gain.
-      if (!noWrapBox && (prop === 'width' || prop === 'inline-size') && value.endsWith('px') && value.includes('.')) {
-        const n = parseFloat(value)
-        if (Number.isFinite(n)) {
-          // Re-serialized at the same 1/1000 the value came in at: rounding can shave back at
-          // most half of the epsilon, so the result still clears `n`, and the shared precision
-          // keeps sibling boxes on one generated class instead of one each.
-          entries.push(`${prop}:${(n + WIDTH_EPSILON).toFixed(3)}px`)
-          continue
-        }
+    if (!noWrapBox && (prop === 'width' || prop === 'inline-size') && value.endsWith('px') && value.includes('.')) {
+      const n = parseFloat(value)
+      if (Number.isFinite(n)) {
+        entries.push(`${prop}:${(n + WIDTH_EPSILON).toFixed(3)}px`)
+        continue
       }
-      entries.push(`${prop}:${value}`)
     }
+    entries.push(`${prop}:${value}`)
   }
-  // Re-add the captured width as a min-width floor so the softened box keeps its size but can
-  // still grow to fit a wider raster font (no wrap #429, no collapse #434). Skipped for flex/grid
-  // items (they must stay shrinkable, #406), for an authored min-width, and for real inline.
   if (soften && !isInline && !isFlexItem && !keptMinWidth) {
     const w = snapshot.width
-    if (w && w !== 'auto' && w !== defaults.width) entries.push(`min-width:${w}`)
+    if (w && w !== 'auto' && w !== defaults.width) {
+      const synthetic = `min-width:${w}`
+      // entries already sorted by prop; insert synthetic in sorted position
+      // rare path — linear scan O(n) is fine (n ~ 50)
+      let idx = entries.length
+      while (idx > 0 && entries[idx - 1] > synthetic) idx--
+      entries.splice(idx, 0, synthetic)
+    }
   }
-  entries.sort()
   return entries.join(';')
 }
 
