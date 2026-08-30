@@ -71,6 +71,7 @@ jobs:
           npx vitest run --browser.headless --reporter=verbose 2>&1 | tee .perf-results/browser-candidate.log
 
       - name: Browser correctness suite (parent diagnostic)
+        if: steps.browser_candidate.outcome == 'failure'
         id: browser_parent
         continue-on-error: true
         shell: bash
@@ -89,7 +90,7 @@ jobs:
           CANDIDATE_OUTCOME: ${{ steps.browser_candidate.outcome }}
           PARENT_OUTCOME: ${{ steps.browser_parent.outcome }}
         run: |
-          echo "candidate=$CANDIDATE_OUTCOME parent=$PARENT_OUTCOME" | tee .perf-results/browser-outcomes.txt
+          echo "candidate=$CANDIDATE_OUTCOME parent=${PARENT_OUTCOME:-skipped}" | tee .perf-results/browser-outcomes.txt
           if [ "$CANDIDATE_OUTCOME" != "success" ]; then
             echo "Candidate browser suite failed. Parent result is diagnostic only; refusing to benchmark a failing candidate."
             exit 1
@@ -152,8 +153,12 @@ jobs:
             echo "candidate=${{ steps.parent.outputs.candidate_sha }}"
             echo "runtime_changed=${{ steps.runtime.outputs.changed }}"
             echo "runner=${{ runner.name }}"
+            echo "os=$(uname -srmo 2>/dev/null || true)"
+            echo "cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}')"
+            echo "cores=$(nproc 2>/dev/null || true)"
             node --version
             npm --version
+            npx playwright --version
           } > .perf-results/metadata.txt
 
       - name: Upload performance evidence
