@@ -46,10 +46,22 @@ function extractImageDimensions(img) {
  * @returns {Promise<void>}
  */
 export async function inlineImages(clone, options = {}) {
-  // querySelectorAll only matches descendants: when the capture root is itself an
-  // <img>, it must be included or its src stays external and svg-as-image won't load it.
-  const imgs = Array.from(clone.querySelectorAll('img'))
-  if (clone.tagName === 'IMG') imgs.unshift(clone)
+  // walk-fusion: reuse pre-collected img list from deepClone if available
+  let imgs
+  if (clone._snapdomCollect?.imgClones?.length !== undefined) {
+    const pre = clone._snapdomCollect.imgClones
+    // clone walk already includes the root if it is an <img>, but guard for edge
+    if (clone.tagName === 'IMG' && !pre.includes(clone)) {
+      imgs = [clone, ...pre]
+    } else {
+      imgs = pre
+    }
+    // filter out any husks that may have been collected but are hidden (should not happen)
+    // keep as is — husks have no src to inline
+  } else {
+    imgs = Array.from(clone.querySelectorAll('img'))
+    if (clone.tagName === 'IMG') imgs.unshift(clone)
+  }
   /** @param {HTMLImageElement} img */
   const processImg = async (img) => {
     // Normalize src/srcset/sizes to a single concrete URL. currentSrc stays empty on the
@@ -142,8 +154,18 @@ export async function inlineImages(clone, options = {}) {
   }
 
   // #341: Inline SVG <image href="https://..."> (e.g. Highcharts, D3)
-  const svgImages = Array.from(clone.querySelectorAll('image'))
-  if (clone.localName === 'image') svgImages.unshift(clone)
+  let svgImages
+  if (clone._snapdomCollect?.svgImageClones?.length !== undefined) {
+    const preSvg = clone._snapdomCollect.svgImageClones
+    if (clone.localName === 'image' && !preSvg.includes(clone)) {
+      svgImages = [clone, ...preSvg]
+    } else {
+      svgImages = preSvg
+    }
+  } else {
+    svgImages = Array.from(clone.querySelectorAll('image'))
+    if (clone.localName === 'image') svgImages.unshift(clone)
+  }
   const processSvgImage = async (el) => {
     const href = getSvgImageHref(el)
     if (!href || href.startsWith('data:') || href.startsWith('blob:')) return

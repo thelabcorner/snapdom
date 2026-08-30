@@ -36,6 +36,8 @@ export async function prepareClone(element, options = {}) {
     nodeMap: session.nodeMap,
     tagSet: new Set(),
     shadowStyleNodes: [],
+    imgClones: [],
+    svgImageClones: [],
     options
   }
 
@@ -352,12 +354,21 @@ export async function prepareClone(element, options = {}) {
       cloneNode.style.marginBlockStart = '0'
     }
   }
+  // attach collected interest lists to clone for walk-fusion consumers (assets, etc.)
+  if (clone) {
+    clone._snapdomCollect = {
+      imgClones: sessionCache.imgClones,
+      svgImageClones: sessionCache.svgImageClones,
+    }
+  }
   return {
     clone,
     classCSS,
     styleCache: sessionCache.styleCache,
     nodeMap: sessionCache.nodeMap,
     tagSet: sessionCache.tagSet,
+    imgClones: sessionCache.imgClones,
+    svgImageClones: sessionCache.svgImageClones,
     reconcileRisk: sessionCache.reconcileRisk || 0,
     clipWindow,
   }

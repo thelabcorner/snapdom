@@ -176,8 +176,17 @@ export async function deepClone(node, sessionCache, options) {
   const clonedAssignedNodes = new Set()
   let pendingSelectValue = null
   let pendingTextAreaValue = null
-  // walk-fusion helper: register clone tag for later baseCSS generation (avoids querySelectorAll('*'))
-  const _track = (el) => { try { if (el && el.tagName && sessionCache.tagSet) sessionCache.tagSet.add(el.tagName.toLowerCase()) } catch {} }
+  // walk-fusion helpers: register clone tag + collect img/image lists to avoid later queries
+  const _track = (el) => {
+    try {
+      if (el && el.tagName && sessionCache.tagSet) sessionCache.tagSet.add(el.tagName.toLowerCase())
+      if (el && el.tagName === 'IMG' && sessionCache.imgClones) sessionCache.imgClones.push(el)
+      if (el && el.localName === 'image' && sessionCache.svgImageClones) sessionCache.svgImageClones.push(el)
+    } catch {}
+  }
+  const _trackTree = (root) => {
+    try { _track(root); root.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
+  }
   if (node.nodeType === Node.ELEMENT_NODE) {
     const tag = (node.localName || node.tagName || '').toLowerCase()
     if (node.id === 'snapdom-sandbox' || node.hasAttribute('data-snapdom-sandbox')) {
@@ -265,9 +274,7 @@ export async function deepClone(node, sessionCache, options) {
         if (out.nodeType === Node.ELEMENT_NODE) {
           sessionCache.nodeMap.set(out, node)
           inlineAllStyles(node, /** @type {Element} */ (out), sessionCache, options)
-          _track(/** @type {Element} */ (out))
-          // also track descendants of the replacement (e.g. a wrapper with inner img)
-          try { out.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
+          _trackTree(/** @type {Element} */ (out))
         }
         return out
       }
@@ -279,7 +286,7 @@ export async function deepClone(node, sessionCache, options) {
     if (preHandler) {
       const handled = await preHandler(node, sessionCache, options)
       if (handled !== undefined) {
-        if (handled instanceof Element) { _track(handled); try { handled.querySelectorAll?.('*').forEach(el => _track(el)) } catch {} }
+        if (handled instanceof Element) _trackTree(handled)
         return handled
       }
     }
@@ -303,7 +310,7 @@ export async function deepClone(node, sessionCache, options) {
     if (handler) {
       const handled = await handler(node, sessionCache, options)
       if (handled !== undefined) {
-        if (handled instanceof Element) { _track(handled); try { handled.querySelectorAll?.('*').forEach(el => _track(el)) } catch {} }
+        if (handled instanceof Element) _trackTree(handled)
         return handled
       }
     }
@@ -399,7 +406,7 @@ export async function deepClone(node, sessionCache, options) {
     if (isCheckboxOrRadio && isFirefox()) {
       const { el: replacement, applyVisual } = createCheckboxRadioReplacement(node)
       sessionCache.nodeMap.set(replacement, node)
-      _track(replacement); try { replacement.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
+      _trackTree(replacement)
       applyInputVisual = applyVisual
       clone = replacement
     } else {
