@@ -326,11 +326,15 @@ const __snapshotSig = new WeakMap()
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
   if (sig) return sig
-  const parts = []
-  for (const prop in snap) parts.push(`${prop}:${snap[prop]}`)
-  sig = parts.join(';')
-  __snapshotSig.set(snap, sig)
-  return sig
+  const keys = Object.keys(snap)
+  let out = ''
+  for (let i = 0; i < keys.length; i++) {
+    if (i) out += ';'
+    const prop = keys[i]
+    out += prop + ':' + snap[prop]
+  }
+  __snapshotSig.set(snap, out)
+  return out
 }
 function getSnapshot(el, preStyle = null, options = {}) {
   const rec = snapshotCache.get(el)
