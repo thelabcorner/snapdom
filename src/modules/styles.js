@@ -326,8 +326,9 @@ const __snapshotSig = new WeakMap()
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
   if (sig) return sig
-  const entries = Object.entries(snap).sort((a, b) => a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0))
-  sig = entries.map(([k, v]) => `${k}:${v}`).join(';')
+  const parts = []
+  for (const prop in snap) parts.push(`${prop}:${snap[prop]}`)
+  sig = parts.join(';')
   __snapshotSig.set(snap, sig)
   return sig
 }
