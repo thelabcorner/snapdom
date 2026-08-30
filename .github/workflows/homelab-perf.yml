@@ -57,7 +57,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f __snapshots__/visual || true
+          # only baselines (*.png in visual root), not _artifacts/report.html
+          git add -f __snapshots__/visual/*.png 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "chore: update visual baselines (auto, d489 580x191->580x190)"
             git push
