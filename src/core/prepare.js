@@ -271,54 +271,57 @@ export async function prepareClone(element, options = {}) {
     }
   }
 
+  // Walk-fusion + O(n·s) fix: collect scrolled nodes once, create wrappers, then
+  // adjust positioned descendants in a single tree walk. Formerly each scrolled
+  // node did cloneNode.querySelectorAll('*') → O(n·s).
+  const _scrolledMap = new Map()
+  const _scrolledNodes = []
   for (const [cloneNode, originalNode] of sessionCache.nodeMap.entries()) {
-    // Clip mode: the window is derived from gBCRs, which already encode the root's own
-    // scroll — un-scrolling the root here would compensate twice (blank output when
-    // capturing a scrolled documentElement).
     if (sessionCache.clip && originalNode === element) continue
     const scrollX = originalNode.scrollLeft
     const scrollY = originalNode.scrollTop
-    const hasScroll = scrollX || scrollY
-    // Realm-safe HTML check: iframe-realm clones are not instances of this window's
-    // HTMLElement, but their scroll still needs compensating.
-    if (hasScroll && cloneNode?.nodeType === 1 && cloneNode.namespaceURI === 'http://www.w3.org/1999/xhtml') {
+    if ((scrollX || scrollY) && cloneNode?.nodeType === 1 && cloneNode.namespaceURI === 'http://www.w3.org/1999/xhtml') {
       cloneNode.style.overflow = 'hidden'
       cloneNode.style.scrollbarWidth = 'none'
       cloneNode.style.msOverflowStyle = 'none'
-
-      // #364: Before wrapping with translate, adjust fixed/absolute descendants
-      // so they don't shift when the translate wrapper creates a new containing block.
-      try {
-        const positioned = cloneNode.querySelectorAll('*')
-        for (const child of positioned) {
-          if (child.nodeType !== 1 || child.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
-          const pos = child.style.position
-          if (pos === 'fixed' || pos === 'absolute') {
-            const curTop = parseFloat(child.style.top) || 0
-            const curLeft = parseFloat(child.style.left) || 0
-            child.style.top = `${curTop + scrollY}px`
-            child.style.left = `${curLeft + scrollX}px`
-            if (pos === 'fixed') child.style.position = 'absolute'
-          }
-        }
-      } catch { /* non-blocking */ }
-
+      _scrolledMap.set(cloneNode, { x: scrollX, y: scrollY })
+      _scrolledNodes.push(cloneNode)
       const inner = document.createElement('div')
-      // #413: baseCSS emits a `div{white-space:normal;font-family:…}` rule (from the tag's
-      // all:initial defaults) that directly targets this wrapper and overrides the inherited
-      // text formatting of the scrolled element (e.g. a <pre>'s pre-wrap/monospace). `all:unset`
-      // lets inherited props flow from the parent again (inline style beats the type selector)
-      // while keeping non-inherited props at initial, so the wrapper stays visually transparent.
       inner.style.all = 'unset'
       inner.style.transform = `translate(${-scrollX}px, ${-scrollY}px)`
       inner.style.willChange = 'transform'
       inner.style.display = 'inline-block'
       inner.style.width = '100%'
-      while (cloneNode.firstChild) {
-        inner.appendChild(cloneNode.firstChild)
-      }
+      while (cloneNode.firstChild) inner.appendChild(cloneNode.firstChild)
       cloneNode.appendChild(inner)
     }
+  }
+  // Single-pass positioned fix: for each fixed/absolute descendant, walk ancestors
+  // summing all scrolled offsets (handles nested scrolled containers correctly).
+  if (_scrolledMap.size && clone?.nodeType === 1) {
+    try {
+      const cands = clone.querySelectorAll('*')
+      for (const el of cands) {
+        if (el.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
+        const pos = el.style.position
+        if (pos !== 'fixed' && pos !== 'absolute') continue
+        let addX = 0, addY = 0
+        let cur = el.parentElement
+        while (cur) {
+          const s = _scrolledMap.get(cur)
+          if (s) { addX += s.x; addY += s.y }
+          if (cur === clone) break
+          cur = cur.parentElement
+        }
+        if (addX || addY) {
+          const curTop = parseFloat(el.style.top) || 0
+          const curLeft = parseFloat(el.style.left) || 0
+          el.style.top = `${curTop + addY}px`
+          el.style.left = `${curLeft + addX}px`
+          if (pos === 'fixed') el.style.position = 'absolute'
+        }
+      }
+    } catch { /* non-blocking */ }
   }
   if (element === sessionCache.nodeMap.get(clone)) {
     const computed = sessionCache.styleCache.get(element) || getStyle(element)
