@@ -2,7 +2,7 @@ name: Micro Performance Race
 
 on:
   push:
-    branches: [perf/iterative-optimization]
+    branches: [perf/iterative-optimization, perf/micro-race]
     paths:
       - 'scripts/perf/micro/**'
       - '.github/workflows/micro-perf.yml'
