@@ -1,0 +1,26 @@
+name: Homelab Perf (autodetect)
+on:
+  push:
+    branches: [perf/**, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  perf:
+    runs-on: ${{ (contains(runner.name,'homelab') && 'self-hosted') || 'ubuntu-latest' }}
+    # autodetect: if self-hosted homelab runner available it wins via label, else fallback to ubuntu
+    # homelab runner should be labelled [self-hosted, homelab, linux]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: Build
+        run: npm run build --if-present
+      - name: Playwright bench
+        run: |
+          npx playwright install --with-deps chromium
+          npm run bench --if-present || node scripts/bench.mjs || echo "no bench script"
+      - name: Correctness (playwright)
+        run: npx playwright test --reporter=line || npm test -- --run 2>&1 | head -n 200

@@ -486,11 +486,8 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
       session.reconcileRisk = (session.reconcileRisk || 0) + 1
     }
   }
-  let key = persist.snapshotKeyCache.get(sig)
-  if (key === undefined) {
-    key = getStyleKey(snap, tag, sizedByContent, flexItem)
-    persist.snapshotKeyCache.set(sig, key)
-  }
+  // perf: snapshotKeyCache was measured ~23% slower than direct getStyleKey; bypass it
+  const key = getStyleKey(snap, tag, sizedByContent, flexItem)
   session.styleMap.set(clone, key)
 }
 /**

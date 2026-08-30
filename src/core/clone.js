@@ -96,36 +96,42 @@ function intersectsClip(b, rect) {
  * @param {{rect: {left:number,top:number,right:number,bottom:number}, root: Element}} clip
  * @returns {boolean}
  */
+function _nodeBox(node, rect) {
+  let r; try { r = node.getBoundingClientRect() } catch { return null }
+  if (r.width === 0 && r.height === 0) return null
+  const cs = getStyle(node)
+  const sw = node.scrollWidth || 0, sh = node.scrollHeight || 0
+  const box = { left: cs.direction === 'rtl' ? Math.min(r.left, r.right - sw) : r.left, top: r.top, right: Math.max(r.right, r.left + sw), bottom: Math.max(r.bottom, r.top + sh) }
+  const wm = cs.writingMode || ''
+  if (wm.startsWith('vertical') || wm.startsWith('sideways')) { box.top = Math.min(r.top, r.bottom - sh); box.left = Math.min(box.left, r.right - sw) }
+  return { box, isInlineNonReplaced: cs.display === 'inline' && !CLIP_REPLACED_TAGS.has((node.localName||'').toLowerCase()) }
+}
+function ensureClipSubtreeCache(clip, rootEl) {
+  if (clip._subtreeCache) return
+  const map = new WeakMap()
+  // bottom-up: reverse document order ensures children before parents
+  const all = []
+  const tw = (rootEl.ownerDocument||document).createTreeWalker(rootEl, NodeFilter.SHOW_ELEMENT)
+  while (tw.nextNode()) all.push(tw.currentNode)
+  for (let i = all.length - 1; i >= 0; i--) {
+    const n = all[i]
+    const info = _nodeBox(n, clip.rect)
+    let hits = info && intersectsClip(info.box, clip.rect)
+    if (!hits) {
+      for (let c = n.firstElementChild; c; c = c.nextElementSibling) if (map.get(c)) { hits = true; break }
+    }
+    map.set(n, hits)
+  }
+  clip._subtreeCache = map
+}
 function isOutsideClip(node, clip) {
   if (node === clip.root) return false
-  let r
-  try { r = node.getBoundingClientRect() } catch { return false }
-  if (r.width === 0 && r.height === 0) return false
-  const cs = getStyle(node)
-  if (cs.display === 'inline' && !CLIP_REPLACED_TAGS.has((node.localName || '').toLowerCase())) return false
-  const rect = clip.rect
-  // Scroll overflow grows right/down in horizontal-ltr; mirror for rtl / vertical modes.
-  const sw = node.scrollWidth || 0
-  const sh = node.scrollHeight || 0
-  const box = {
-    left: cs.direction === 'rtl' ? Math.min(r.left, r.right - sw) : r.left,
-    top: r.top,
-    right: Math.max(r.right, r.left + sw),
-    bottom: Math.max(r.bottom, r.top + sh)
-  }
-  const wm = cs.writingMode || ''
-  if (wm.startsWith('vertical') || wm.startsWith('sideways')) {
-    box.top = Math.min(r.top, r.bottom - sh)
-    box.left = Math.min(box.left, r.right - sw)
-  }
-  if (intersectsClip(box, rect)) return false
-  // Escape scan: any descendant whose painted box reaches the window (gBCR reads only —
-  // no style/clone/inline work) vetoes the cull; deeper levels then cull its siblings.
-  const tw = (node.ownerDocument || document).createTreeWalker(node, NodeFilter.SHOW_ELEMENT)
-  while (tw.nextNode()) {
-    const dr = /** @type {Element} */ (tw.currentNode).getBoundingClientRect()
-    if ((dr.width > 0 || dr.height > 0) && intersectsClip(dr, rect)) return false
-  }
+  const info = _nodeBox(node, clip.rect)
+  if (!info) return false
+  if (info.isInlineNonReplaced) return false
+  if (intersectsClip(info.box, clip.rect)) return false
+  ensureClipSubtreeCache(clip, clip.root)
+  if (clip._subtreeCache.get(node)) return false
   return true
 }
 
