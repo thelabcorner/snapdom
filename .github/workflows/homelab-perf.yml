@@ -52,7 +52,6 @@ jobs:
         env:
           BROWSER: chromium
           CI: true
-          VITE_UPDATE_VISUAL: '1'
       - name: Commit updated visual baselines if changed
         run: |
           git config user.name "github-actions[bot]"
