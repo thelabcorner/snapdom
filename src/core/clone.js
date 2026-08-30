@@ -470,6 +470,16 @@ export async function deepClone(node, sessionCache, options) {
   if (applyInputVisual) { applyInputVisual() }
   // walk-fusion: collect background-inline candidates to avoid later tree walk
   try { if (needsBackgroundInline(node) && sessionCache.bgClones) sessionCache.bgClones.push(clone) } catch {}
+  // walk-fusion: collect blob URL nodes to avoid later 5x querySelectorAll in resolveBlobUrlsInTree
+  try {
+    const _hasBlob = (node.getAttribute?.('src')||'').includes('blob:') ||
+                     (node.getAttribute?.('srcset')||'').includes('blob:') ||
+                     (node.getAttribute?.('href')||'').includes('blob:') ||
+                     (node.getAttribute?.('poster')||'').includes('blob:') ||
+                     (node.getAttribute?.('style')||'').includes('blob:') ||
+                     (node.tagName==='STYLE' && (node.textContent||'').includes('blob:'))
+    if (_hasBlob && sessionCache.blobNodes) sessionCache.blobNodes.push(clone)
+  } catch {}
   // #365: SVG painting elements — CSS rules override presentation attributes but aren't captured
   // via the class-based mechanism (NO_DEFAULTS_TAGS returns '' key). Copy key SVG presentation
   // properties from computed style as inline styles to ensure CSS-driven fills/strokes survive.

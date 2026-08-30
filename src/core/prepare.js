@@ -39,6 +39,7 @@ export async function prepareClone(element, options = {}) {
     imgClones: [],
     svgImageClones: [],
     bgClones: [],
+    blobNodes: [],
     options
   }
 
@@ -361,6 +362,7 @@ export async function prepareClone(element, options = {}) {
       imgClones: sessionCache.imgClones,
       svgImageClones: sessionCache.svgImageClones,
       bgClones: sessionCache.bgClones,
+      blobNodes: sessionCache.blobNodes,
     }
   }
   return {
@@ -372,6 +374,7 @@ export async function prepareClone(element, options = {}) {
     imgClones: sessionCache.imgClones,
     svgImageClones: sessionCache.svgImageClones,
     bgClones: sessionCache.bgClones,
+    blobNodes: sessionCache.blobNodes,
     reconcileRisk: sessionCache.reconcileRisk || 0,
     clipWindow,
   }
