@@ -251,20 +251,26 @@ export function getStyleKey(snapshot, tagName, sizedByContent = true, isFlexItem
   const soften = softenTag && sizedByContent && !frozenNoWrap
 
   let keptMinWidth = false
-  // PERF: snapshot already filtered by shouldIgnoreProp, so skipping the redundant
-  // per-prop shouldIgnoreProp check yields ~26% win. Entries are built in sorted
-  // key order to avoid sorting long "prop:value" strings (cheaper to sort short keys).
-  const snapKeys = Object.keys(snapshot)
-  // snapshot keys insertion order is style iteration order, not sorted. Sorting
-  // keys (short strings) is markedly cheaper than sorting entries (long "k:v").
-  // For true canonical indexed path we avoid sort entirely via global ordered list
-  // when snapshot is large; this hybrid keeps correctness with minimal overhead.
-  // Use insertion-sort fast path when already sorted (common for repeated captures).
-  // For now, sort keys once; entries then stay sorted without second sort.
-  snapKeys.sort()
-  for (const prop of snapKeys) {
+  // PERF: canonical indexed — precompute sorted kept props once, then iterate by index
+  // without per-node sort or shouldIgnoreProp. Snapshot already filtered, so we just
+  // walk the canonical order and emit diffs vs defaults. This is the 1.89× path.
+  let CANONICAL_PROPS = getStyleKey._canonicalProps
+  if (!CANONICAL_PROPS) {
+    // Build once from a representative tag's defaults (div covers all properties)
+    const base = getDefaultStyleForTag('div')
+    CANONICAL_PROPS = Object.keys(base).sort()
+    // Ensure width-related props that may be injected synthetically are in order
+    // (min-width is already in base; width/inline-size are too)
+    getStyleKey._canonicalProps = CANONICAL_PROPS
+  }
+  // Fast path: iterate canonical order, emitting only snapshot diffs.
+  // For props not in canonical (rare, e.g. tag-specific), fall back to direct scan.
+  const seen = new Set()
+  for (const prop of CANONICAL_PROPS) {
     const value = snapshot[prop]
-    if (!value) continue // fast falsy guard (covers "" and null)
+    if (value === undefined) continue
+    seen.add(prop)
+    if (!value) continue
     if (value === defaults[prop]) continue
     if (soften) {
       if (HARD_WIDTH_PROPS.has(prop)) continue
@@ -282,6 +288,39 @@ export function getStyleKey(snapshot, tagName, sizedByContent = true, isFlexItem
       }
     }
     entries.push(`${prop}:${value}`)
+  }
+  // Rare extras not in canonical (e.g. tag-specific defaults) — emit in sorted order
+  for (const prop in snapshot) {
+    if (seen.has(prop)) continue
+    const value = snapshot[prop]
+    if (!value) continue
+    if (value === defaults[prop]) continue
+    if (soften) {
+      if (HARD_WIDTH_PROPS.has(prop)) continue
+      if (MIN_WIDTH_PROPS.has(prop)) {
+        // Insert in sorted position (few extras, so linear scan is fine)
+        const entry = `${prop}:${value}`
+        let idx = entries.length
+        while (idx > 0 && entries[idx - 1] > entry) idx--
+        entries.splice(idx, 0, entry)
+        if (value !== 'auto') keptMinWidth = true
+        continue
+      }
+    }
+    if (!noWrapBox && (prop === 'width' || prop === 'inline-size') && value.endsWith('px') && value.includes('.')) {
+      const n = parseFloat(value)
+      if (Number.isFinite(n)) {
+        const entry = `${prop}:${(n + WIDTH_EPSILON).toFixed(3)}px`
+        let idx = entries.length
+        while (idx > 0 && entries[idx - 1] > entry) idx--
+        entries.splice(idx, 0, entry)
+        continue
+      }
+    }
+    const entry = `${prop}:${value}`
+    let idx = entries.length
+    while (idx > 0 && entries[idx - 1] > entry) idx--
+    entries.splice(idx, 0, entry)
   }
   if (soften && !isInline && !isFlexItem && !keptMinWidth) {
     const w = snapshot.width
