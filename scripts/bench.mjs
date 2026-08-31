@@ -135,7 +135,12 @@ async function benchDeltaSplice() {
   const dirtyTotal = performance.now() - startDirty
 
   console.log(`[bench] delta splice: clean (${runs}x) = ${(cleanTotal / runs).toFixed(4)}ms mean; dirty (${runs}x) = ${(dirtyTotal / runs).toFixed(4)}ms mean; overhead = ${(dirtyTotal - cleanTotal).toFixed(2)}ms`)
-  return { runs, cleanMs: cleanTotal / runs, dirtyMs: dirtyTotal / runs }
+  // Divergence verification (§4): rebuilt dirty combined string must differ from clean
+  const rebuiltDirtyFull = dirtyDirty.map((d, i) => d ? (i === 1 ? rebuiltDirtyBody : segments[i]) : segments[i]).join('')
+  const cleanFull = segments.join('')
+  const diverges = rebuiltDirtyFull !== cleanFull
+  console.log(`[bench] divergence check: rebuilt dirty differs from clean = ${diverges ? 'PASS (expected different)' : 'FAIL (same output — dirty tracking broken)'}`)
+  return { runs, cleanMs: cleanTotal / runs, dirtyMs: dirtyTotal / runs, diverges }
 }
 
 async function main() {
