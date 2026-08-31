@@ -41,33 +41,21 @@ export async function preCache(root = document, options = {}) {
   cache.image = cache.image || new EvictingMap(100)
   cache.background = cache.background || new EvictingMap(100)
 
-  // Collect elements for prefetch in a SINGLE tree walk.
-  // Was two querySelectorAll passes per branch (one for allEls via '*', one for
-  // img[src]) = O(2n). Now querySelectorAll('*') returns every descendant element
-  // once (a static NodeList) and the SAME list drives both allEls and imgEls, so
-  // membership is identical to before at O(n). The img predicate `el.matches('img[src]')`
-  // is the exact selector the old walk applied, so imgEls is unchanged.
+  // Collect elements for prefetch
   let imgEls = [], allEls = []
   try {
     // 🔸 Importante: incluir al root si es un Element
     if (root && root.nodeType === 1 /* ELEMENT_NODE */) {
-      const descendants = root.querySelectorAll ? root.querySelectorAll('*') : []
+      const descendants = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : []
       allEls = [root, ...descendants]
       // Sólo imágenes dentro del subtree (el root también puede ser <img>)
       imgEls = []
-      // Root may itself be an <img>; original required a truthy src attr to include it.
       if (root.tagName === 'IMG' && root.getAttribute('src')) imgEls.push(root)
-      for (const el of descendants) {
-        if (el.matches && el.matches('img[src]')) imgEls.push(el)
-      }
+      imgEls.push(...Array.from(root.querySelectorAll?.('img[src]') || []))
     } else if (root?.querySelectorAll) {
       // Document o DocumentFragment
-      const descendants = root.querySelectorAll('*')
-      allEls = [...descendants]
-      imgEls = []
-      for (const el of descendants) {
-        if (el.matches && el.matches('img[src]')) imgEls.push(el)
-      }
+      imgEls = Array.from(root.querySelectorAll('img[src]'))
+      allEls = Array.from(root.querySelectorAll('*'))
     }
   } catch {}
 
