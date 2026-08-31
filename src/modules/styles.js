@@ -201,26 +201,21 @@ function snapshotComputedStyleFull(style, options = {}) {
 
   // #362: Tailwind's * { border: 0 solid } renders incorrectly in capture.
   // When all border widths are 0, normalize to border: none for unambiguous output.
-  const bt = parseFloat(style.getPropertyValue('border-top-width') || 0) || 0
-  const br = parseFloat(style.getPropertyValue('border-right-width') || 0) || 0
-  const bb = parseFloat(style.getPropertyValue('border-bottom-width') || 0) || 0
-  const bl = parseFloat(style.getPropertyValue('border-left-width') || 0) || 0
+  // Prefer the values already captured in `out` (the main loop read them), falling back to
+  // the live declaration only when excludeStyleProps dropped them. Avoids 4-5
+  // getPropertyValue() calls per node - the same technique used for the BG-flag block above.
+  const bt = parseFloat(out['border-top-width'] ?? style.getPropertyValue('border-top-width')) || 0
+  const br = parseFloat(out['border-right-width'] ?? style.getPropertyValue('border-right-width')) || 0
+  const bb = parseFloat(out['border-bottom-width'] ?? style.getPropertyValue('border-bottom-width')) || 0
+  const bl = parseFloat(out['border-left-width'] ?? style.getPropertyValue('border-left-width')) || 0
   if (bt === 0 && br === 0 && bb === 0 && bl === 0) {
     // If border-image is being used (even with zero border widths), do NOT force
     // the shorthand `border: none` because it can override the intended rendering.
     // (Decorative border-image + 0 widths is valid CSS in some setups.)
-    const bis = (style.getPropertyValue('border-image-source') || '').trim()
+    const bis = ((out['border-image-source'] !== undefined
+      ? out['border-image-source']
+      : style.getPropertyValue('border-image-source')) || '').trim()
     const hasBorderImage = bis && bis !== 'none'
-    const BORDER_PROPS = [
-      'border', 'border-top', 'border-right', 'border-bottom', 'border-left',
-      'border-width', 'border-style', 'border-color',
-      'border-top-width', 'border-top-style', 'border-top-color',
-      'border-right-width', 'border-right-style', 'border-right-color',
-      'border-bottom-width', 'border-bottom-style', 'border-bottom-color',
-      'border-left-width', 'border-left-style', 'border-left-color',
-      'border-block', 'border-block-width', 'border-block-style', 'border-block-color',
-      'border-inline', 'border-inline-width', 'border-inline-style', 'border-inline-color',
-    ]
     for (const p of BORDER_PROPS) delete out[p]
     if (!hasBorderImage) out['border'] = 'none'
   }
@@ -335,6 +330,21 @@ function usedWidthDiffersFromAvailable(el, cs) {
 }
 
 const __snapshotSig = new WeakMap()
+
+// Hoisted: was an 8-element array allocated per node in stripHeightForWrappers.
+const STRIP_HEIGHT_TAGS = new Set(['div', 'section', 'article', 'main', 'aside', 'header', 'footer', 'nav'])
+
+// Hoisted: was allocated inside the zero-border-width block, which fires for most nodes.
+const BORDER_PROPS = [
+  'border', 'border-top', 'border-right', 'border-bottom', 'border-left',
+  'border-width', 'border-style', 'border-color',
+  'border-top-width', 'border-top-style', 'border-top-color',
+  'border-right-width', 'border-right-style', 'border-right-color',
+  'border-bottom-width', 'border-bottom-style', 'border-bottom-color',
+  'border-left-width', 'border-left-style', 'border-left-color',
+  'border-block', 'border-block-width', 'border-block-style', 'border-block-color',
+  'border-inline', 'border-inline-width', 'border-inline-style', 'border-inline-color',
+]
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
   if (sig) return sig
@@ -616,8 +626,7 @@ function stripHeightForWrappers(el, cs, snap) {
 
   // 2) Solo div/section/article/main/aside/header/footer/nav (no ol/ul/li: layout de listas)
   const tag = el.tagName && el.tagName.toLowerCase()
-  const ALLOWED_TAGS = ['div', 'section', 'article', 'main', 'aside', 'header', 'footer', 'nav']
-  if (!tag || !ALLOWED_TAGS.includes(tag)) return
+  if (!tag || !STRIP_HEIGHT_TAGS.has(tag)) return
 
   // 2c) aspect-ratio define dimensiones derivadas; respetar
   if (cs.aspectRatio && cs.aspectRatio !== 'none' && cs.aspectRatio !== 'auto') return
