@@ -8,8 +8,11 @@ const snapshotKeyCache = new Map()
  *  unique element styles, this Map can grow without bound and leak memory. */
 const MAX_SNAPSHOT_KEY_CACHE = 2000
 let __epoch = 0
+let __structSnapEpoch = -1
 function bumpEpoch() {
   __epoch++
+  __structSnapEpoch = -1
+  __structSnapCache = null
   // Evict when oversized — entries are cheap to rebuild on the next capture.
   if (snapshotKeyCache.size > MAX_SNAPSHOT_KEY_CACHE) snapshotKeyCache.clear()
 }
@@ -353,6 +356,26 @@ function styleSignature(snap) {
   __snapshotSig.set(snap, sig)
   return sig
 }
+// Structural snapshot cache: elements that are structurally identical (same tag, class,
+// inline style, and ancestor chain) are guaranteed to have identical computed styles, so
+// their ~350-property computed snapshot can be computed once and SHARED. In real DOMs the
+// vast majority of nodes are such siblings (e.g. table cells, list items, repeated rows),
+// so this collapses thousands of 350-getPropertyValue snapshots into a handful. The snapshot
+// object is immutable after creation, so sharing it across elements is safe. Keyed by a string
+// derived from the ancestor chain; parents are captured before children during a top-down walk.
+const __structKeyCache = new WeakMap()
+let __structSnapCache = null
+
+function structuralKey(el) {
+  let k = __structKeyCache.get(el)
+  if (k !== undefined) return k
+  const parent = el.parentNode
+  const parentKey = parent && parent.nodeType === 1 ? structuralKey(parent) : ''
+  k = `${parentKey}|${el.tagName}|${el.className}|${el.style ? el.style.cssText : ''}`
+  __structKeyCache.set(el, k)
+  return k
+}
+
 function getSnapshot(el, preStyle = null, options = {}) {
   const rec = snapshotCache.get(el)
   // The snapshot content depends on embedFonts (extra font props) and excludeStyleProps
@@ -362,6 +385,23 @@ function getSnapshot(el, preStyle = null, options = {}) {
   const ef = !!(options && options.embedFonts)
   const ex = (options && options.excludeStyleProps) || null
   if (rec && rec.epoch === __epoch && rec.embedFonts === ef && rec.excludeStyleProps === ex) return rec.snapshot
+  // Structural sharing only applies to the common default-options path: embedFonts/exclude
+  // change the snapshot shape, so fall back to the per-element cache for those.
+  if (!ef && !ex) {
+    if (!__structSnapCache || __structSnapEpoch !== __epoch) {
+      __structSnapCache = new Map()
+      __structSnapEpoch = __epoch
+    }
+    const skey = structuralKey(el)
+    const shared = __structSnapCache.get(skey)
+    if (shared) return shared
+    const style = preStyle || getComputedStyle(el)
+    const snap = snapshotComputedStyleFull(style, options)
+    stripHeightForWrappers(el, style, snap)
+    __structSnapCache.set(skey, snap)
+    snapshotCache.set(el, { epoch: __epoch, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
+    return snap
+  }
   const style = preStyle || getComputedStyle(el)
   const snap = snapshotComputedStyleFull(style, options)
   stripHeightForWrappers(el, style, snap)
