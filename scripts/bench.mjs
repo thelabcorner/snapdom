@@ -98,11 +98,52 @@ async function benchSnapshotFull() {
   return { n: 350, runs, totalMs: total, meanMs: mean }
 }
 
+// Measure delta splice mechanism (§4): clean (reuse all segments) vs dirty (rebuild body, reuse others)
+async function benchDeltaSplice() {
+  // Simulated segment structure: header, body, footer (as in capture.js chunk serialize)
+  const headerSeg = '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="300">'
+  const footerSeg = '</svg>'
+  // Simulate body as a large serialized foreignObject string (~multi-kB payload)
+  const bodyString = 'a'.repeat(50000) + 'b'.repeat(30000)
+  const segments = [headerSeg, bodyString, footerSeg]
+  const runs = 200
+
+  // Clean case: previous segments match current; dirty flags all false
+  const cleanDirty = [false, false, false]
+  const startClean = performance.now()
+  for (let r = 0; r < runs; r++) {
+    const encoded = segments.map((seg, idx) => {
+      const rebuilt = cleanDirty[idx] ? bodyString : seg
+      return rebuilt ? encodeURIComponent(rebuilt) : ''
+    })
+    const combined = encoded.join('')
+  }
+  const cleanTotal = performance.now() - startClean
+
+  // Dirty case: previous body segment differs; body dirty = true, others clean
+  const dirtyDirty = [false, true, false]
+  const rebuiltDirtyBody = bodyString.slice(0, Math.min(100, bodyString.length)) + 'X' + bodyString.slice(100)
+  const startDirty = performance.now()
+  for (let r = 0; r < runs; r++) {
+    const rebuiltDirty = dirtyDirty.map((d, i) => d ? (i === 1 ? rebuiltDirtyBody : segments[i]) : segments[i])
+    const encoded = rebuiltDirty.map((seg, idx) => {
+      const rebuilt = dirtyDirty[idx] ? rebuiltDirty[idx] : seg
+      return rebuilt ? encodeURIComponent(rebuilt) : ''
+    })
+    const combined = encoded.join('')
+  }
+  const dirtyTotal = performance.now() - startDirty
+
+  console.log(`[bench] delta splice: clean (${runs}x) = ${(cleanTotal / runs).toFixed(4)}ms mean; dirty (${runs}x) = ${(dirtyTotal / runs).toFixed(4)}ms mean; overhead = ${(dirtyTotal - cleanTotal).toFixed(2)}ms`)
+  return { runs, cleanMs: cleanTotal / runs, dirtyMs: dirtyTotal / runs }
+}
+
 async function main() {
   console.log('[bench] synthetic benchmark running (no Playwright dependency)')
   await benchStyleKey()
   await benchClipCull()
   await benchSnapshotFull()
+  await benchDeltaSplice()
   console.log('[bench] completed')
 }
 
