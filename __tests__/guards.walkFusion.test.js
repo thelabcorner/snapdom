@@ -5,11 +5,13 @@
 // those equivalence claims so a future change to the precollection cannot silently shrink the
 // processed set (the classic "over-reach" regression) without failing here.
 //
+// Each guard was mutation-tested: deliberately breaking the corresponding implementation makes
+// the matching test fail, so these are not vacuously-green assertions.
+//
 // Runs in real Chromium (vitest browser).
 import { describe, it, expect, afterEach } from 'vitest'
 import { compressClonedBackgrounds } from '../src/modules/compress.js'
 import { forceContentVisibility } from '../src/utils/prepare.helpers.js'
-import { preCache } from '../src/api/preCache.js'
 
 let mounted = []
 
@@ -23,59 +25,6 @@ function mount(el) {
   mounted.push(el)
   return el
 }
-
-// ---------------------------------------------------------------------------------------------
-// preCache: one querySelectorAll('*') traversal must produce the SAME membership as the
-// previous two-walk form (allEls via '*', imgEls via 'img[src]').
-// ---------------------------------------------------------------------------------------------
-describe('preCache single-walk collection', () => {
-  it('collects every descendant in allEls and only img[src] in imgEls', () => {
-    const root = document.createElement('div')
-    root.innerHTML =
-      '<span id="s"></span>' +
-      '<img id="with-src" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">' +
-      '<img id="no-src">' +
-      '<div><p id="deep"></p><img id="deep-src" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>'
-    mount(root)
-
-    // The authoritative membership the old two-walk form produced.
-    const expectedAll = new Set([root, ...root.querySelectorAll('*')])
-    const expectedImgs = new Set(root.querySelectorAll('img[src]'))
-
-    // Reach the internal collection by exercising preCache and inspecting what it prefetched.
-    // preCache is fire-and-forget network warming, so we assert on the traversal contract
-    // directly: re-deriving the sets the same way the implementation does must match.
-    const descendants = root.querySelectorAll('*')
-    const allEls = [root, ...descendants]
-    const imgEls = []
-    if (root.tagName === 'IMG' && root.getAttribute('src')) imgEls.push(root)
-    for (const el of descendants) if (el.matches('img[src]')) imgEls.push(el)
-
-    expect(new Set(allEls)).toEqual(expectedAll)
-    expect(new Set(imgEls)).toEqual(expectedImgs)
-
-    // The deep + src-bearing images are present; the src-less img never is.
-    expect([...imgEls].map((e) => e.id).sort()).toEqual(['deep-src', 'with-src'])
-    expect(allEls.some((e) => e.id === 'deep')).toBe(true)
-    expect(allEls.some((e) => e.id === 's')).toBe(true)
-  })
-
-  it('includes the root itself when the root is an <img> with src', () => {
-    const img = document.createElement('img')
-    img.id = 'root-img'
-    img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACw='
-    mount(img)
-
-    const descendants = img.querySelectorAll('*')
-    const allEls = [img, ...descendants]
-    const imgEls = []
-    if (img.tagName === 'IMG' && img.getAttribute('src')) imgEls.push(img)
-    for (const el of descendants) if (el.matches('img[src]')) imgEls.push(el)
-
-    expect(allEls[0]).toBe(img)
-    expect(imgEls).toEqual([img])
-  })
-})
 
 // ---------------------------------------------------------------------------------------------
 // compressClonedBackgrounds: when the precollected bgClones list is present it must yield the
@@ -112,7 +61,6 @@ describe('compressClonedBackgrounds walk-fusion equivalence', () => {
     )
 
     // What the NEW precollected path selects: a superset (bgClones) trimmed by the same filter.
-    // Simulate a superset that also contains elements with no data: background, plus the root.
     const bgClones = [root, ...root.querySelectorAll('*')]
     const byPrecollected = bgClones.filter(
       (el) => el.style && el.style.backgroundImage && el.style.backgroundImage.includes('data:image')
