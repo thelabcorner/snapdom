@@ -629,7 +629,23 @@ export async function captureDOM(element, options) {
       const segmentDirty = [false, false, false]
       const combinedString = segments.join('')
       svgString = combinedString
-      dataURL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(combinedString)}`
+      // Chunked encode/rebuild (§4): encode per segment; rebuild only dirty segments.
+      // Today dirty flags are always false (behavior-identical), so this path is a no-op
+      // until delta splice activates it. Percent-encoding is a homomorphism over split
+      // at node-level boundaries (no mid-surrogate split), so joining encoded segments
+      // produces the same result as encoding the combined string.
+      const rebuildSegment = (idx) => {
+        if (idx === 1) return foString // body segment rebuilt from clone/style in future cycles
+        if (idx === 0) return segments[0]
+        if (idx === 2) return segments[2]
+        return ''
+      }
+      const encodedSegments = segments.map((seg, idx) => {
+        const rebuilt = segmentDirty[idx] ? rebuildSegment(idx) : seg
+        return rebuilt ? encodeURIComponent(rebuilt) : ''
+      })
+      const combinedEncoded = encodedSegments.join('')
+      dataURL = `data:image/svg+xml;charset=utf-8,${combinedEncoded}`
       state = { svgString, dataURL, segments, segmentDirty, ...state }
       resolve()
     }, { fast })
