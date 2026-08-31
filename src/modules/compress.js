@@ -187,8 +187,30 @@ export async function compressClonedBackgrounds(clone, options, nodeMap = cache.
   if (!options.compress) return { count: 0 }
   const eff = (options.scale || 1) * (options.dpr || 1)
   const els = []
-  // include the root clone itself, then descendants
-  const candidates = [clone, ...clone.querySelectorAll('*')]
+  // walk-fusion: reuse the pre-collected bg-bearing clone list from deepClone when present,
+  // avoiding a full querySelectorAll('*') tree walk. bgClones is populated during deepClone
+  // (clone.js) exactly for elements whose source needsBackgroundInline — which is true whenever
+  // the element has any background-image (incl. a data: URL) — so it is a superset of the
+  // elements that actually carry a data:image background; the filter below trims it to the same
+  // set querySelectorAll('*') would have yielded. Falls back to the walk when _snapdomCollect is
+  // absent.
+  let candidates
+  if (clone._snapdomCollect?.bgClones?.length !== undefined) {
+    const pre = clone._snapdomCollect.bgClones
+    // The root clone may itself bear a data:URL background; querySelectorAll never matches the
+    // root, so the old code prepended it. bgClones includes the root only when needsBackgroundInline
+    // was flagged on the root node — guard for the case where it isn't already in the list.
+    if (
+      clone.style && clone.style.backgroundImage &&
+      clone.style.backgroundImage.includes('data:image') && !pre.includes(clone)
+    ) {
+      candidates = [clone, ...pre]
+    } else {
+      candidates = pre
+    }
+  } else {
+    candidates = [clone, ...clone.querySelectorAll('*')]
+  }
   for (const el of candidates) {
     const bg = el.style && el.style.backgroundImage
     if (bg && bg.includes('data:image')) els.push(el)
