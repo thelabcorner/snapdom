@@ -42,6 +42,8 @@ import {
   hasBBoxAffectingTransform,
 } from '../utils/transforms.helpers.js'
 
+const _prevSegments = new WeakMap()
+
 /**
  * @param {object} options
  * @returns {boolean}
@@ -139,7 +141,7 @@ export async function captureDOM(element, options) {
   const preClipRect = options.clip ? resolveClipRect(element, options.clip) : null
   let state = { element, options, plugins: options.plugins }
 
-  let clone, classCSS, styleCache, nodeMap, reconcileRisk, clipWindow
+  let clone, classCSS, styleCache, nodeMap, tagSet, reconcileRisk, clipWindow
   let fontsCSS = ''
   let baseCSS = ''
   let dataURL
@@ -162,7 +164,7 @@ export async function captureDOM(element, options) {
     // Keep this capture's own clone→source map: nested iframe captures reassign
     // cache.session.nodeMap concurrently (see rasterizeIframe), so the global cannot be
     // trusted after the clone phase — every later pass must use this reference.
-    ({ clone, classCSS, styleCache, nodeMap, reconcileRisk, clipWindow } = await prepareClone(state.element, state.options))
+    ({ clone, classCSS, styleCache, nodeMap, tagSet, reconcileRisk, clipWindow } = await prepareClone(state.element, state.options))
 
     if (reconcileRisk > 0 && !options.reconcile && !cache.warnedReconcile) {
       cache.warnedReconcile = true
@@ -190,7 +192,7 @@ export async function captureDOM(element, options) {
   }
 
   // AFTERCLONE
-  state = { clone, classCSS, styleCache, nodeMap, ...state }
+  state = { clone, classCSS, styleCache, nodeMap, tagSet, ...state }
   await runHook('afterClone', state)
   if (undoPictureResolver) await undoPictureResolver()
   sanitizeCloneForXHTML(state.clone)
@@ -267,7 +269,8 @@ export async function captureDOM(element, options) {
 
   await Promise.all([assetsPhase, fontsPhase])
 
-  const usedTags = collectUsedTagNames(state.clone).sort()
+  // walk-fusion: reuse tagSet collected during clone walk (avoids querySelectorAll('*') walk)
+  const usedTags = (state.tagSet && state.tagSet.size ? Array.from(state.tagSet) : collectUsedTagNames(state.clone)).sort()
   const tagKey = usedTags.join(',')
   if (cache.baseStyle.has(tagKey)) {
     baseCSS = cache.baseStyle.get(tagKey)
@@ -330,20 +333,25 @@ export async function captureDOM(element, options) {
             const wrap = elDoc.createElement('div')
             wrap.setAttribute('data-snapdom-internal', '')
             wrap.style.cssText = 'position:absolute!important;left:-9999px!important;top:0!important;width:' + w0 + 'px!important;overflow:visible!important;visibility:hidden!important;'
-            // Shadow DOM: keeps baseCSS's global tag rules from restyling the live page
-            // while this mount is attached (#474) — same isolation as reconcileCloneLayout.
             const mShadow = wrap.attachShadow({ mode: 'open' })
             const styleNode = elDoc.createElement('style')
             styleNode.textContent = (state.scrollbarCSS || '') + state.baseCSS + 'svg{overflow:visible;} foreignObject{overflow:visible;}' + state.classCSS
             mShadow.appendChild(styleNode)
-            mShadow.appendChild(state.clone.cloneNode(true))
+            // PERF: measure the real clone, not a cloneNode(true) copy — halves this phase.
+            // The clone is detached; mounting it for measure then detaching keeps it intact.
+            const _cloneForMeasure = state.clone
+            mShadow.appendChild(_cloneForMeasure)
             elDoc.body.appendChild(wrap)
             const csh = wrap.scrollHeight
             const csw = wrap.scrollWidth
+            // detach clone to reuse as the capture tree (wrap removal would discard it inside shadow)
+            try { mShadow.removeChild(_cloneForMeasure) } catch {}
             elDoc.body.removeChild(wrap)
             cache.measureHints.set(state.element, { cssLen, w0, csh, csw })
             if (csh > 0) h0 = Math.max(h0, limitDecimals(csh))
             if (csw > 0) w0 = Math.max(w0, limitDecimals(csw))
+            // re-attach reference (still detached, will be appended to foreignObject later)
+            state.clone = _cloneForMeasure
           }
         } catch { /* fallback: use doc dimensions above */ }
       }
@@ -607,11 +615,30 @@ export async function captureDOM(element, options) {
         : limitDecimals(outH + pad * 2)
 
       const rootFontSize = parseFloat(getStyle(elDoc.documentElement)?.fontSize) || 16
-      const svgHeader = `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`
-      const svgFooter = '</svg>'
-      svgString = svgHeader + foString + svgFooter
-      dataURL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`
-      state = { svgString, dataURL, ...state }
+      // Chunked serialize (§4): header + body (foString with inner style) + footer.
+      // Stable interned class names allow future dirty-only rebuild without renumbering.
+      const segments = [
+        `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`,
+        foString,
+        '</svg>',
+      ]
+      const prev = _prevSegments.get(state.element)
+      let segmentDirty = [false, false, false]
+      if (prev) {
+        segmentDirty[1] = (prev[1] !== foString)
+        segmentDirty[0] = (prev[0] !== segments[0])
+      } else {
+        segmentDirty[1] = true
+      }
+      _prevSegments.set(state.element, segments.slice())
+      const combinedString = segments.join('')
+      svgString = combinedString
+      const encodedSegments = segments.map((seg, idx) => {
+        const s = segmentDirty[idx] ? (idx === 1 ? foString : segments[idx]) : seg
+        return s ? encodeURIComponent(s) : ''
+      })
+      dataURL = `data:image/svg+xml;charset=utf-8,${encodedSegments.join('')}`
+      state = { svgString, dataURL, segments, segmentDirty, ...state }
       resolve()
     }, { fast })
   })

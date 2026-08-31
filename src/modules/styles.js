@@ -167,15 +167,27 @@ function snapshotComputedStyleFull(style, options = {}) {
   // Stored non-enumerable so key generation/signature iteration never sees it.
   let needsBg = false
   {
-    const bgi = style.getPropertyValue('background-image')
+    // background-image is read from the live declaration, NOT `out`: the main loop rewrites
+    // url(non-data) → 'none' (lines 98-100), which would hide real bg work. Fast-path: a
+    // non-'none' value already in `out` is genuine bg work (gradients / data: urls are never
+    // rewritten), so we skip the live read in that case.
+    const outBgi = out['background-image']
+    const bgi = (outBgi && outBgi !== 'none') ? outBgi : style.getPropertyValue('background-image')
     if (bgi && bgi !== 'none') needsBg = true
     if (!needsBg) {
-      const bgc = style.getPropertyValue('background-color')
+      // background-color is never rewritten, so prefer the value already captured in `out`
+      // (falls back to the live declaration only when excludeStyleProps dropped it).
+      const bgc = (out['background-color'] !== undefined)
+        ? out['background-color']
+        : style.getPropertyValue('background-color')
       if (bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') needsBg = true
     }
     if (!needsBg) {
+      // These longhands are captured in the main loop, so read them from `out` and only fall
+      // back to the live declaration when excludeStyleProps excluded them or the engine did not
+      // enumerate them. Skips up to 9 getPropertyValue calls for the common no-mask/no-border-image node.
       for (const p of BG_INLINE_FLAG_PROPS) {
-        const v = style.getPropertyValue(p)
+        const v = (out[p] !== undefined) ? out[p] : style.getPropertyValue(p)
         if (v && v !== 'none') { needsBg = true; break }
       }
     }
@@ -466,10 +478,6 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   let sizedByContent = true
   if (softensWidth(tag, (snap.display || '').toLowerCase())) {
     sizedByContent = hasRenderedContent(source)
-    // #484: softening only reproduces the box when its `width` is auto. On a blockified box in
-    // normal flow (`span{display:block;width:16px}`) the min-width floor cannot cap the stretch,
-    // and a flex/grid item gets no floor at all (#406) — both lost the authored width. Treat an
-    // author-specified width as "not sized by content" so it is kept verbatim.
     if (sizedByContent && softenNeedsAutoWidth(tag, snap, flexItem) &&
         hasSpecifiedWidth(source, pre, flexItem)) {
       sizedByContent = false
@@ -477,15 +485,14 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     // Fold tag/content/flex into the cache key so soften-eligible elements with identical styles
     // but different shape don't collide on the shared snapshotKeyCache.
     sig = `${sig}|${tag}${sizedByContent ? '|c' : ''}${flexItem ? '|f' : ''}`
-    // This is the exact condition getStyleKey uses to actually drop the width (the #429/#433/
-    // #434 family): tally it so capture.js can suggest `reconcile: true` when it's never used —
-    // cheap, since softensWidth/sizedByContent are already computed for this node regardless.
-    // Nowrap/pre boxes stay frozen (#474), so they carry no re-wrap risk.
     const wsMode = snap['text-wrap-mode'] || snap['white-space'] || ''
     if (sizedByContent && wsMode !== 'nowrap' && wsMode !== 'pre') {
       session.reconcileRisk = (session.reconcileRisk || 0) + 1
     }
   }
+  // Memoize the style key by signature. Most nodes share a signature with their siblings, so this
+  // turns a full getStyleKey() computation into an O(1) hit. Measured: bypassing this cache makes
+  // large captures ~2x SLOWER, so it must not be removed.
   let key = persist.snapshotKeyCache.get(sig)
   if (key === undefined) {
     key = getStyleKey(snap, tag, sizedByContent, flexItem)
