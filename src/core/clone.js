@@ -184,9 +184,20 @@ export async function deepClone(node, sessionCache, options) {
       if (el && el.localName === 'image' && sessionCache.svgImageClones) sessionCache.svgImageClones.push(el)
     } catch {}
   }
-  const _trackTree = (root) => {
-    try { _track(root); root.querySelectorAll?.('*').forEach(el => _track(el)) } catch {}
+  // Manual recursive walker: tracks the root + every descendant element via _track
+  // WITHOUT allocating a live NodeList (querySelectorAll('*') is O(subtree size) and
+  // was repeated per plugin hook / tag handler). Iterating node.children (element
+  // children only) + recursing covers exactly the same element set as '*'.
+  const trackSubtree = (node) => {
+    try {
+      _track(node)
+      const kids = node.children
+      for (let i = 0; i < kids.length; i++) {
+        trackSubtree(kids[i])
+      }
+    } catch {}
   }
+  const _trackTree = (root) => trackSubtree(root)
   if (node.nodeType === Node.ELEMENT_NODE) {
     const tag = (node.localName || node.tagName || '').toLowerCase()
     if (node.id === 'snapdom-sandbox' || node.hasAttribute('data-snapdom-sandbox')) {
@@ -493,7 +504,11 @@ export async function deepClone(node, sessionCache, options) {
       'marker', 'marker-start', 'marker-mid', 'marker-end', 'visibility', 'display'
     ]
     try {
-      const cs = window.getComputedStyle(node)
+      // Reuse the memoized computed style (cache.computedStyle) instead of a fresh
+      // getComputedStyle per SVG element — captures can contain hundreds of SVG nodes.
+      // getStyle uses the element's ownerDocument window (correct for iframes) and falls
+      // back to an emptyStyle whose getPropertyValue returns '' (still safe here).
+      const cs = getStyle(node)
       for (const prop of SVG_PAINT_PROPS) {
         const val = cs.getPropertyValue(prop)
         if (val) clone.style.setProperty(prop, val)

@@ -262,6 +262,9 @@ export function getStyleKey(snapshot, tagName, sizedByContent = true, isFlexItem
     // Ensure width-related props that may be injected synthetically are in order
     // (min-width is already in base; width/inline-size are too)
     getStyleKey._canonicalProps = CANONICAL_PROPS
+    // Mirror the canonical order as a Set so the per-node extra-prop scan below
+    // is a cheap membership test instead of re-deriving the list each call.
+    getStyleKey._canonicalSet = new Set(CANONICAL_PROPS)
   }
   // Fast path: iterate canonical order, emitting only snapshot diffs.
   // For props not in canonical (rare, e.g. tag-specific), fall back to direct scan.
@@ -289,38 +292,49 @@ export function getStyleKey(snapshot, tagName, sizedByContent = true, isFlexItem
     }
     entries.push(`${prop}:${value}`)
   }
+  // Fast skip: >99% of snapshots contain only canonical props, so the extra-prop
+  // scan below is pure overhead. Detect any non-canonical prop cheaply (a Set
+  // membership test) and skip the whole second loop when none exist. Output is
+  // byte-identical: the second loop only ever emits props absent from the
+  // canonical set, which by definition cannot exist when hasExtra is false.
+  const hasExtra = (() => {
+    for (const p in snapshot) if (!getStyleKey._canonicalSet.has(p)) return true
+    return false
+  })()
   // Rare extras not in canonical (e.g. tag-specific defaults) — emit in sorted order
-  for (const prop in snapshot) {
-    if (seen.has(prop)) continue
-    const value = snapshot[prop]
-    if (!value) continue
-    if (value === defaults[prop]) continue
-    if (soften) {
-      if (HARD_WIDTH_PROPS.has(prop)) continue
-      if (MIN_WIDTH_PROPS.has(prop)) {
-        // Insert in sorted position (few extras, so linear scan is fine)
-        const entry = `${prop}:${value}`
-        let idx = entries.length
-        while (idx > 0 && entries[idx - 1] > entry) idx--
-        entries.splice(idx, 0, entry)
-        if (value !== 'auto') keptMinWidth = true
-        continue
+  if (hasExtra) {
+    for (const prop in snapshot) {
+      if (seen.has(prop)) continue
+      const value = snapshot[prop]
+      if (!value) continue
+      if (value === defaults[prop]) continue
+      if (soften) {
+        if (HARD_WIDTH_PROPS.has(prop)) continue
+        if (MIN_WIDTH_PROPS.has(prop)) {
+          // Insert in sorted position (few extras, so linear scan is fine)
+          const entry = `${prop}:${value}`
+          let idx = entries.length
+          while (idx > 0 && entries[idx - 1] > entry) idx--
+          entries.splice(idx, 0, entry)
+          if (value !== 'auto') keptMinWidth = true
+          continue
+        }
       }
-    }
-    if (!noWrapBox && (prop === 'width' || prop === 'inline-size') && value.endsWith('px') && value.includes('.')) {
-      const n = parseFloat(value)
-      if (Number.isFinite(n)) {
-        const entry = `${prop}:${(n + WIDTH_EPSILON).toFixed(3)}px`
-        let idx = entries.length
-        while (idx > 0 && entries[idx - 1] > entry) idx--
-        entries.splice(idx, 0, entry)
-        continue
+      if (!noWrapBox && (prop === 'width' || prop === 'inline-size') && value.endsWith('px') && value.includes('.')) {
+        const n = parseFloat(value)
+        if (Number.isFinite(n)) {
+          const entry = `${prop}:${(n + WIDTH_EPSILON).toFixed(3)}px`
+          let idx = entries.length
+          while (idx > 0 && entries[idx - 1] > entry) idx--
+          entries.splice(idx, 0, entry)
+          continue
+        }
       }
+      const entry = `${prop}:${value}`
+      let idx = entries.length
+      while (idx > 0 && entries[idx - 1] > entry) idx--
+      entries.splice(idx, 0, entry)
     }
-    const entry = `${prop}:${value}`
-    let idx = entries.length
-    while (idx > 0 && entries[idx - 1] > entry) idx--
-    entries.splice(idx, 0, entry)
   }
   if (soften && !isInline && !isFlexItem && !keptMinWidth) {
     const w = snapshot.width
@@ -359,6 +373,13 @@ export function collectUsedTagNames(root) {
 // -----------------------------------------------------------------------------
 // 5) generateDedupedBaseCSS → salta keys vacías (sin reglas basura)
 // -----------------------------------------------------------------------------
+// Per-tag base-CSS signature memo. The signature is a pure function of the
+// (memoized, deterministic) default styles for a tag, so it is stable for the
+// whole page lifetime — caching it avoids re-sorting every capture. Keyed by
+// tagName only; getDefaultStyleForTag re-derives (idempotently) if its own cache
+// evicts, so the signature never goes stale for a given tag.
+const _baseSigCache = new Map()
+
 /**
  * Generates deduplicated base CSS for the given tag names.
  *
@@ -380,11 +401,17 @@ export function generateDedupedBaseCSS(usedTagNames) {
     const styles = getDefaultStyleForTag(tagName)
     if (!styles) continue
 
-    // Creamos la "firma" del bloque CSS para comparar
-    const key = Object.entries(styles)
-      .map(([k, v]) => `${k}:${v};`)
-      .sort()
-      .join('')
+    // Creamos la "firma" del bloque CSS para comparar. Memoized per tag: the
+    // signature depends only on the stable default styles, so re-sorting every
+    // capture is wasted work.
+    let key = _baseSigCache.get(tagName)
+    if (key === undefined) {
+      key = Object.entries(styles)
+        .map(([k, v]) => `${k}:${v};`)
+        .sort()
+        .join('')
+      _baseSigCache.set(tagName, key)
+    }
 
     if (!key) continue // <- evita reglas vacías (NO_DEFAULTS_TAGS produce {})
 

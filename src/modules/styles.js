@@ -167,15 +167,27 @@ function snapshotComputedStyleFull(style, options = {}) {
   // Stored non-enumerable so key generation/signature iteration never sees it.
   let needsBg = false
   {
-    const bgi = style.getPropertyValue('background-image')
+    // background-image is read from the live declaration, NOT `out`: the main loop rewrites
+    // url(non-data) → 'none' (lines 98-100), which would hide real bg work. Fast-path: a
+    // non-'none' value already in `out` is genuine bg work (gradients / data: urls are never
+    // rewritten), so we skip the live read in that case.
+    const outBgi = out['background-image']
+    const bgi = (outBgi && outBgi !== 'none') ? outBgi : style.getPropertyValue('background-image')
     if (bgi && bgi !== 'none') needsBg = true
     if (!needsBg) {
-      const bgc = style.getPropertyValue('background-color')
+      // background-color is never rewritten, so prefer the value already captured in `out`
+      // (falls back to the live declaration only when excludeStyleProps dropped it).
+      const bgc = (out['background-color'] !== undefined)
+        ? out['background-color']
+        : style.getPropertyValue('background-color')
       if (bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') needsBg = true
     }
     if (!needsBg) {
+      // These longhands are captured in the main loop, so read them from `out` and only fall
+      // back to the live declaration when excludeStyleProps excluded them or the engine did not
+      // enumerate them. Skips up to 9 getPropertyValue calls for the common no-mask/no-border-image node.
       for (const p of BG_INLINE_FLAG_PROPS) {
-        const v = style.getPropertyValue(p)
+        const v = (out[p] !== undefined) ? out[p] : style.getPropertyValue(p)
         if (v && v !== 'none') { needsBg = true; break }
       }
     }

@@ -279,9 +279,9 @@ export async function prepareClone(element, options = {}) {
     }
   }
 
-  // Walk-fusion + O(n·s) fix: collect scrolled nodes once, create wrappers, then
-  // adjust positioned descendants in a single tree walk. Formerly each scrolled
-  // node did cloneNode.querySelectorAll('*') → O(n·s).
+  // Walk-fusion + O(n) fix: collect scrolled nodes once, create wrappers, then
+  // adjust positioned descendants in a single tree walk (see below). Formerly
+  // each scrolled node did cloneNode.querySelectorAll('*') → O(n·s).
   const _scrolledMap = new Map()
   const _scrolledNodes = []
   for (const [cloneNode, originalNode] of sessionCache.nodeMap.entries()) {
@@ -304,29 +304,40 @@ export async function prepareClone(element, options = {}) {
       cloneNode.appendChild(inner)
     }
   }
-  // Single-pass positioned fix: for each fixed/absolute descendant, walk ancestors
-  // summing all scrolled offsets (handles nested scrolled containers correctly).
+  // Single-pass positioned fix: ONE tree walk threads a running accumulator of
+  // scrolled-ancestor offsets (O(n) total) instead of querySelectorAll('*') plus
+  // a per-element ancestor walk (O(n·depth)). For each fixed/absolute XHTML
+  // descendant, addX/addY = sum of _scrolledMap offsets over every ancestor up to
+  // and including the clone root — identical to the old ancestor walk. The clone
+  // root itself is never a candidate (querySelectorAll('*') returns descendants
+  // only), but its own offset seeds the accumulator so descendants include it.
   if (_scrolledMap.size && clone?.nodeType === 1) {
     try {
-      const cands = clone.querySelectorAll('*')
-      for (const el of cands) {
-        if (el.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
-        const pos = el.style.position
-        if (pos !== 'fixed' && pos !== 'absolute') continue
-        let addX = 0, addY = 0
-        let cur = el.parentElement
-        while (cur) {
-          const s = _scrolledMap.get(cur)
-          if (s) { addX += s.x; addY += s.y }
-          if (cur === clone) break
-          cur = cur.parentElement
+      const XHTML = 'http://www.w3.org/1999/xhtml'
+      const rootS = _scrolledMap.get(clone)
+      let startX = 0, startY = 0
+      if (rootS) { startX = rootS.x; startY = rootS.y }
+      const stack = []
+      for (const child of clone.children) stack.push([child, startX, startY])
+      while (stack.length) {
+        const [node, accX, accY] = stack.pop()
+        if (node.namespaceURI === XHTML) {
+          const pos = node.style.position
+          if (pos === 'fixed' || pos === 'absolute') {
+            if (accX || accY) {
+              const curTop = parseFloat(node.style.top) || 0
+              const curLeft = parseFloat(node.style.left) || 0
+              node.style.top = `${curTop + accY}px`
+              node.style.left = `${curLeft + accX}px`
+              if (pos === 'fixed') node.style.position = 'absolute'
+            }
+          }
         }
-        if (addX || addY) {
-          const curTop = parseFloat(el.style.top) || 0
-          const curLeft = parseFloat(el.style.left) || 0
-          el.style.top = `${curTop + addY}px`
-          el.style.left = `${curLeft + addX}px`
-          if (pos === 'fixed') el.style.position = 'absolute'
+        const s = _scrolledMap.get(node)
+        const childAccX = accX + (s ? s.x : 0)
+        const childAccY = accY + (s ? s.y : 0)
+        for (let i = node.children.length - 1; i >= 0; i--) {
+          stack.push([node.children[i], childAccX, childAccY])
         }
       }
     } catch { /* non-blocking */ }

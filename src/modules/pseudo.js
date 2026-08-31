@@ -30,6 +30,14 @@ const __preflightMemo = new WeakMap()
  *  300 was too low for large apps (Tailwind, MUI) with 500+ utility rules — raised to 1000. */
 const CSS_RULE_SCAN_BUDGET = 1000
 
+/** The pseudo-element kinds we inline, in paint order. Hoisted so the per-node
+ *  recursion loop doesn't re-allocate the array for every one of the thousands
+ *  of elements it visits. */
+const PSEUDO_LIST = ['::before', '::after', '::first-letter']
+
+/** Border sides, hoisted out of hasPaintedBorder (called up to twice per element). */
+const BORDER_SIDES = ['Top', 'Right', 'Bottom', 'Left']
+
 /**
  * Returns whether to process pseudos, but also memoizes the last fingerprint
  * seen in the provided sessionCache to avoid stale results between tests/runs.
@@ -228,7 +236,7 @@ export function shouldProcessPseudos(doc = document, fp = styleFingerprint(doc))
  * @returns {boolean}
  */
 function hasPaintedBorder(style) {
-  for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+  for (const side of BORDER_SIDES) {
     const w = parseFloat(style[`border${side}Width`]) || 0
     const s = style[`border${side}Style`]
     if (w > 0 && s && s !== 'none' && s !== 'hidden') return true
@@ -450,7 +458,7 @@ export async function inlinePseudoElements(source, clone, sessionCache, options)
   // <span> (as the ::first-letter path does) drops them from the rendered value.
   // Browsers don't render pseudo-elements on textarea anyway.
   if (source.tagName === 'TEXTAREA') return
-  // --- NEW: preflight once per session/doc ---
+  // --- Preflight once per session/doc ---
   const doc = source.ownerDocument || document
   if (!preflightWithFp(doc, sessionCache)) {
     return
@@ -470,8 +478,19 @@ export async function inlinePseudoElements(source, clone, sessionCache, options)
   }
   const counterCtx = sessionCache.__counterCtx
 
-  for (const pseudo of ['::before', '::after', '::first-letter']) {
+  for (const pseudo of PSEUDO_LIST) {
     try {
+      // ::first-letter can only wrap a DIRECT non-empty text node. Detect that cheaply
+      // (clone is detached — no style read) so we skip its pseudo getComputedStyle on the
+      // common case of elements without direct text.
+      let firstLetterTextNode = null
+      if (pseudo === '::first-letter') {
+        firstLetterTextNode = Array.from(clone.childNodes).find(
+          (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim().length > 0
+        )
+        if (!firstLetterTextNode) continue
+      }
+
       const style = getStyle(source, pseudo)
       if (!style) continue
       // Skip visually empty pseudo-elements early
@@ -510,11 +529,7 @@ export async function inlinePseudoElements(source, clone, sessionCache, options)
           boxDiff('marginBottom') || boxDiff('marginLeft')
         if (!isMeaningful) continue
 
-        const textNode = Array.from(clone.childNodes).find(
-          (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim().length > 0
-        )
-        if (!textNode) continue
-
+        const textNode = firstLetterTextNode
         const text = textNode.textContent
         const match = text.match(/^([^\p{L}\p{N}\s]*[\p{L}\p{N}](?:['’])?)/u)
         const first = match?.[0]
@@ -587,7 +602,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
             // reconstruir valor final desde derived: volvemos a pedirlo
             // Usamos withSiblingOverrides + derive para ser consistentes
             const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-            const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
+            const derived = deriveCounterCtxForPseudo(source, style, baseWithSibs)
             const finalVal = derived.get(source, name)
             map.set(name, finalVal)
           }
@@ -712,7 +727,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       if (incs && incs.length && source.parentElement) {
         const map = sessionCache.__siblingCounters.get(source.parentElement) || new Map()
         const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-        const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
+        const derived = deriveCounterCtxForPseudo(source, style, baseWithSibs)
         for (const { name } of incs) {
           if (!name) continue
           const finalVal = derived.get(source, name)

@@ -469,6 +469,7 @@ export function sanitizeCloneForXHTML(root, opts = {}) {
   // Fused single-pass sanitize: was 3 TreeWalkers (attributes, comments, invalid XML)
   // Now one walk over element+comment+text, handling all in place.
   const ALLOWED_PREFIXES = new Set(['xml', 'xlink'])
+  const stripDirectives = opts.stripFrameworkDirectives !== false
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT)
   const toRemoveComments = []
   // Also need to handle root itself for attributes/text
@@ -478,6 +479,9 @@ export function sanitizeCloneForXHTML(root, opts = {}) {
       return
     }
     if (node.nodeType === Node.ELEMENT_NODE) {
+      // Single pass over a materialized copy: safe to removeAttribute while iterating
+      // the snapshot, and a removed attribute is skipped for value sanitization —
+      // identical to the old two-loop version where the value pass only saw survivors.
       for (const attr of Array.from(node.attributes)) {
         const name = attr.name
         if (name.startsWith('*') || name.includes('@')) { node.removeAttribute(name); continue }
@@ -485,15 +489,13 @@ export function sanitizeCloneForXHTML(root, opts = {}) {
           const prefix = name.split(':', 1)[0]
           if (!ALLOWED_PREFIXES.has(prefix)) { node.removeAttribute(name); continue }
         }
-        if (opts.stripFrameworkDirectives !== false) {
+        if (stripDirectives) {
           if (name.startsWith('x-') || name.startsWith('v-') || name.startsWith(':') ||
               name.startsWith('on:') || name.startsWith('bind:') || name.startsWith('let:') || name.startsWith('class:')) {
             node.removeAttribute(name); continue
           }
         }
-      }
-      // Also sanitize attribute values and text in same pass (stripInvalidXMLChars)
-      for (const attr of Array.from(node.attributes)) {
+        // Attribute survived the name checks — sanitize its value in the same pass.
         const cv = attr.value.replace(INVALID_XML_CHARS, '')
         if (cv !== attr.value) try { node.setAttribute(attr.name, cv) } catch {}
       }

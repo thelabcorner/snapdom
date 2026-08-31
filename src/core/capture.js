@@ -42,6 +42,8 @@ import {
   hasBBoxAffectingTransform,
 } from '../utils/transforms.helpers.js'
 
+const _prevSegments = new WeakMap()
+
 /**
  * @param {object} options
  * @returns {boolean}
@@ -613,14 +615,8 @@ export async function captureDOM(element, options) {
         : limitDecimals(outH + pad * 2)
 
       const rootFontSize = parseFloat(getStyle(elDoc.documentElement)?.fontSize) || 16
-      // Chunked serialize structure (§4): split SVG into independently reusable segments.
-      // Header (geometry), style block (patchable class rules), body (clone content), footer.
-      // Dirty tracking per segment enables future delta splice: only rebuild dirty chunks,
-      // merge unchanged encoded segments, and join. Keeps behavior identical today.
-      // Chunked serialize structure (§4): split SVG into independently reusable segments.
-      // Today behavior-identical: header + body (foString, which includes inner style) + footer.
-      // Style rules are stable (interned class names) so future dirty tracking only rebuilds
-      // the generated-class segment without renumbering every other segment.
+      // Chunked serialize (§4): header + body (foString with inner style) + footer.
+      // Stable interned class names allow future dirty-only rebuild without renumbering.
       const segments = [
         `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`,
         foString,
@@ -632,23 +628,16 @@ export async function captureDOM(element, options) {
         segmentDirty[1] = (prev[1] !== foString)
         segmentDirty[0] = (prev[0] !== segments[0])
       } else {
-        segmentDirty[1] = true // first capture: treat body dirty for future comparison base
+        segmentDirty[1] = true
       }
       _prevSegments.set(state.element, segments.slice())
       const combinedString = segments.join('')
       svgString = combinedString
-      const rebuildSegment = (idx) => {
-        if (idx === 1) return foString
-        if (idx === 0) return segments[0]
-        if (idx === 2) return segments[2]
-        return ''
-      }
       const encodedSegments = segments.map((seg, idx) => {
-        const rebuilt = segmentDirty[idx] ? rebuildSegment(idx) : seg
-        return rebuilt ? encodeURIComponent(rebuilt) : ''
+        const s = segmentDirty[idx] ? (idx === 1 ? foString : segments[idx]) : seg
+        return s ? encodeURIComponent(s) : ''
       })
-      const combinedEncoded = encodedSegments.join('')
-      dataURL = `data:image/svg+xml;charset=utf-8,${combinedEncoded}`
+      dataURL = `data:image/svg+xml;charset=utf-8,${encodedSegments.join('')}`
       state = { svgString, dataURL, segments, segmentDirty, ...state }
       resolve()
     }, { fast })
@@ -664,7 +653,3 @@ export async function captureDOM(element, options) {
 function hasTFBBox(el) {
   return hasBBoxAffectingTransform(el)
 }
-
-// Chunk-encode/rebuild (§4): compare current segments with previous capture's segments
-// (keyed by the live element) to determine dirty state. Only the first activation step.
-const _prevSegments = new WeakMap()
