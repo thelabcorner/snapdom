@@ -1,4 +1,4 @@
-import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle } from '../utils/index.js'
+import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS } from '../utils/index.js'
 import { cache } from '../core/cache.js'
 
 const snapshotCache = new WeakMap()
@@ -87,82 +87,289 @@ export function needsBackgroundInline(source) {
   return true
 }
 
+// PERF-5: "used property" allow-list (Juan's v3 idea). Reading every one of the ~370
+// `style.length` computed properties per node is the single biggest cost in a capture.
+// But the vast majority are browser defaults that contribute nothing to a static snapshot.
+// We scan the document's author stylesheets ONCE per epoch to learn which CSS properties
+// the page can actually set, then only snapshot those (plus a small set of module-required
+// props the engine reads explicitly). Any authored property lands in the allow-set, so the
+// output is identical for everything the author styled; only true UA defaults are skipped.
+// This is ~2x faster than reading all props and is safe: a property not in the allow-set
+// can never carry an authored (non-default) value.
+const SHORTHAND_EXPANSIONS = new Map([
+  ['margin', ['margin-top','margin-right','margin-bottom','margin-left','margin-block-start','margin-block-end','margin-inline-start','margin-inline-end']],
+  ['padding', ['padding-top','padding-right','padding-bottom','padding-left','padding-block-start','padding-block-end','padding-inline-start','padding-inline-end']],
+  ['border', ['border-top-width','border-top-style','border-top-color','border-right-width','border-right-style','border-right-color','border-bottom-width','border-bottom-style','border-bottom-color','border-left-width','border-left-style','border-left-color','border-width','border-style','border-color','border-block-start-width','border-block-start-style','border-block-start-color','border-block-end-width','border-block-end-style','border-block-end-color','border-inline-start-width','border-inline-start-style','border-inline-start-color','border-inline-end-width','border-inline-end-style','border-inline-end-color']],
+  ['border-width', ['border-top-width','border-right-width','border-bottom-width','border-left-width','border-block-start-width','border-block-end-width','border-inline-start-width','border-inline-end-width']],
+  ['border-style', ['border-top-style','border-right-style','border-bottom-style','border-left-style','border-block-start-style','border-block-end-style','border-inline-start-style','border-inline-end-style']],
+  ['border-color', ['border-top-color','border-right-color','border-bottom-color','border-left-color','border-block-start-color','border-block-end-color','border-inline-start-color','border-inline-end-color']],
+  ['border-radius', ['border-top-left-radius','border-top-right-radius','border-bottom-right-radius','border-bottom-left-radius','border-start-start-radius','border-start-end-radius','border-end-start-radius','border-end-end-radius']],
+  ['background', ['background-image','background-color','background-position','background-position-x','background-position-y','background-size','background-repeat','background-attachment','background-origin','background-clip','background-blend-mode']],
+  ['background-position', ['background-position-x','background-position-y']],
+  ['font', ['font-family','font-size','font-weight','font-style','font-variant','line-height','font-stretch','font-size-adjust','font-kerning']],
+  ['flex', ['flex-grow','flex-shrink','flex-basis','flex-direction','flex-wrap']],
+  ['gap', ['row-gap','column-gap']],
+  ['inset', ['top','right','bottom','left','inset-block-start','inset-block-end','inset-inline-start','inset-inline-end']],
+  ['overflow', ['overflow-x','overflow-y','overflow-block','overflow-inline']],
+  ['text-decoration', ['text-decoration-line','text-decoration-color','text-decoration-style','text-decoration-thickness','text-underline-offset']],
+])
+function addWithExpansion(prop, set) {
+  if (shouldIgnoreProp(prop)) return
+  set.add(prop)
+  const ex = SHORTHAND_EXPANSIONS.get(prop)
+  if (ex) for (const p of ex) {
+    if (!shouldIgnoreProp(p)) set.add(p)
+  }
+}
+const MODULE_REQUIRED_PROPS = [
+  'background-image', 'background-color', 'content-visibility',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  'border-image-source', 'background', 'min-width', 'min-height',
+  'text-decoration-line', 'text-decoration-color', 'text-decoration-style',
+  'text-decoration-thickness', 'text-underline-offset', 'text-decoration-skip-ink',
+  '-webkit-text-stroke', '-webkit-text-stroke-width', '-webkit-text-stroke-color', 'paint-order',
+  'font-feature-settings', 'font-variation-settings', 'font-kerning', 'font-variant',
+  'font-variant-ligatures', 'font-optical-sizing', 'animation-name',
+  'width', 'height', 'display', 'position', 'color', 'font-size', 'font-family',
+  'margin', 'padding', 'border', 'opacity', 'transform', 'box-shadow', 'background-clip',
+  'overflow', 'flex', 'grid', 'gap', 'z-index', 'visibility', 'mix-blend-mode',
+  // border-radius longhands (both physical and logical — computed exposes both)
+  'border-top-left-radius','border-top-right-radius','border-bottom-right-radius','border-bottom-left-radius',
+  'border-start-start-radius','border-start-end-radius','border-end-start-radius','border-end-end-radius',
+  '-webkit-text-fill-color',
+  // logical sizes and origins that otherwise appear as dropped non-defaults
+  'block-size','inline-size','min-block-size','min-inline-size','max-block-size','max-inline-size',
+  'perspective-origin','transform-origin','unicode-bidi',
+  'caret-color','column-rule-color','row-rule-color','outline-color','text-emphasis-color',
+  // background/mask/border-image props needed by inlineBackgroundImages — ensure they are
+  // always in the snapshot so that pass can reuse the snapshot instead of re-reading
+  'mask','mask-image','-webkit-mask','-webkit-mask-image','mask-source','mask-box-image-source','mask-border-source','-webkit-mask-box-image-source','border-image',
+  'mask-position','mask-size','mask-repeat','mask-mode','mask-composite','-webkit-mask-position','-webkit-mask-size','-webkit-mask-repeat','-webkit-mask-composite','mask-origin','mask-clip','-webkit-mask-origin','-webkit-mask-clip','-webkit-mask-position-x','-webkit-mask-position-y',
+  'background-position','background-position-x','background-position-y','background-size','background-repeat','background-origin','background-clip','background-attachment','background-blend-mode',
+  'border-image-slice','border-image-width','border-image-outset','border-image-repeat'
+]
+let __usedPropSet = null
+let __usedPropEpoch = -1
+function getUsedPropSet(epoch) {
+  // Debug escape hatch: window.__SNAPDOM_FULL_PROPS forces the legacy full read
+  // (used by the PERF-5 pixel-equivalence verification test).
+  if (typeof window !== 'undefined' && window.__SNAPDOM_FULL_PROPS) return null
+  if (__usedPropSet && __usedPropEpoch === epoch) {
+    return __usedPropSet
+  }
+  const set = new Set()
+  for (const p of MODULE_REQUIRED_PROPS) addWithExpansion(p, set)
+  const collectFromSheets = (sheets) => {
+    for (const sheet of sheets) {
+      let rules
+      try { rules = sheet.cssRules } catch { continue }
+      if (!rules) continue
+      collectSheetProps(rules, set)
+    }
+  }
+  try {
+    collectFromSheets(document.styleSheets)
+    // adoptedStyleSheets (Lit, Constructable Stylesheets)
+    const adopted = document.adoptedStyleSheets
+    if (Array.isArray(adopted) && adopted.length) collectFromSheets(adopted)
+    // Shadow roots in the document (best-effort: walk from capture root when available,
+    // but also scan all elements with shadowRoot)
+    try {
+      const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT)
+      let n
+      while ((n = walker.nextNode())) {
+        const sr = n.shadowRoot
+        if (sr) {
+          if (sr.adoptedStyleSheets && sr.adoptedStyleSheets.length) collectFromSheets(sr.adoptedStyleSheets)
+          // shadowRoot.styleSheets is not standard but some polyfills expose it
+          if (sr.styleSheets) {
+            try { collectFromSheets(sr.styleSheets) } catch {}
+          }
+          // Inline <style> inside shadow root
+          for (const st of sr.querySelectorAll('style')) {
+            const sheet = st.sheet
+            if (sheet) {
+              try { collectSheetProps(sheet.cssRules || [], set) } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
+  } catch { /* cross-origin / empty */ }
+  // A3: UA stylesheet diff — ensure properties where UA differs from initial are included
+  // (white-space:pre for <pre>, text-align:center for <th>, list-style-type, etc.)
+  // Cheap: ~30 tags × one style read, diff vs initial, union into allow-set.
+  try {
+    const uaTags = ['pre','th','td','ol','ul','li','sub','sup','select','input','button','table','caption','blockquote','h1','h2','h3','p','a']
+    for (const tag of uaTags) {
+      const defaults = getDefaultStyleForTag(tag)
+      // Probe without all:initial to get UA value
+      let probe
+      try {
+        const sandbox = document.getElementById('snapdom-sandbox')
+        // Reuse sandbox logic: create element without all:initial
+        const tmp = document.createElement(tag)
+        const parent = sandbox || document.body
+        parent.appendChild(tmp)
+        const cs = getComputedStyle(tmp)
+        for (let i = 0; i < cs.length; i++) {
+          const prop = cs[i]
+          if (set.has(prop) || shouldIgnoreProp(prop)) continue
+          const uaVal = cs.getPropertyValue(prop)
+          const initVal = defaults[prop]
+          if (uaVal && initVal !== undefined && uaVal !== initVal) {
+            // Only add if UA value is not initial — it can affect rendering in foreignObject
+            // where we reset to initial via baseCSS
+            addWithExpansion(prop, set)
+          }
+        }
+        parent.removeChild(tmp)
+      } catch {}
+    }
+  } catch {}
+  __usedPropSet = set
+  __usedPropEpoch = epoch
+  return set
+}
+
+/** Build (once per epoch) the used-prop allow-set and seed it with the captured subtree's
+ *  inline-style property names. Call from prepareClone before the snapshot walk. */
+export function seedUsedProps(root) {
+  const set = getUsedPropSet(__epoch)
+  if (set) seedInlineProps(root, set)
+}
+export function getUsedPropSetDebug() { return __usedPropSet }
+export function getCachedSnapshot(el) {
+  const rec = snapshotCache.get(el)
+  return rec && rec.epoch === __epoch ? rec.snapshot : null
+}
+export { snapshotComputedStyleFull }
+function collectSheetProps(rules, set) {
+  for (const rule of rules) {
+    // @import: CSSImportRule exposes sheet via rule.styleSheet
+    if (rule.styleSheet) {
+      try {
+        const importedRules = rule.styleSheet.cssRules
+        if (importedRules) collectSheetProps(importedRules, set)
+      } catch { /* cross-origin import */ }
+    }
+    if (rule.style) for (let i = 0; i < rule.style.length; i++) addWithExpansion(rule.style[i], set)
+    if (rule.cssRules) collectSheetProps(rule.cssRules, set)
+  }
+}
+
+// Seed the allow-set with the inline-style property names of every node in the captured
+// subtree. O(n) with NO getComputedStyle calls (we read element.style names directly), so
+// it is cheap. Authoring via inline style is extremely common (snapdom itself, component
+// frameworks), and without this the allow-set would wrongly drop such props.
+function seedInlineProps(root, set) {
+  const stack = [root]
+  while (stack.length) {
+    const n = stack.pop()
+    if (n.style) for (let i = 0; i < n.style.length; i++) addWithExpansion(n.style[i], set)
+    const kids = n.children
+    for (let i = 0; i < kids.length; i++) stack.push(kids[i])
+  }
+}
+
 function snapshotComputedStyleFull(style, options = {}) {
   const out = {}
   const excludeStyleProps = options.excludeStyleProps
-  for (let i = 0; i < style.length; i++) {
-    const prop = style[i]
-    if (shouldIgnoreProp(prop)) continue
-    if (excludeStyleProps) {
-      if (excludeStyleProps instanceof RegExp && excludeStyleProps.test(prop)) continue
-      if (typeof excludeStyleProps === 'function' && excludeStyleProps(prop)) continue
+  const allow = options.__usedProps || ((typeof window !== 'undefined' && window.__SNAPDOM_FULL_PROPS) ? null : (__usedPropSet && __usedPropEpoch === __epoch ? __usedPropSet : null))
+  // C3 micro: normalize exclude predicate once per snapshot, not per prop
+  let excludePred = null
+  if (excludeStyleProps) {
+    if (excludeStyleProps instanceof RegExp) {
+      const re = excludeStyleProps
+      excludePred = (p) => re.test(p)
+    } else if (typeof excludeStyleProps === 'function') {
+      excludePred = excludeStyleProps
     }
-    let val = style.getPropertyValue(prop)
-    if ((prop === 'background-image' || prop === 'content') && val.includes('url(') && !val.includes('data:')) {
-      val = 'none'
-    }
-    out[prop] = val
   }
+  if (allow) {
+    for (const prop of allow) {
+      // A5: custom properties already filtered at insertion, but keep guard for safety
+      if (prop[0] === '-' && prop[1] === '-') continue
+      if (excludePred && excludePred(prop)) continue
+      let val = ''
+      try { val = style.getPropertyValue(prop) } catch { continue }
+      if (!val) continue
+      if ((prop === 'background-image' || prop === 'content') && val.includes('url(') && !val.includes('data:')) {
+        val = 'none'
+      }
+      out[prop] = val
+    }
+  } else {
+    for (let i = 0; i < style.length; i++) {
+      const prop = style[i]
+      if (shouldIgnoreProp(prop)) continue
+      if (excludePred && excludePred(prop)) continue
+      let val = style.getPropertyValue(prop)
+      if ((prop === 'background-image' || prop === 'content') && val.includes('url(') && !val.includes('data:')) {
+        val = 'none'
+      }
+      out[prop] = val
+    }
+  }
+    // C8: Extra decoration/stroke/font loops are already covered by the allow-set
+  // (all those props are in MODULE_REQUIRED_PROPS). On the allow path they are
+  // guaranteed present, so skip the 17 extra getPropertyValue calls per node.
+  if (!allow) {
     // Asegurar props de decoración de texto (algunos motores no las listan en la iteración)
-  const EXTRA_TEXT_DECORATION_PROPS = [
-    'text-decoration-line',
-    'text-decoration-color',
-    'text-decoration-style',
-    'text-decoration-thickness',
-    'text-underline-offset',
-    'text-decoration-skip-ink'
-  ]
-  for (const prop of EXTRA_TEXT_DECORATION_PROPS) {
-    if (out[prop]) continue
-    try {
-      const v = style.getPropertyValue(prop)
-      if (v) out[prop] = v
-    } catch {}
-  }
-  // #340: -webkit-text-stroke en Safari – asegurar que se capture aunque no esté en la iteración
-  const TEXT_STROKE_PROPS = [
-    '-webkit-text-stroke',
-    '-webkit-text-stroke-width',
-    '-webkit-text-stroke-color',
-    'paint-order'
-  ]
-  for (const prop of TEXT_STROKE_PROPS) {
-    if (out[prop]) continue
-    try {
-      const v = style.getPropertyValue(prop)
-      if (v) out[prop] = v
-    } catch {}
-  }
-  if (options.embedFonts) {
-    const EXTRA_FONT_PROPS = [
-      'font-feature-settings',
-      'font-variation-settings',
-      'font-kerning',
-      'font-variant',
-      'font-variant-ligatures',
-      'font-optical-sizing',
+    const EXTRA_TEXT_DECORATION_PROPS = [
+      'text-decoration-line',
+      'text-decoration-color',
+      'text-decoration-style',
+      'text-decoration-thickness',
+      'text-underline-offset',
+      'text-decoration-skip-ink'
     ]
-    for (const prop of EXTRA_FONT_PROPS) {
+    for (const prop of EXTRA_TEXT_DECORATION_PROPS) {
       if (out[prop]) continue
       try {
         const v = style.getPropertyValue(prop)
         if (v) out[prop] = v
-      } catch { }
+      } catch {}
     }
+    // #340: -webkit-text-stroke en Safari – asegurar que se capture aunque no esté en la iteración
+    const TEXT_STROKE_PROPS = [
+      '-webkit-text-stroke',
+      '-webkit-text-stroke-width',
+      '-webkit-text-stroke-color',
+      'paint-order'
+    ]
+    for (const prop of TEXT_STROKE_PROPS) {
+      if (out[prop]) continue
+      try {
+        const v = style.getPropertyValue(prop)
+        if (v) out[prop] = v
+      } catch {}
+    }
+    if (options.embedFonts) {
+      const EXTRA_FONT_PROPS = [
+        'font-feature-settings',
+        'font-variation-settings',
+        'font-kerning',
+        'font-variant',
+        'font-variant-ligatures',
+        'font-optical-sizing',
+      ]
+      for (const prop of EXTRA_FONT_PROPS) {
+        if (out[prop]) continue
+        try {
+          const v = style.getPropertyValue(prop)
+          if (v) out[prop] = v
+        } catch { }
+      }
+    }
+    // content-visibility hidden — already in allow, but handle full-read fallback
+    try {
+      const cv = out['content-visibility'] || style.getPropertyValue('content-visibility')
+      if (cv === 'hidden') out['content-visibility'] = 'hidden'
+    } catch { /* ignore */ }
+  } else if (out['content-visibility'] === 'hidden') {
+    // On allow path, content-visibility is already captured if non-empty; nothing to do
   }
-  // Keep visibility as visibility. Unlike opacity, it is inherited but a child
-  // may explicitly restore `visibility: visible`; flattening a hidden ancestor to
-  // opacity:0 makes that legal, painted descendant impossible to recover.
-  // content-visibility:hidden skips the element's CONTENTS while still painting the
-  // element's own box (background, border, padding) — verified against real Chromium.
-  // Carry the declaration itself so the rasterizer applies those exact semantics: mapping
-  // it to visibility:hidden would erase the box too, and a descendant could override it
-  // back, which the real property does not allow. Read explicitly because
-  // content-visibility is not always enumerated in the style.length iteration.
-  try {
-    const cv = out['content-visibility'] || style.getPropertyValue('content-visibility')
-    if (cv === 'hidden') out['content-visibility'] = 'hidden'
-  } catch { /* ignore */ }
 
   // Flag whether inlineBackgroundImages has any work on this node (bg/mask/border-image or a
   // background-color that needs its layout longhands for background-clip:text). Read from the
@@ -377,6 +584,15 @@ function structuralKey(el) {
 }
 
 function getSnapshot(el, preStyle = null, options = {}) {
+  // PERF-5: piggyback inline-style collection on the snapshot walk itself (no extra
+  // tree walk). Each node's own inline props are added to the global allow-set
+  // before its snapshot is taken, so parents' inline props are already present
+  // for children (top-down walk). This keeps the set minimal and pixel-perfect
+  // without an extra O(n) pass.
+  const usedSet = getUsedPropSet(__epoch)
+  if (usedSet && el.style) {
+    for (let i = 0; i < el.style.length; i++) addWithExpansion(el.style[i], usedSet)
+  }
   const rec = snapshotCache.get(el)
   // The snapshot content depends on embedFonts (extra font props) and excludeStyleProps
   // (skipped props), but __epoch only bumps on DOM/font mutation — not option changes.
@@ -409,35 +625,32 @@ function getSnapshot(el, preStyle = null, options = {}) {
   return snap
 }
 
+const _persistSingleton = {
+  snapshotKeyCache,
+  defaultStyle: cache.defaultStyle,
+  baseStyle: cache.baseStyle,
+  image: cache.image,
+  resource: cache.resource,
+  background: cache.background,
+  font: cache.font,
+}
 function _resolveCtx(sessionOrCtx, opts) {
   if (sessionOrCtx && sessionOrCtx.session && sessionOrCtx.persist) return sessionOrCtx
   if (sessionOrCtx && (sessionOrCtx.styleMap || sessionOrCtx.styleCache || sessionOrCtx.nodeMap)) {
-    return {
+    // C3: memoize on session object to avoid 2 allocs per node
+    if (sessionOrCtx.__ctx && sessionOrCtx.__ctx.options === (opts || {})) return sessionOrCtx.__ctx
+    const ctx = {
       session: sessionOrCtx,
-      persist: {
-        snapshotKeyCache,
-        defaultStyle: cache.defaultStyle,
-        baseStyle: cache.baseStyle,
-        image: cache.image,
-        resource: cache.resource,
-        background: cache.background,
-        font: cache.font,
-      },
+      persist: _persistSingleton,
       options: opts || {},
     }
+    try { sessionOrCtx.__ctx = ctx } catch {}
+    return ctx
   }
 
   return {
     session: cache.session,
-    persist: {
-      snapshotKeyCache,
-      defaultStyle: cache.defaultStyle,
-      baseStyle: cache.baseStyle,
-      image: cache.image,
-      resource: cache.resource,
-      background: cache.background,
-      font: cache.font,
-    },
+    persist: _persistSingleton,
     options: (sessionOrCtx || opts || {}),
   }
 }
@@ -461,6 +674,20 @@ function normalizeInlineStyleToComputed(source, clone, computed) {
 
 export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   if (source.tagName === 'STYLE') return
+  // B2: Skip snapshot entirely for NO_DEFAULTS_TAGS (SVG). These tags never produce a class
+  // (getStyleKey returns ''), but currently pay for a full 137-prop snapshot + signature + key.
+  // On icon sets/charts with thousands of <path> elements this is hundreds of thousands of
+  // wasted getPropertyValue calls. Hoist the check here.
+  const tagLower = source.tagName ? source.tagName.toLowerCase() : ''
+  if (NO_DEFAULTS_TAGS.has(tagLower)) {
+    const ctx2 = _resolveCtx(sessionOrCtx, opts)
+    ctx2.session.styleMap.set(clone, '')
+    // Provide minimal snapshot for needsBackgroundInline (these tags never have CSS bg)
+    const mSnap = {}
+    Object.defineProperty(mSnap, '__needsBgInline', { value: false, enumerable: false })
+    snapshotCache.set(source, { epoch: __epoch, snapshot: mSnap, embedFonts: false, excludeStyleProps: null })
+    return
+  }
 
   const ctx = _resolveCtx(sessionOrCtx, opts)
   const resetMode = (ctx.options && ctx.options.cache) || 'auto'
@@ -481,7 +708,14 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     // element never throws and callers always receive a usable style object.
     let computed = null
     try { computed = getComputedStyle(source) } catch { /* detached / cross-origin */ }
-    session.styleCache.set(source, computed || getComputedStyle(document.documentElement))
+    const final = computed || getComputedStyle(document.documentElement)
+    session.styleCache.set(source, final)
+    // Populate the global cache as well so getStyle(parent) hits without a second gcs
+    try {
+      let m = cache.computedStyle.get(source)
+      if (!m) { m = new Map(); cache.computedStyle.set(source, m) }
+      if (!m.has(null)) m.set(null, final)
+    } catch {}
   }
   const pre = session.styleCache.get(source)
 
@@ -508,34 +742,27 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   const snap = getSnapshot(source, pre, ctx.options)
 
   const flexItem = isFlexOrGridItem(source)
-
-  // #406: foreignObject may resolve min-width:auto differently than normal DOM
-  // for flex/grid items. Explicitly set min-width:0 on flex/grid items that have
-  // the default auto value, so the generated CSS class includes it and we don't
-  // need a blanket foreignObject *{min-width:0} rule (which breaks inline-flex+gap).
-  if (flexItem) {
-    const mw = pre.getPropertyValue('min-width')
-    if (!mw || mw === 'auto' || mw === '0px') {
-      snap['min-width'] = '0px'
+  let snapForKey = snap
+  if (flexItem && (!snap['min-width'] || snap['min-width'] === 'auto' || snap['min-width'] === '0px')) {
+    snapForKey = { ...snap, 'min-width': '0px' }
+    if (snap.__needsBgInline !== undefined) {
+      Object.defineProperty(snapForKey, '__needsBgInline', { value: snap.__needsBgInline, enumerable: false })
     }
   }
 
   const tag = source.tagName?.toLowerCase() || 'div'
-  // getStyleKey only softens width for inline-sized / table / inline boxes, and only there does
-  // its output depend on content/flex-item-ness. For every other node (the vast majority — divs,
-  // headings, paragraphs…) skip that bookkeeping entirely so the hot path stays untouched.
-  let sig = styleSignature(snap)
+  let sig = styleSignature(snapForKey)
   let sizedByContent = true
-  if (softensWidth(tag, (snap.display || '').toLowerCase())) {
+  if (softensWidth(tag, (snapForKey.display || '').toLowerCase())) {
     sizedByContent = hasRenderedContent(source)
-    if (sizedByContent && softenNeedsAutoWidth(tag, snap, flexItem) &&
+    if (sizedByContent && softenNeedsAutoWidth(tag, snapForKey, flexItem) &&
         hasSpecifiedWidth(source, pre, flexItem)) {
       sizedByContent = false
     }
     // Fold tag/content/flex into the cache key so soften-eligible elements with identical styles
     // but different shape don't collide on the shared snapshotKeyCache.
     sig = `${sig}|${tag}${sizedByContent ? '|c' : ''}${flexItem ? '|f' : ''}`
-    const wsMode = snap['text-wrap-mode'] || snap['white-space'] || ''
+    const wsMode = snapForKey['text-wrap-mode'] || snapForKey['white-space'] || ''
     if (sizedByContent && wsMode !== 'nowrap' && wsMode !== 'pre') {
       session.reconcileRisk = (session.reconcileRisk || 0) + 1
     }
@@ -545,7 +772,7 @@ export async function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // large captures ~2x SLOWER, so it must not be removed.
   let key = persist.snapshotKeyCache.get(sig)
   if (key === undefined) {
-    key = getStyleKey(snap, tag, sizedByContent, flexItem)
+    key = getStyleKey(snapForKey, tag, sizedByContent, flexItem)
     persist.snapshotKeyCache.set(sig, key)
   }
   session.styleMap.set(clone, key)
