@@ -501,21 +501,19 @@ function getWindowForElement(el) {
  * @param {string|null} [pseudo=null] - The pseudo-element
  * @returns {CSSStyleDeclaration} The computed style
  */
+const _emptyStyleBase = {
+  length: 0,
+  getPropertyValue: () => '',
+  item: () => '',
+  [Symbol.iterator]: function* () { /* empty */ },
+}
+function emptyStyle() {
+  return /** @type {any} */ (_emptyStyleBase)
+}
+const _computedStyleNullCache = new WeakMap()
+const _computedStylePseudoCache = new WeakMap()
+
 export function getStyle(el, pseudo = null) {
-  /**
-   * Minimal safe fallback CSSStyleDeclaration-like object.
-   * Ensures callers can read properties and iterate length without crashing.
-   */
-  const emptyStyle = () => {
-    const base = {
-      length: 0,
-      getPropertyValue: () => '',
-      item: () => '',
-    }
-    // Make it iterable: for (let prop of style) { ... }
-    base[Symbol.iterator] = function* () { /* empty */ }
-    return /** @type {any} */ (base)
-  }
 
   if ((el?.nodeType !== 1)) {
     const win = typeof window !== 'undefined' ? window : null
@@ -527,6 +525,31 @@ export function getStyle(el, pseudo = null) {
       }
     }
     return emptyStyle()
+  }
+  // Unified cache: check session.styleCache first for the element itself (pseudo === null).
+  // inlineAllStyles populates session.styleCache top-down, so parents are already cached
+  // when isFlexOrGridItem/hasRenderedContent ask for them. This saves ~1 getComputedStyle per node.
+  if (pseudo === null) {
+    try {
+      const sess = cache.session?.styleCache?.get(el)
+      if (sess) {
+        let cached = _computedStyleNullCache.get(el)
+        if (!cached) _computedStyleNullCache.set(el, sess)
+        // Also populate legacy cache for compat
+        let map2 = cache.computedStyle.get(el)
+        if (!map2) { map2 = new Map(); cache.computedStyle.set(el, map2) }
+        if (!map2.has(null)) map2.set(null, sess)
+        return sess
+      }
+    } catch {}
+    const hit = _computedStyleNullCache.get(el)
+    if (hit) return hit
+  } else {
+    const hitPseudo = _computedStylePseudoCache.get(el)
+    if (hitPseudo) {
+      const v = hitPseudo.get(pseudo)
+      if (v) return v
+    }
   }
   let map = cache.computedStyle.get(el)
   if (!map) {
@@ -558,6 +581,13 @@ export function getStyle(el, pseudo = null) {
 
     style = st || emptyStyle()
     map.set(pseudo, style)
+    // Populate fast split caches
+    if (pseudo === null) _computedStyleNullCache.set(el, style)
+    else {
+      let pm = _computedStylePseudoCache.get(el)
+      if (!pm) { pm = new Map(); _computedStylePseudoCache.set(el, pm) }
+      pm.set(pseudo, style)
+    }
   }
 
   return style
