@@ -1,4 +1,4 @@
-import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS } from '../utils/index.js'
+import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS, _invalidateSplitCaches } from '../utils/index.js'
 import { cache } from '../core/cache.js'
 
 const snapshotCache = new WeakMap()
@@ -13,6 +13,7 @@ function bumpEpoch() {
   __epoch++
   __structSnapEpoch = -1
   __structSnapCache = null
+  try { _invalidateSplitCaches?.() } catch {}
   // Evict when oversized — entries are cheap to rebuild on the next capture.
   if (snapshotKeyCache.size > MAX_SNAPSHOT_KEY_CACHE) snapshotKeyCache.clear()
 }

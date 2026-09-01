@@ -294,6 +294,13 @@ function getPseudoSelectors(doc, sessionCache) {
     for (let i = 0; i < rules.length; i++) {
       const rule = rules[i]
       try {
+        // @import: CSSImportRule exposes sheet via rule.styleSheet (§8: must match allow-list coverage)
+        if (rule.styleSheet) {
+          try {
+            const importedRules = rule.styleSheet.cssRules
+            if (importedRules) scanRules(importedRules)
+          } catch {}
+        }
         if (rule.selectorText) {
           addSelectorsForRule(rule.selectorText)
         }
@@ -315,6 +322,37 @@ function getPseudoSelectors(doc, sessionCache) {
         if (rules) scanRules(rules)
       }
     }
+    // Shadow roots (Lit, web components) — same coverage as styles allow-list (§8)
+    try {
+      const walker = doc.createTreeWalker(doc.documentElement, NodeFilter.SHOW_ELEMENT)
+      let n
+      while ((n = walker.nextNode())) {
+        const sr = n.shadowRoot
+        if (sr) {
+          if (sr.adoptedStyleSheets && sr.adoptedStyleSheets.length) {
+            for (const sheet of sr.adoptedStyleSheets) {
+              const rules = safeRules(sheet)
+              if (rules) scanRules(rules)
+            }
+          }
+          if (sr.styleSheets) {
+            try {
+              for (const sheet of sr.styleSheets) {
+                const rules = safeRules(sheet)
+                if (rules) scanRules(rules)
+              }
+            } catch {}
+          }
+          for (const st of sr.querySelectorAll('style')) {
+            const sheet = st.sheet
+            if (sheet) {
+              const rules = safeRules(sheet)
+              if (rules) scanRules(rules)
+            }
+          }
+        }
+      }
+    } catch {}
   } catch {}
 
   const selectors = {

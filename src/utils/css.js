@@ -501,17 +501,22 @@ function getWindowForElement(el) {
  * @param {string|null} [pseudo=null] - The pseudo-element
  * @returns {CSSStyleDeclaration} The computed style
  */
-const _emptyStyleBase = {
+const _emptyStyleBase = Object.freeze({
   length: 0,
   getPropertyValue: () => '',
   item: () => '',
   [Symbol.iterator]: function* () { /* empty */ },
-}
+})
 function emptyStyle() {
   return /** @type {any} */ (_emptyStyleBase)
 }
-const _computedStyleNullCache = new WeakMap()
-const _computedStylePseudoCache = new WeakMap()
+let _computedStyleNullCache = new WeakMap()
+let _computedStylePseudoCache = new WeakMap()
+/** Called by styles.bumpEpoch to drop stale entries after DOM/style mutation (§8). */
+export function _invalidateSplitCaches() {
+  _computedStyleNullCache = new WeakMap()
+  _computedStylePseudoCache = new WeakMap()
+}
 
 export function getStyle(el, pseudo = null) {
 
