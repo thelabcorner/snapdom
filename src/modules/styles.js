@@ -17,10 +17,17 @@
  */
 
 import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS, isHTMLEl, snapshotComputedStyle } from '../utils/index.js'
+import { getDefaultStyleForTag, LOGICAL_TO_PHYSICAL } from '../utils/css.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
 import { scanAuthorStyles } from './styleScan.js'
-import { isInternalNode } from '../utils/ownership.js'
+import { isInternalNode, markInternalNode } from '../utils/ownership.js'
+import {
+  BACKGROUND_INLINE_FLAG_PROPS,
+  BG_LAYOUT_PROPS,
+  BORDER_AUX_PROPS,
+  MASK_LAYOUT_PROPS,
+} from './backgroundProps.js'
 
 /** element -> { env, stamp, snapshot, embedFonts, excludeStyleProps }. Cross-capture; a hit
  *  needs the env epoch and the node's stamp unchanged (snapshotIsCurrent). */
@@ -549,12 +556,6 @@ export function invalidateSnapshotsUnder(root) {
 }
 
 /** URL-bearing props that mean inlineBackgroundImages must visit the node. */
-const BG_INLINE_FLAG_PROPS = [
-  'mask', 'mask-image', '-webkit-mask', '-webkit-mask-image',
-  'mask-source', 'mask-box-image-source', 'mask-border-source', '-webkit-mask-box-image-source',
-  'border-image', 'border-image-source',
-]
-
 /**
  * Whether the background-inline pass has work on this element, per its cached style snapshot.
  * Unknown (no fresh snapshot — STYLE tags, SVG template descendants) → true, so callers fall
@@ -677,6 +678,240 @@ export function styleSharePlan(el) {
     return { share: false, selectors: null }
   }
 }
+
+// Per-element property-universe narrowing. The document scan says which properties can move
+// at all; this layer asks which of those properties can move on THIS element. It is used only
+// when identity sharing is off — sharing already removes most reads and is the simpler path.
+const ELEMENT_UNIVERSE_RISK_TAGS = new Set(('input select textarea button option optgroup datalist output progress meter fieldset legend form label a area html body table thead tbody tfoot tr td th caption col colgroup img picture source video audio track canvas iframe embed object param map details summary dialog svg path rect circle ellipse line polyline polygon text tspan g defs use symbol marker mask clippath pattern lineargradient radialgradient stop filter foreignobject view switch hr').split(' '))
+const ELEMENT_UNIVERSE_RISK_ANCESTORS = new Set([...ELEMENT_UNIVERSE_RISK_TAGS].filter((t) => t !== 'html' && t !== 'body'))
+const ELEMENT_UNIVERSE_HINT_ATTRS = new Set(('dir lang align bgcolor background color face size nowrap valign hidden popover contenteditable start value type compact').split(' '))
+const ELEMENT_UNIVERSE_INHERITED = new Set(('color font font-family font-size font-style font-weight font-variant font-stretch font-size-adjust font-kerning font-feature-settings font-variation-settings font-optical-sizing font-variant-caps font-variant-numeric font-variant-ligatures font-variant-east-asian font-variant-alternates font-variant-position line-height letter-spacing word-spacing text-align text-align-last text-indent text-transform text-shadow text-rendering direction unicode-bidi writing-mode text-orientation word-break overflow-wrap word-wrap hyphens tab-size white-space white-space-collapse text-wrap text-wrap-mode text-wrap-style text-spacing-trim text-autospace list-style list-style-type list-style-position list-style-image border-collapse border-spacing caption-side empty-cells quotes visibility cursor pointer-events -webkit-text-fill-color -webkit-text-stroke -webkit-text-stroke-width -webkit-text-stroke-color -webkit-font-smoothing image-rendering color-scheme paint-order caret-color accent-color text-emphasis text-emphasis-color text-emphasis-style text-combine-upright ruby-align ruby-position orphans widows speak scrollbar-width').split(' '))
+const ELEMENT_UNIVERSE_MUST = new Set(('width height inline-size block-size min-width min-height max-width max-height top right bottom left transform-origin perspective-origin grid-template-columns grid-template-rows outline-color border-top-color border-right-color border-bottom-color border-left-color').split(' '))
+const ELEMENT_UNIVERSE_GROUPS = [
+  ['white-space', 'white-space-collapse', 'text-wrap-mode', 'text-wrap-style'],
+  ['background-position', 'background-position-x', 'background-position-y'],
+  ['overflow', 'overflow-x', 'overflow-y', 'overflow-block', 'overflow-inline'],
+]
+const elementUniverseStates = new WeakMap()
+const elementUniverseBoxes = new WeakMap()
+let elementUniversePeers = null
+
+function universePeers() {
+  if (elementUniversePeers) return elementUniversePeers
+  const peers = new Map()
+  const add = (a, b) => {
+    let row = peers.get(a)
+    if (!row) peers.set(a, (row = []))
+    if (a !== b && !row.includes(b)) row.push(b)
+  }
+  for (const [logical, physical] of LOGICAL_TO_PHYSICAL) add(logical, physical)
+  for (const group of ELEMENT_UNIVERSE_GROUPS) {
+    for (const a of group) for (const b of group) add(a, b)
+  }
+  elementUniversePeers = peers
+  return peers
+}
+
+function elementUniverseStateFor(doc, scan) {
+  let st = elementUniverseStates.get(doc)
+  if (!st || st.scan !== scan) {
+    st = {
+      scan,
+      ua: new Map(),
+      missing: new Map(),
+      measured: 0,
+      blocked: false,
+      seen: new Set(),
+      trigger: new Set(),
+      queue: [],
+      keyset: new Set(),
+    }
+    elementUniverseStates.set(doc, st)
+  }
+  return st
+}
+
+function measureElementTagDefaults(doc, st, tag, universe) {
+  let ua = st.ua.get(tag)
+  let missing = st.missing.get(tag)
+  if (ua && missing) return { ua, missing }
+  if (st.measured >= 48 || doc !== document) {
+    st.blocked = true
+    return null
+  }
+  st.measured++
+  ua = new Set()
+  missing = new Set()
+  let node = null
+  try {
+    let box = elementUniverseBoxes.get(doc)
+    if (!box || !box.isConnected) {
+      box = doc.createElement('div')
+      markInternalNode(box)
+      box.setAttribute('aria-hidden', 'true')
+      box.style.cssText = 'all:initial;display:block;position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden'
+      ;(doc.body || doc.documentElement).appendChild(box)
+      elementUniverseBoxes.set(doc, box)
+    }
+    node = doc.createElement(tag)
+    box.appendChild(node)
+    const style = getComputedStyle(node)
+    const initial = getDefaultStyleForTag('x-snapdom-universe')
+    const defaults = getDefaultStyleForTag(tag)
+    for (const prop of universe) {
+      if (shouldIgnoreProp(prop)) continue
+      const value = style.getPropertyValue(prop)
+      if (!value) continue
+      if (!(prop in initial) || value !== initial[prop]) ua.add(prop)
+      if (!(prop in defaults)) missing.add(prop)
+    }
+  } catch {
+    st.blocked = true
+    return null
+  } finally {
+    try { node?.remove() } catch {}
+  }
+  st.ua.set(tag, ua)
+  st.missing.set(tag, missing)
+  return { ua, missing }
+}
+
+function subjectKeyMatches(el, key) {
+  if (key === null) return true
+  const value = key.slice(1)
+  if (key[0] === 't') return el.localName === value
+  if (key[0] === 'c') return !!el.classList?.contains(value)
+  return el.id === value
+}
+
+function matchesElementAllRule(el, rules) {
+  if (!rules?.length) return false
+  for (const rule of rules) {
+    if (!subjectKeyMatches(el, rule.key)) continue
+    try {
+      if (el.matches(rule.sel)) return true
+    } catch {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * A safe subset of the document property universe for one element. Any uncertainty returns
+ * `universe` unchanged, so this function can only cost performance, never fidelity.
+ */
+function elementUniverseFor(el, style, options, universe, backgroundState = null) {
+  if (!universe || !el || options?.__styleShare || options?.__elementUniverse === false) return universe
+  const doc = el.ownerDocument || document
+  if (doc !== document || (el.getRootNode && el.getRootNode() !== doc)) return universe
+  const tag = el.localName?.toLowerCase()
+  if (!tag || ELEMENT_UNIVERSE_RISK_TAGS.has(tag) || el.shadowRoot || el.assignedSlot) return universe
+  const inlineText = el.getAttribute?.('style') || ''
+  if (inlineText && /(?:^|;)\s*all\s*:/i.test(inlineText)) return universe
+  try {
+    const wm = style.getPropertyValue('writing-mode')
+    if (wm && wm !== 'horizontal-tb') return universe
+    const dir = style.getPropertyValue('direction')
+    if (dir && dir !== 'ltr') return universe
+  } catch { return universe }
+
+  const scan = scanFor(doc)
+  if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations) return universe
+  const st = elementUniverseStateFor(doc, scan)
+  if (st.blocked) return universe
+  const seen = st.seen
+  const trigger = st.trigger
+  const queue = st.queue
+  const keyset = st.keyset
+  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  const selected = new Set()
+  const push = (prop) => {
+    if (!trigger.has(prop)) { trigger.add(prop); queue.push(prop) }
+    if (universe.has(prop) && !shouldIgnoreProp(prop) && !seen.has(prop)) {
+      seen.add(prop)
+      selected.add(prop)
+    }
+  }
+  const bail = () => {
+    seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+    return universe
+  }
+
+  for (const prop of ELEMENT_UNIVERSE_MUST) push(prop)
+  for (const prop of scan.elementDeclaredProps || []) if (ELEMENT_UNIVERSE_INHERITED.has(prop)) push(prop)
+  for (const prop of scan.elementAlwaysProps || []) push(prop)
+  // Downstream snapshot contract: background.js intentionally reuses the cached snapshot.
+  // Under the old document universe, an absent prop meant the document could not observe it.
+  // R3 narrows per element, so retain exactly the groups that the downstream consumer reads.
+  // Targets still pass through `push`, hence only properties in the document universe cost a
+  // CSSOM read. Mask layout is read for every flagged background/mask/border-image node;
+  // background layout is read only when a real background is present.
+  if (backgroundState?.needsInline) for (const prop of MASK_LAYOUT_PROPS) push(prop)
+  if (backgroundState?.hasBackground) for (const prop of BG_LAYOUT_PROPS) push(prop)
+
+  // Ancestor context: UA/presentational risks and inline inherited declarations.
+  let a = el, depth = 0
+  while (a && a.nodeType === 1 && depth++ < 1024) {
+    const at = a.localName?.toLowerCase()
+    if (a !== el && at && ELEMENT_UNIVERSE_RISK_ANCESTORS.has(at)) return bail()
+    if (matchesElementAllRule(a, scan.elementAllRules)) return bail()
+    const attrs = a.attributes
+    if (attrs) for (let i = 0; i < attrs.length; i++) if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[i].name)) return bail()
+    if (at && !at.includes('-')) {
+      const measured = measureElementTagDefaults(doc, st, at, universe)
+      if (!measured || st.blocked) return bail()
+      for (const prop of measured.ua) push(prop)
+      for (const prop of measured.missing) push(prop)
+    }
+    const inline = a.style
+    if (inline?.length) {
+      for (let i = 0; i < inline.length; i++) {
+        const prop = inline[i]
+        if (prop === 'all') return bail()
+        if (a === el || ELEMENT_UNIVERSE_INHERITED.has(prop)) {
+          push(prop)
+          if (a === el && prop === 'display') push('grid-auto-flow')
+          if (a === el && (prop === 'border-image' || prop === 'border-image-source')) {
+            for (const dep of BORDER_AUX_PROPS) push(dep)
+          }
+        }
+      }
+    }
+    if (a === doc.documentElement) break
+    a = a.parentElement
+  }
+
+  keyset.add('t' + tag)
+  if (el.id) keyset.add('i' + el.id)
+  if (el.classList) for (let i = 0; i < el.classList.length; i++) keyset.add('c' + el.classList[i])
+  for (const rule of scan.elementRules) {
+    if (!subjectKeyMatches(el, rule.key) || !rule.props.length) continue
+    let hit = false
+    try { hit = el.matches(rule.sel) } catch { return bail() }
+    if (hit) {
+      for (const prop of rule.props) {
+        push(prop)
+        // WebKit reports grid-auto-flow:normal on SnapDOM's `all:initial` default probe but
+        // row on a live grid. Official v3's document universe therefore emits `row` to undo
+        // its own reset. Any authored display declaration may activate grid layout, so retain
+        // this one dependent property rather than probing display on every narrowed element.
+        if (prop === 'display') push('grid-auto-flow')
+        if (prop === 'border-image' || prop === 'border-image-source') {
+          for (const dep of BORDER_AUX_PROPS) push(dep)
+        }
+      }
+    }
+  }
+
+  const peers = universePeers()
+  for (let i = 0; i < queue.length; i++) {
+    const extra = peers.get(queue[i])
+    if (extra) for (const prop of extra) push(prop)
+  }
+  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  return selected.size ? selected : universe
+}
 /**
  * Whether the identity-share fast path is sound for THIS capture: no author selector that
  * can style two elements with identical tag + attributes + ancestor identity chain
@@ -752,7 +987,7 @@ export function pseudoGatesFor(el) {
  * @param {Set<string>|null} [universe] - from universeFor; null reads everything
  * @returns {Record<string, string>}
  */
-function snapshotComputedStyleFull(style, options = {}, el = null, universe = null) {
+function snapshotComputedStyleFull(style, options = {}, el = null, universe = null, backgroundState = null) {
   const out = {}
   const excludeStyleProps = options.excludeStyleProps
   const addProp = (prop) => {
@@ -845,7 +1080,10 @@ function snapshotComputedStyleFull(style, options = {}, el = null, universe = nu
   // background-color that needs its layout longhands for background-clip:text). Read from the
   // live declaration (not `out`) so excludeStyleProps or the url()→none rewrite can't hide it.
   // Stored non-enumerable so key generation/signature iteration never sees it.
-  Object.defineProperty(out, '__needsBgInline', { value: computeNeedsBgInline(style), enumerable: false })
+  Object.defineProperty(out, '__needsBgInline', {
+    value: backgroundState?.needsInline ?? computeBackgroundInlineState(style).needsInline,
+    enumerable: false,
+  })
 
   // #362: Tailwind's * { border: 0 solid } renders incorrectly in capture.
   // When all border widths are 0, normalize to border: none for unambiguous output.
@@ -952,18 +1190,33 @@ export function bgClipTextFallbackColor(backgroundImage, backgroundColor) {
 
 /** ~10-read probe behind __needsBgInline (also run standalone for NO_DEFAULTS_TAGS,
  *  which skip the full snapshot but can still carry an external mask/border-image). */
-function computeNeedsBgInline(style) {
+function computeBackgroundInlineState(style) {
   const bgi = style.getPropertyValue('background-image')
-  if (bgi && bgi !== 'none') return true
+  if (bgi && bgi !== 'none') return { needsInline: true, hasBackground: true }
   const bgc = style.getPropertyValue('background-color')
-  if (bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') return true
-  for (const p of BG_INLINE_FLAG_PROPS) {
-    const v = style.getPropertyValue(p)
-    if (v && v !== 'none') return true
+  if (bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') {
+    return { needsInline: true, hasBackground: true }
   }
-  // #343: some engines report background-image:none while the shorthand carries url()
+  for (const p of BACKGROUND_INLINE_FLAG_PROPS) {
+    const v = style.getPropertyValue(p)
+    if (v && v !== 'none') {
+      // #343 can hide a background url() in the shorthand even while background-image says
+      // none. Only flagged mask/border-image nodes pay this extra read.
+      const sh = style.getPropertyValue('background')
+      const hasBackground = !!(sh && /url\s*\(|gradient\s*\(/i.test(sh))
+      return { needsInline: true, hasBackground }
+    }
+  }
+  // Preserve the historical #343 fallback exactly: without another inline-background trigger,
+  // only a hidden url() in the shorthand schedules the post-pass. Normal gradients are
+  // already visible through background-image above.
   const sh = style.getPropertyValue('background')
-  return !!(sh && /url\s*\(/i.test(sh))
+  const hasBackground = !!(sh && /url\s*\(/i.test(sh))
+  return { needsInline: hasBackground, hasBackground }
+}
+
+function computeNeedsBgInline(style) {
+  return computeBackgroundInlineState(style).needsInline
 }
 
 /**
@@ -1406,7 +1659,18 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
     }
   } else {
-    snap = snapshotComputedStyleFull(style, options, el, universeFor(el))
+    const docUniverse = universeFor(el)
+    // This probe already existed inside snapshotComputedStyleFull. Compute it once up front so
+    // R3 can preserve the exact downstream properties background.js will consume, then reuse
+    // the result for the non-enumerable snapshot flag instead of paying the probe twice.
+    const backgroundState = computeBackgroundInlineState(style)
+    snap = snapshotComputedStyleFull(
+      style,
+      options,
+      el,
+      elementUniverseFor(el, style, options, docUniverse, backgroundState),
+      backgroundState,
+    )
     if (shareInfo) {
       // Stored by REFERENCE, with the riders it already carries: the copy that used to be
       // made here, plus a re-read list and a base signature per identity, cost 27 ms of a

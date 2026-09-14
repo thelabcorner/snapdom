@@ -189,7 +189,7 @@ const MIN_WIDTH_PROPS = new Set(['min-width', 'min-inline-size'])
  *
  * Imported from @frostin/snapdom (element-mirror).
  */
-const LOGICAL_TO_PHYSICAL = new Map(Object.entries({
+export const LOGICAL_TO_PHYSICAL = new Map(Object.entries({
   'block-size': 'height',
   'inline-size': 'width',
   'min-block-size': 'min-height',

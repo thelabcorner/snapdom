@@ -13,65 +13,10 @@ import { isFirefox, isIOS } from '../utils/browser.js'
 
 import { getStyle, inlineSingleBackgroundEntry, splitBackgroundImage } from '../utils'
 import { needsBackgroundInline, snapshotFor } from './styles.js'
+import { BG_LAYOUT_PROPS, BORDER_AUX_PROPS, MASK_LAYOUT_PROPS, URL_PROPS } from './backgroundProps.js'
 
-/** Props that can contain url(...) and may need inlining. */
-export const URL_PROPS = [
-  'background-image',
-
-  // Mask shorthands & images (both standard and WebKit)
-  'mask',
-  'mask-image',
-  '-webkit-mask',
-  '-webkit-mask-image',
-
-  // Mask sources (rare, but keep)
-  'mask-source',
-  'mask-box-image-source',
-  'mask-border-source',
-  '-webkit-mask-box-image-source',
-
-  // Border image
-  'border-image',
-  'border-image-source',
-]
-
-/** Mask longhands to preserve spatial layout (copy as-is).
- * Must run AFTER the `mask` shorthand in URL_PROPS — setting the shorthand
- * resets every longhand to its initial value (#402: lost mask-mode/composite). */
-const MASK_LAYOUT_PROPS = [
-  'mask-position',
-  'mask-size',
-  'mask-repeat',
-  'mask-mode',
-  'mask-composite',
-  // WebKit variants
-  '-webkit-mask-position',
-  '-webkit-mask-size',
-  '-webkit-mask-repeat',
-  '-webkit-mask-composite',
-  // Extra (optional but helpful across engines)
-  'mask-origin',
-  'mask-clip',
-  '-webkit-mask-origin',
-  '-webkit-mask-clip',
-  // Some engines expose X/Y position separately:
-  '-webkit-mask-position-x',
-  '-webkit-mask-position-y',
-]
-/** Background longhands copied only when the node has a background at all (see hasBg). */
-const BG_LAYOUT_PROPS = [
-  'background-position', 'background-position-x', 'background-position-y',
-  'background-size', 'background-repeat',
-  'background-origin', 'background-clip',
-  'background-attachment', 'background-blend-mode'
-]
-/** Border-image aux longhands (copy only when active) */
-const BORDER_AUX_PROPS = [
-  'border-image-slice',
-  'border-image-width',
-  'border-image-outset',
-  'border-image-repeat',
-]
+// Kept exported from this module for compatibility with internal/tests that import it here.
+export { URL_PROPS } from './backgroundProps.js'
 
 /**
  * Inline URL-bearing properties (background/mask/border-image) from one source element onto its
@@ -87,9 +32,9 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   if (!styleCache.has(srcNode)) styleCache.set(srcNode, style)
   // Same-capture snapshot reuse (idea validated independently by v2 PR #492's bg reuse):
   // most of the ~19 CSSOM reads per flagged node repeated what inlineAllStyles already
-  // resolved. Present in the snapshot -> that value; absent -> pruned by the property
-  // universe, i.e. the computed value is the default and there is nothing to copy ('' skips
-  // every site below). No snapshot (stale stamps, or the Firefox bg-clip:text fallback) ->
+  // resolved. Present in the snapshot -> that value; absent -> the style-universe dependency
+  // contract guarantees this consumer cannot need it, so '' skips every site below. No
+  // snapshot (stale stamps, or the Firefox bg-clip:text fallback) ->
   // plain live reads, exactly the old path.
   //
   // URL-BEARING reads stay LIVE on purpose — snapshot values are NOT the live values there:
