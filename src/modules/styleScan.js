@@ -394,7 +394,9 @@ function scanRules(rules, universe, pseudoSels, state) {
           if (one.includes('&')) {
             for (const prop of props) state.elementAlwaysProps.add(prop)
           } else {
-            state.elementRules.push({ sel: one, key: subjectKeyOf(one), props })
+            const key = subjectKeyOf(one)
+            if (key !== null) state.elementKeyedRuleCount++
+            state.elementRules.push({ sel: one, key, props })
           }
         }
       }
@@ -554,14 +556,15 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  * - `importantProps`: every property some rule declares `!important`.
  * - `styleIdentityDataAttrs`: data-* names observable by selectors/attr(), or null when the
  *   scan cannot prove observability completely. Used only to relax style-sharing identity.
- * - `elementRules` / `elementDeclaredProps` / `elementAlwaysProps`: selector-indexed
+ * - `elementRules` / `elementKeyedRuleCount` / `elementDeclaredProps` / `elementAlwaysProps`:
+ *   selector-indexed declarations plus the number carrying a cheap necessary subject key.
  *   declarations used by the per-element property-universe fast path. They are null on an
  *   unreliable scan; `elementAllRules` carries selector-scoped `all` resets,
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -571,7 +574,7 @@ export function scanAuthorStyles(doc) {
     styleIdentityDataAttrs: null,
     marginUnstable: true, paddingUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
-    elementRules: null, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
+    elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true,
   }
   try {
@@ -590,7 +593,7 @@ export function scanAuthorStyles(doc) {
       paddingUnstable: false,
       importantProps: new Set(),
       pseudoProps: new Set(),
-      elementRules: [], elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
+      elementRules: [], elementKeyedRuleCount: 0, elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
       elementUniverseBlocked: false, hasAnimations: false,
     }
     for (const sheet of doc.styleSheets) {
@@ -637,6 +640,7 @@ export function scanAuthorStyles(doc) {
       paddingUnstable: state.paddingUnstable,
       importantProps: state.importantProps,
       elementRules: state.elementRules,
+      elementKeyedRuleCount: state.elementKeyedRuleCount,
       elementAllRules: state.elementAllRules,
       elementDeclaredProps: state.elementDeclaredProps,
       elementAlwaysProps: state.elementAlwaysProps,

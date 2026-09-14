@@ -706,6 +706,16 @@ const ELEMENT_UNIVERSE_GROUPS = [
 const elementUniverseStates = new WeakMap()
 const elementUniverseBoxes = new WeakMap()
 let elementUniversePeers = null
+// R5-D tiered selector-program compilation. The linear interpreter has zero setup and wins on
+// tiny sheets/captures. The subject-key index removes one rejection branch per keyed rule per
+// eligible element, but compiling it costs O(all rules). Start linear and JIT only after the
+// actually-paid reject work can amortize both a fixed setup floor and a pathological corpus with
+// many unkeyed rules. Values are deliberately conservative relative to the measured crossover:
+// 400 nodes crossed near 50 rules, while 10-node captures needed hundreds of rules to win.
+const ELEMENT_RULE_INDEX_MIN_KEYED = 64
+const ELEMENT_RULE_INDEX_WORK_FLOOR = 2048
+const ELEMENT_RULE_INDEX_COMPILE_MULTIPLIER = 4
+const ELEMENT_RULE_INDEX_KEYED_FRACTION_DENOM = 3 // >= ~33% of candidate rules must be key-prunable
 
 function universePeers() {
   if (elementUniversePeers) return elementUniversePeers
@@ -735,7 +745,7 @@ function elementUniverseStateFor(doc, scan) {
       seen: new Set(),
       trigger: new Set(),
       queue: [],
-      keyset: new Set(),
+      ruleIndex: null,
     }
     elementUniverseStates.set(doc, st)
   }
@@ -795,6 +805,51 @@ function subjectKeyMatches(el, key) {
   return el.id === value
 }
 
+/** Compile R3 rules lazily, only if an element actually reaches per-element narrowing. R2/R4
+ * identity-sharing captures never consume this index, so eagerly building it in styleScan would
+ * turn a local R5-D win into a document-wide allocation tax. Each rule has exactly one necessary
+ * subject key (or none); buckets are therefore disjoint and require no per-element dedup Set. */
+function compileElementRuleIndex(rules) {
+  const index = { unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map() }
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i]
+    const key = rule.key
+    if (key === null) {
+      index.unkeyed.push(rule)
+      continue
+    }
+    const type = key.charCodeAt(0)
+    const value = key.slice(1)
+    const map = type === 116 ? index.byTag : type === 105 ? index.byId : index.byClass
+    let bucket = map.get(value)
+    if (!bucket) map.set(value, (bucket = []))
+    bucket.push(rule)
+  }
+  return index
+}
+
+/** Visit only selector rules whose compile-time necessary subject key exists on `el`.
+ * `subjectRuleIndex()` places each rule in exactly one bucket, so the tag/id/class buckets are
+ * disjoint and no deduplication allocation is needed here. Returning false asks the caller to
+ * bail to the full document universe. */
+function visitIndexedElementRules(el, index, visit) {
+  const walk = (rules) => {
+    if (!rules) return true
+    for (let i = 0; i < rules.length; i++) if (visit(rules[i]) === false) return false
+    return true
+  }
+  if (!walk(index.unkeyed)) return false
+  if (!walk(index.byTag.get(el.localName))) return false
+  if (el.id && !walk(index.byId.get(el.id))) return false
+  const classes = el.classList
+  if (classes) {
+    for (let i = 0; i < classes.length; i++) {
+      if (!walk(index.byClass.get(classes[i]))) return false
+    }
+  }
+  return true
+}
+
 function matchesElementAllRule(el, rules) {
   if (!rules?.length) return false
   for (const rule of rules) {
@@ -834,8 +889,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   const seen = st.seen
   const trigger = st.trigger
   const queue = st.queue
-  const keyset = st.keyset
-  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  seen.clear(); trigger.clear(); queue.length = 0
   const selected = new Set()
   const push = (prop) => {
     if (!trigger.has(prop)) { trigger.add(prop); queue.push(prop) }
@@ -845,7 +899,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     }
   }
   const bail = () => {
-    seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+    seen.clear(); trigger.clear(); queue.length = 0
     return universe
   }
 
@@ -893,13 +947,10 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     a = a.parentElement
   }
 
-  keyset.add('t' + tag)
-  if (el.id) keyset.add('i' + el.id)
-  if (el.classList) for (let i = 0; i < el.classList.length; i++) keyset.add('c' + el.classList[i])
-  for (const rule of scan.elementRules) {
-    if (!subjectKeyMatches(el, rule.key) || !rule.props.length) continue
+  const applyRule = (rule) => {
+    if (!rule.props.length) return true
     let hit = false
-    try { hit = el.matches(rule.sel) } catch { return bail() }
+    try { hit = el.matches(rule.sel) } catch { return false }
     if (hit) {
       for (const prop of rule.props) {
         push(prop)
@@ -913,6 +964,40 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
         }
       }
     }
+    return true
+  }
+  const indexMode = options?.__elementRuleIndex
+  let useRuleIndex = indexMode === true
+  if (!useRuleIndex && indexMode !== false) {
+    const keyed = scan.elementKeyedRuleCount || 0
+    // A large corpus is not sufficient by itself: when most rules are unkeyed the indexed
+    // interpreter still walks nearly the whole rule list, so its Map/bucket overhead buys little.
+    // The density sweep found 25.6% keyed inconclusive while 33.3% keyed was a replicated ~5%
+    // win and 37.5%/50% improved further. Use the conservative one-third boundary without a
+    // division in the hot path.
+    if (keyed >= ELEMENT_RULE_INDEX_MIN_KEYED &&
+        keyed * ELEMENT_RULE_INDEX_KEYED_FRACTION_DENOM >= scan.elementRules.length) {
+      // Routing is capture-local even though the compiled index itself is style-epoch-local.
+      // Persisting the work counter made repeated tiny captures eventually switch to indexed
+      // lookup even when their own element×rule product was below the measured crossover.
+      // `options` is the normalized per-capture context shared by every node in this capture.
+      const paid = (options.__elementRuleIndexWork || 0) + keyed
+      options.__elementRuleIndexWork = paid
+      const compileGate = Math.max(
+        ELEMENT_RULE_INDEX_WORK_FLOOR,
+        scan.elementRules.length * ELEMENT_RULE_INDEX_COMPILE_MULTIPLIER,
+      )
+      if (paid >= compileGate) useRuleIndex = true
+    }
+  }
+  if (!useRuleIndex) {
+    for (const rule of scan.elementRules) {
+      if (!subjectKeyMatches(el, rule.key)) continue
+      if (!applyRule(rule)) return bail()
+    }
+  } else {
+    const ruleIndex = st.ruleIndex || (st.ruleIndex = compileElementRuleIndex(scan.elementRules))
+    if (!visitIndexedElementRules(el, ruleIndex, applyRule)) return bail()
   }
 
   const peers = universePeers()
@@ -920,7 +1005,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     const extra = peers.get(queue[i])
     if (extra) for (const prop of extra) push(prop)
   }
-  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  seen.clear(); trigger.clear(); queue.length = 0
   return selected.size ? selected : universe
 }
 /**

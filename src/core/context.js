@@ -162,6 +162,9 @@ export function createContext(options = {}) {
     // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
     // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
     __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,
+    // Internal R5-D counterfactual/benchmark override: false forces R3's historical linear
+    // rule scan; true forces the compiled subject-key index; undefined uses the tiered router.
+    __elementRuleIndex: options.__elementRuleIndex,
 
     // Network
     useProxy: typeof options.useProxy === 'string' ? options.useProxy : '',
