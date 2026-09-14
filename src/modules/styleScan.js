@@ -118,24 +118,177 @@ function stripPseudo(selectorText) {
 }
 
 // R4 style-identity dependency index. Only data-* attributes are relaxed, and only when the
-// complete stylesheet scan proves CSS cannot observe them. Any syntax we cannot confidently
-// decode blocks the optimization wholesale; a false positive costs sharing, a false negative
-// can copy the wrong computed style.
-const DATA_ATTR_NAME_RE = /data-[a-zA-Z0-9_-]+/g
-function collectDataAttrText(text, state) {
-  if (!text) return
-  const lower = text.toLowerCase()
-  if (!lower.includes('data-')) return
-  // Escaped CSS identifiers can spell an attribute name without the literal source spelling.
-  // Do not implement a second CSS parser here: fail closed and keep every data-* in identity.
-  if (text.includes('\\')) {
-    state.dataAttrIdentityBlocked = true
-    return
+// complete stylesheet scan proves CSS cannot observe them. The scanner below intentionally
+// understands CSS escapes instead of treating ANY escaped selector as globally unsafe. That
+// distinction matters on utility-CSS pages: Tailwind-style class selectors routinely contain
+// backslashes next to ordinary attribute selectors, and the old blanket veto disabled R4 for
+// the whole document even when the escaped token was unrelated to data-*.
+
+/** Decode CSS identifier/string escapes sufficiently for dependency names. CSS Syntax allows
+ * 1-6 hex digits plus one optional whitespace terminator, or a single escaped code point. We
+ * never feed the decoded text back to the browser; it is only used to conservatively recognize
+ * names such as `\\64 ata-metric` -> `data-metric`. */
+function decodeCssEscapes(text) {
+  if (!text || !text.includes('\\')) return text || ''
+  let out = ''
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c !== '\\') { out += c; continue }
+    if (++i >= text.length) break
+    const n = text[i]
+    if (/[0-9a-fA-F]/.test(n)) {
+      let hex = n
+      let count = 1
+      while (count < 6 && i + 1 < text.length && /[0-9a-fA-F]/.test(text[i + 1])) {
+        hex += text[++i]
+        count++
+      }
+      let cp = parseInt(hex, 16)
+      if (!cp || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd
+      out += String.fromCodePoint(cp)
+      if (i + 1 < text.length && /[\t\n\f\r ]/.test(text[i + 1])) {
+        if (text[i + 1] === '\r' && text[i + 2] === '\n') i++
+        i++
+      }
+      continue
+    }
+    // A backslash-newline continuation contributes no code point.
+    if (n === '\n' || n === '\f') continue
+    if (n === '\r') { if (text[i + 1] === '\n') i++; continue }
+    out += n
   }
-  DATA_ATTR_NAME_RE.lastIndex = 0
-  let m
-  while ((m = DATA_ATTR_NAME_RE.exec(text))) state.dataAttrDeps.add(m[0].toLowerCase())
+  return out
 }
+
+const CSS_WS_RE = /[\t\n\f\r ]/
+const ATTR_FUNCTION_RE = /(?:^|[^-_a-zA-Z0-9])attr\s*\(/i
+
+function mayContainAttrFunction(text) {
+  if (!text) return false
+  if (ATTR_FUNCTION_RE.test(text)) return true
+  return text.includes('\\') && ATTR_FUNCTION_RE.test(decodeCssEscapes(text))
+}
+
+/** Collect data-* attribute NAMES from attribute selectors. This walks only unescaped `[` tokens,
+ * so escaped brackets in utility class names do not become false selectors. We only parse the
+ * leading qualified attribute name; the value/operator is irrelevant to style observability. */
+function collectSelectorDataAttrs(selector, state) {
+  if (!selector || !selector.includes('[')) return
+  const n = selector.length
+  let quote = null
+  for (let i = 0; i < n;) {
+    const c = selector[i]
+    if (c === '\\') {
+      // Skip one CSS escape, including a hex escape's digits/terminating whitespace. Decoding
+      // happens on the attribute-name token itself below.
+      i++
+      if (i >= n) break
+      if (/[0-9a-fA-F]/.test(selector[i])) {
+        let count = 1
+        while (count < 6 && i + 1 < n && /[0-9a-fA-F]/.test(selector[i + 1])) { i++; count++ }
+        if (i + 1 < n && CSS_WS_RE.test(selector[i + 1])) {
+          if (selector[i + 1] === '\r' && selector[i + 2] === '\n') i++
+          i++
+        }
+      }
+      i++
+      continue
+    }
+    if (quote) { if (c === quote) quote = null; i++; continue }
+    if (c === '"' || c === "'") { quote = c; i++; continue }
+    if (c !== '[') { i++; continue }
+
+    i++
+    while (i < n && CSS_WS_RE.test(selector[i])) i++
+    let token = ''
+    let target = ''
+    while (i < n) {
+      const x = selector[i]
+      if (x === '\\') {
+        const start = i++
+        if (i >= n) { token += '\\'; break }
+        if (/[0-9a-fA-F]/.test(selector[i])) {
+          let count = 1
+          while (count < 6 && i + 1 < n && /[0-9a-fA-F]/.test(selector[i + 1])) { i++; count++ }
+          if (i + 1 < n && CSS_WS_RE.test(selector[i + 1])) {
+            if (selector[i + 1] === '\r' && selector[i + 2] === '\n') i++
+            i++
+          }
+        }
+        token += selector.slice(start, ++i)
+        continue
+      }
+      if (x === '|' && selector[i + 1] !== '=') {
+        // Namespace prefix (`ns|data-x`, `*|data-x`, or `|data-x`). Only the local name
+        // controls the DOM attribute dependency.
+        token = ''
+        i++
+        while (i < n && CSS_WS_RE.test(selector[i])) i++
+        continue
+      }
+      if (x === ']' || CSS_WS_RE.test(x) || x === '=' ||
+          ((x === '~' || x === '|' || x === '^' || x === '$' || x === '*') && selector[i + 1] === '=')) {
+        target = token
+        break
+      }
+      token += x
+      i++
+    }
+    if (!target) target = token
+    const name = decodeCssEscapes(target).toLowerCase()
+    if (name.startsWith('data-')) state.dataAttrDeps.add(name)
+
+    // Skip the rest of this attribute selector, respecting quoted values and escapes, so a
+    // literal "[data-x]" inside a value cannot be mistaken for another selector dependency.
+    let innerQuote = null
+    while (i < n) {
+      const x = selector[i++]
+      if (x === '\\') { if (i < n) i++; continue }
+      if (innerQuote) { if (x === innerQuote) innerQuote = null; continue }
+      if (x === '"' || x === "'") { innerQuote = x; continue }
+      if (x === ']') break
+    }
+  }
+}
+
+/** Collect the first argument of attr() functions from one declaration value. Decoding first
+ * makes escaped function/attribute names visible (`\\61 ttr(\\64 ata-x)`). A malformed attr()
+ * that survives CSSOM but cannot yield a name fails closed for R4. */
+function collectValueDataAttrs(value, state) {
+  if (!value) return
+  const decoded = decodeCssEscapes(value)
+  const re = /(?:^|[^-_a-zA-Z0-9])attr\s*\(/ig
+  while (re.exec(decoded)) {
+    let i = re.lastIndex
+    while (i < decoded.length && CSS_WS_RE.test(decoded[i])) i++
+    const name = (decoded.slice(i).match(/^[-_a-zA-Z][-_a-zA-Z0-9]*/) || [])[0]
+    if (!name) {
+      state.dataAttrIdentityBlocked = true
+      return
+    }
+    const lowerName = name.toLowerCase()
+    if (lowerName.startsWith('data-')) state.dataAttrDeps.add(lowerName)
+  }
+}
+
+/** Data-* names observed by one inline CSSStyleDeclaration through attr(). Empty means the
+ * inline style cannot observe data-*; null means the syntax could not be proven safe and the
+ * caller must keep every data-* attribute in its identity. Exported for R4's per-element key:
+ * inline declarations are not part of document.styleSheets, so the document scan alone is
+ * insufficient proof. */
+export function scanInlineStyleDataAttrs(style) {
+  if (!style || !style.length) return EMPTY_DATA_ATTRS
+  const cssText = style.cssText || ''
+  if (!mayContainAttrFunction(cssText)) return EMPTY_DATA_ATTRS
+  const state = { dataAttrDeps: new Set(), dataAttrIdentityBlocked: false }
+  for (let i = 0; i < style.length; i++) {
+    collectValueDataAttrs(style.getPropertyValue(style[i]), state)
+    if (state.dataAttrIdentityBlocked) return null
+  }
+  return state.dataAttrDeps
+}
+
+const EMPTY_DATA_ATTRS = new Set()
 
 /** Walks a CSSRuleList adding every set property name to `universe` and every
  *  pseudo-generating selector to `pseudoSels`.
@@ -145,6 +298,15 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (--state.budget < 0) return false
     const rule = rules[i]
     const ruleName = rule.constructor?.name || ''
+    // @scope's root/limit selectors live in the at-rule prelude, not selectorText. A data-*
+    // dependency there can change which descendant rules apply, so it belongs in R4's style
+    // identity dependency set just like an ancestor selector. Scan only the prelude, never the
+    // nested rule bodies (those are visited recursively below).
+    if (ruleName === 'CSSScopeRule' && typeof rule.cssText === 'string') {
+      const brace = rule.cssText.indexOf('{')
+      const prelude = brace < 0 ? rule.cssText : rule.cssText.slice(0, brace)
+      if (prelude.includes('[')) collectSelectorDataAttrs(prelude, state)
+    }
     // A structural fingerprint cannot safely model these document/global channels.
     // Keep the ordinary style universe usable, but force the partitioned share path
     // to fall back to the historical full-read behavior.
@@ -155,30 +317,25 @@ function scanRules(rules, universe, pseudoSels, state) {
     const style = rule.style
     let hasAll = false
     if (style) {
+      const cssText = style.cssText || ''
+      const styleMayHaveAttr = mayContainAttrFunction(cssText)
       // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
       // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
       // per selector below so an unrelated reset rule does not disable narrowing globally.
       try {
-        hasAll = !!style.getPropertyValue('all') || /(?:^|;)\s*all\s*:/i.test(style.cssText || '')
+        hasAll = !!style.getPropertyValue('all') || /(?:^|;)\s*all\s*:/i.test(cssText)
       } catch {
         state.elementUniverseBlocked = true
       }
-      const styleHasAttr = /attr\s*\(/i.test(style.cssText || '')
       const pseudoRule = !!rule.selectorText && PSEUDO_ELEMENT_SEL_RE.test(rule.selectorText)
       for (let j = 0; j < style.length; j++) {
         const prop = style[j]
-        // attr(data-x) observes the source attribute value even when no selector names it.
-        // Scanning every declaration rides the existing CSSOM pass and therefore also covers
-        // pseudo content and nested/grouped rules.
         let propValue
         const readValue = () => propValue ??= style.getPropertyValue(prop)
-        if (styleHasAttr) {
-          const value = readValue()
-          if (/attr\s*\(/i.test(value)) {
-            if (value.includes('\\')) state.dataAttrIdentityBlocked = true
-            else collectDataAttrText(value, state)
-          }
-        }
+        // attr(data-x) observes the source attribute value even when no selector names it.
+        // Only declarations that could contain attr() pay the value scan. Backslashes are
+        // included because the function name itself may be escaped.
+        if (styleMayHaveAttr) collectValueDataAttrs(readValue(), state)
         universe.add(prop)
         if (pseudoRule) state.pseudoProps.add(prop)
         if (style.getPropertyPriority(prop)) state.importantProps.add(prop)
@@ -198,10 +355,7 @@ function scanRules(rules, universe, pseudoSels, state) {
     let sel = rule.selectorText
     // Attribute selectors anywhere in the selector, including inside :has(), :is(), :not(),
     // and ancestor compounds, make the named data attribute style-observable.
-    if (sel && sel.includes('[')) {
-      if (sel.includes('\\')) state.dataAttrIdentityBlocked = true
-      else collectDataAttrText(sel, state)
-    }
+    if (sel && sel.includes('[')) collectSelectorDataAttrs(sel, state)
     // `:has()` is the one selector whose reach a DOM mutation cannot be walked back from — it
     // restyles ancestors AND, combined with a combinator, their other descendants. A document
     // that uses it keeps document-wide style invalidation (see nodeStamp in styles.js).

@@ -19,7 +19,8 @@ import { createCaptureSession } from './session.js'
 import { sessionWarn } from '../utils/debug.js'
 import { lineClampTree } from '../modules/lineClamp.js'
 import { runHook, getGlobalPlugins, normalizePlugin } from './plugins.js'
-import { styleSharePlan } from '../modules/styles.js'
+import { prepareStyleCapture, styleSharePlan } from '../modules/styles.js'
+import { preparePseudoEnvironment } from '../modules/pseudo.js'
 import { stageReaches, DEFAULT_STAGE } from './stages.js'
 import { compressCloneAssets, numberCompressedAssets, snapshotCompressedAssets } from '../modules/compress.js'
 import { applyTextFieldSelectionLayers } from '../modules/selection.js'
@@ -70,6 +71,16 @@ function collectResolveNodeHooks(options) {
 export async function captureDOM(element, options) {
   if (!element) throw new Error('Element cannot be null or undefined')
   options.__session = createCaptureSession(options.cache)
+  // Adopted stylesheet mutations have no MutationObserver signal. The pseudo preflight owns
+  // the existing stylesheet fingerprint that detects them; establish it before styleSharePlan
+  // and deepClone so it can never invalidate freshly-created snapshots halfway through the
+  // same capture.
+  preparePseudoEnvironment(element.ownerDocument || document, options.__session)
+  // `cache:'disabled'` must invalidate the style epoch before styleSharePlan() reads the
+  // per-document dependency scan. CSSOM/adopted-sheet changes have no MutationObserver signal;
+  // deferring this reset until the first inlineAllStyles() node could make the plan one capture
+  // stale even though every ordinary cache had already been cleared.
+  prepareStyleCapture(options.__session, options.cache)
   delete options.__compressedAssets
   delete options.__compressedSnapshot
   delete options.__compressionDensity

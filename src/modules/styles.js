@@ -20,7 +20,7 @@ import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getS
 import { getDefaultStyleForTag, LOGICAL_TO_PHYSICAL } from '../utils/css.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
-import { scanAuthorStyles } from './styleScan.js'
+import { scanAuthorStyles, scanInlineStyleDataAttrs } from './styleScan.js'
 import { isInternalNode, markInternalNode } from '../utils/ownership.js'
 import {
   BACKGROUND_INLINE_FLAG_PROPS,
@@ -159,6 +159,17 @@ export function getStyleStamp(element) {
 export function invalidateStyleCaches() {
   bumpEpoch()
   __envEpoch++
+}
+
+/** Prepare style-local persistent state for a cache-disabled capture BEFORE any consumer reads
+ * the document scan. captureDOM calls this immediately after creating the session, before
+ * styleSharePlan(). Keeping the fallback call in inlineAllStyles also preserves correctness for
+ * isolated/internal callers that bypass captureDOM. */
+export function prepareStyleCapture(session, cachePolicy) {
+  if (cachePolicy !== 'disabled' || !session || session.__styleCachesPrepared) return
+  bumpEpoch()
+  snapshotKeyCache.clear()
+  session.__styleCachesPrepared = true
 }
 
 /** Per-node style stamps: how far a DOM mutation is allowed to reach.
@@ -1416,13 +1427,13 @@ const SHARE_SKIP_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGR
 
 /** The capture's share state, made on first use: identity ids per node, the intern table,
  *  one snapshot record per identity. Lives on the session, so it dies with the capture. */
-function shareStateOf(session, selectors = null, doc = document) {
+function shareStateOf(session, selectors = null, doc = document, useDataAttrIdentity = true) {
   let st = session.__styleShare
   if (!st || st.selectors !== selectors) {
     const scan = scanFor(doc)
     st = session.__styleShare = {
       ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors,
-      dataAttrs: scan.styleIdentityDataAttrs,
+      dataAttrs: useDataAttrIdentity ? scan.styleIdentityDataAttrs : null,
     }
   }
   return st
@@ -1484,16 +1495,37 @@ function identityFor(el, st, selectors = null) {
   let attrs = ''
   const list = el.attributes
   if (list && list.length) {
-    const parts = []
     const dataAttrs = st.dataAttrs
+    let inlineDataAttrs
+    let first = ''
+    let parts = null
     for (let i = 0; i < list.length; i++) {
       const attr = list[i]
       const name = attr.name
-      if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) continue
-      parts.push(name + '=' + attr.value)
+      if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) {
+        // Engine-owned markers participate in shadow/pseudo/internal pipeline contracts that
+        // are not necessarily represented in the page's author stylesheet scan. Never elide
+        // them from style identity, even if they happen to appear on a source node.
+        if (name.startsWith('data-snapdom-') || name.startsWith('data-sd')) {
+          const part = name + '=' + attr.value
+          if (!first) first = part
+          else if (parts) parts.push(part)
+          else parts = [first, part]
+          continue
+        }
+        if (inlineDataAttrs === undefined) inlineDataAttrs = scanInlineStyleDataAttrs(el.style)
+        if (inlineDataAttrs !== null && !inlineDataAttrs.has(name)) continue
+      }
+      const part = name + '=' + attr.value
+      if (!first) first = part
+      else if (parts) parts.push(part)
+      else parts = [first, part]
     }
-    if (parts.length > 1) parts.sort()
-    attrs = parts.join('\u0001')
+    // The overwhelmingly common post-R4 case is zero/one style-observable attribute. Avoid
+    // allocating an array for those nodes; only the multi-attribute case needs canonical
+    // sorting to preserve sharing when equivalent DOM was authored in a different order.
+    if (parts) { parts.sort(); attrs = parts.join('\u0001') }
+    else attrs = first
   }
   let fp = ''
   if (selectors && selectors.length) {
@@ -1832,11 +1864,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // observers and watched a document the captured element does not live in.
   if (resetMode !== 'disabled') setupInvalidationOnce(source.ownerDocument)
 
-  if (resetMode === 'disabled' && !ctx.session.__bumpedForDisabled) {
-    bumpEpoch()
-    snapshotKeyCache.clear()
-    ctx.session.__bumpedForDisabled = true
-  }
+  prepareStyleCapture(ctx.session, resetMode)
 
   const { session, persist } = ctx
 
@@ -1892,7 +1920,12 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   let shareInfo = null
   if (ctx.options && ctx.options.__styleShare && session.styleMap) {
     const selectors = ctx.options.__styleShareSelectors || null
-    const st = shareStateOf(session, selectors, source.ownerDocument || document)
+    const st = shareStateOf(
+      session,
+      selectors,
+      source.ownerDocument || document,
+      ctx.options.__styleIdentityDataAttrs !== false,
+    )
     const id = identityFor(source, st, selectors)
     const doc = source.ownerDocument || document
     const active = doc.activeElement

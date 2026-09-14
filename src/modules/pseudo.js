@@ -55,6 +55,15 @@ const CSS_RULE_SCAN_BUDGET = 1000
  * @returns {boolean}
  */
 function preflightWithFp(doc, sessionCache) {
+  // captureDOM pins the top document's stylesheet environment before any style snapshot is
+  // taken. Re-running the fingerprint after deepClone would both duplicate the document/sheet
+  // census and, worse, allow a mid-capture adopted-sheet edit to invalidate only the LATER
+  // phases while the clone still carries the earlier styles. Keep one coherent transaction.
+  // Direct/internal callers that did not establish a pin retain the historical recheck path.
+  if (sessionCache?.__pseudoEnvironmentPinnedDoc === doc &&
+      sessionCache.__pseudoPreflightFp !== undefined) {
+    return !!sessionCache.__pseudoPreflight
+  }
   const fp = styleFingerprint(doc)
   if (!sessionCache) {
     flushStyleInvalidations()
@@ -69,6 +78,20 @@ function preflightWithFp(doc, sessionCache) {
     sessionCache.__pseudoPreflightFp = fp
   }
   return !!sessionCache.__pseudoPreflight
+}
+
+/** Establish and pin the document's pseudo/style-sheet environment before any capture phase
+ * consumes epoch-scoped style data. Adopted stylesheet assignment/replaceSync emits no mutation
+ * record; historically this preflight discovered that only AFTER deepClone had snapshotted
+ * styles, then invalidateStyleCaches() made those brand-new snapshots stale before the
+ * background pass. The capture-boundary preflight makes one coherent style transaction: later
+ * pseudo work in the same session reuses this fingerprint instead of invalidating only the tail
+ * of an already-started capture. Direct/internal callers that never establish a pin retain the
+ * historical recheck behavior. */
+export function preparePseudoEnvironment(doc = document, sessionCache) {
+  const result = preflightWithFp(doc, sessionCache)
+  if (sessionCache) sessionCache.__pseudoEnvironmentPinnedDoc = doc
+  return result
 }
 /**
  * Safely returns cssRules for a stylesheet, or null when cross-origin/blocked.
