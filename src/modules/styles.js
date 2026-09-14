@@ -706,6 +706,12 @@ const ELEMENT_UNIVERSE_GROUPS = [
 const elementUniverseStates = new WeakMap()
 const elementUniverseBoxes = new WeakMap()
 let elementUniversePeers = null
+// R5 composition router: after the ancestor-default setup reduction below, the mechanism's
+// crossover is governed mainly by the NUMBER of distinct first-seen identities, not by their
+// fraction of all nodes. Keep the first few misses on pure R2, then let later misses use R3.
+// The decision is based on PRIOR misses, so a capture with exactly N identities never pays R3
+// setup merely because its final identity reached the threshold. Hits never pay R3.
+const STYLE_SHARE_ELEMENT_UNIVERSE_MIN_MISSES = 5
 
 function universePeers() {
   if (elementUniversePeers) return elementUniversePeers
@@ -730,6 +736,8 @@ function elementUniverseStateFor(doc, scan) {
       scan,
       ua: new Map(),
       missing: new Map(),
+      ancestorUa: new Map(),
+      initial: null,
       measured: 0,
       blocked: false,
       seen: new Set(),
@@ -740,6 +748,100 @@ function elementUniverseStateFor(doc, scan) {
     elementUniverseStates.set(doc, st)
   }
   return st
+}
+
+/**
+ * CSS initial values needed by R3, restricted to THIS document's measured property universe.
+ *
+ * The old path called getDefaultStyleForTag('x-snapdom-universe'), whose generic contract
+ * enumerates the browser's entire CSSStyleDeclaration (~hundreds of properties) plus fallback
+ * names. That synthetic tag exists only for R3, so all of those properties outside `universe`
+ * were pure cold-start work. Measure the same engine-specific `all:initial` reference, but only
+ * for names R3 can actually read. The result is tied to the style scan/epoch via `st` and any
+ * uncertainty still blocks narrowing rather than changing output.
+ */
+function measureUniverseInitialDefaults(doc, st, universe) {
+  if (st.initial) return st.initial
+  if (doc !== document) {
+    st.blocked = true
+    return null
+  }
+  const initial = new Map()
+  let node = null
+  try {
+    let box = elementUniverseBoxes.get(doc)
+    if (!box || !box.isConnected) {
+      box = doc.createElement('div')
+      markInternalNode(box)
+      box.setAttribute('aria-hidden', 'true')
+      box.style.cssText = 'all:initial;display:block;position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden'
+      ;(doc.body || doc.documentElement).appendChild(box)
+      elementUniverseBoxes.set(doc, box)
+    }
+    node = doc.createElement('x-snapdom-universe')
+    markInternalNode(node)
+    node.style.all = 'initial'
+    box.appendChild(node)
+    const style = getComputedStyle(node)
+    for (const prop of universe) {
+      if (!shouldIgnoreProp(prop)) initial.set(prop, style.getPropertyValue(prop))
+    }
+  } catch {
+    st.blocked = true
+    return null
+  } finally {
+    try { node?.remove() } catch {}
+  }
+  st.initial = initial
+  return initial
+}
+
+/**
+ * UA-default properties on an ANCESTOR can affect `el` only through inheritance. The original
+ * R3 setup reused the target-element probe here, which built a complete SnapDOM default-style
+ * map and read the whole document universe for <html>, <body>, and every distinct ancestor tag.
+ * Those non-inherited values can never flow into the descendant snapshot, so that work was a
+ * pure cold-start tax. Compare only inherited properties against the shared CSS-initial probe.
+ * Any uncertainty still blocks R3, exactly like measureElementTagDefaults.
+ */
+function measureAncestorTagDefaults(doc, st, tag, universe) {
+  let ua = st.ancestorUa.get(tag)
+  if (ua) return ua
+  if (st.measured >= 48 || doc !== document) {
+    st.blocked = true
+    return null
+  }
+  st.measured++
+  ua = new Set()
+  let node = null
+  try {
+    const initial = measureUniverseInitialDefaults(doc, st, universe)
+    if (!initial || st.blocked) return null
+    let box = elementUniverseBoxes.get(doc)
+    if (!box || !box.isConnected) {
+      box = doc.createElement('div')
+      markInternalNode(box)
+      box.setAttribute('aria-hidden', 'true')
+      box.style.cssText = 'all:initial;display:block;position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden'
+      ;(doc.body || doc.documentElement).appendChild(box)
+      elementUniverseBoxes.set(doc, box)
+    }
+    node = doc.createElement(tag)
+    box.appendChild(node)
+    const style = getComputedStyle(node)
+    for (const prop of ELEMENT_UNIVERSE_INHERITED) {
+      if (!universe.has(prop) || shouldIgnoreProp(prop)) continue
+      const value = style.getPropertyValue(prop)
+      if (value && (!initial.has(prop) || value !== initial.get(prop))) ua.add(prop)
+    }
+  } catch {
+    st.blocked = true
+    return null
+  } finally {
+    try { node?.remove() } catch {}
+  }
+  st.ancestorUa.set(tag, ua)
+  return ua
 }
 
 function measureElementTagDefaults(doc, st, tag, universe) {
@@ -755,6 +857,8 @@ function measureElementTagDefaults(doc, st, tag, universe) {
   missing = new Set()
   let node = null
   try {
+    const initial = measureUniverseInitialDefaults(doc, st, universe)
+    if (!initial || st.blocked) return null
     let box = elementUniverseBoxes.get(doc)
     if (!box || !box.isConnected) {
       box = doc.createElement('div')
@@ -767,13 +871,12 @@ function measureElementTagDefaults(doc, st, tag, universe) {
     node = doc.createElement(tag)
     box.appendChild(node)
     const style = getComputedStyle(node)
-    const initial = getDefaultStyleForTag('x-snapdom-universe')
     const defaults = getDefaultStyleForTag(tag)
     for (const prop of universe) {
       if (shouldIgnoreProp(prop)) continue
       const value = style.getPropertyValue(prop)
       if (!value) continue
-      if (!(prop in initial) || value !== initial[prop]) ua.add(prop)
+      if (!initial.has(prop) || value !== initial.get(prop)) ua.add(prop)
       if (!(prop in defaults)) missing.add(prop)
     }
   } catch {
@@ -812,8 +915,17 @@ function matchesElementAllRule(el, rules) {
  * A safe subset of the document property universe for one element. Any uncertainty returns
  * `universe` unchanged, so this function can only cost performance, never fidelity.
  */
-function elementUniverseFor(el, style, options, universe, backgroundState = null) {
-  if (!universe || !el || options?.__styleShare || options?.__elementUniverse === false) return universe
+function elementUniverseFor(el, style, options, universe, backgroundState = null, allowSharedUniverse = false) {
+  // R2 and R3 were originally kept mutually exclusive. That is conservative but creates a
+  // pathological high-entropy region: when every element has a distinct share identity, R2
+  // produces no hits yet forces every first-seen identity through the full document universe.
+  // R5 probes composition behind an internal flag. The share identity itself is unchanged;
+  // only the first snapshot stored for that exact identity may use R3's already-conservative
+  // property subset. Twins then reuse the same narrowed snapshot and the same used-value re-read
+  // contract as before. Any uncertainty inside R3 still returns the full universe.
+  if (!universe || !el ||
+      (options?.__styleShare && !allowSharedUniverse) ||
+      options?.__elementUniverse === false) return universe
   const doc = el.ownerDocument || document
   if (doc !== document || (el.getRootNode && el.getRootNode() !== doc)) return universe
   const tag = el.localName?.toLowerCase()
@@ -870,10 +982,16 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     const attrs = a.attributes
     if (attrs) for (let i = 0; i < attrs.length; i++) if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[i].name)) return bail()
     if (at && !at.includes('-')) {
-      const measured = measureElementTagDefaults(doc, st, at, universe)
-      if (!measured || st.blocked) return bail()
-      for (const prop of measured.ua) push(prop)
-      for (const prop of measured.missing) push(prop)
+      if (a === el) {
+        const measured = measureElementTagDefaults(doc, st, at, universe)
+        if (!measured || st.blocked) return bail()
+        for (const prop of measured.ua) push(prop)
+        for (const prop of measured.missing) push(prop)
+      } else {
+        const inheritedUa = measureAncestorTagDefaults(doc, st, at, universe)
+        if (!inheritedUa || st.blocked) return bail()
+        for (const prop of inheritedUa) push(prop)
+      }
     }
     const inline = a.style
     if (inline?.length) {
@@ -1434,6 +1552,8 @@ function shareStateOf(session, selectors = null, doc = document, useDataAttrIden
     st = session.__styleShare = {
       ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors,
       dataAttrs: useDataAttrIdentity ? scan.styleIdentityDataAttrs : null,
+      snapshotMisses: 0,
+      routerMinMisses: 0,
     }
   }
   return st
@@ -1671,6 +1791,31 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   let snap
   let dyn = null
   const shared = shareInfo && shareInfo.st.snaps.get(shareInfo.id)
+  let allowSharedUniverse = false
+  if (shareInfo) {
+    const shareState = shareInfo.st
+    const mode = options?.__styleShareElementUniverse
+    if (mode === true) {
+      allowSharedUniverse = !shared
+    } else if (mode !== false) {
+      // Parse/tame the experimental knob once per capture. Re-running Number()/isFinite()/floor
+      // on every first-seen identity moves needless work into the exact miss-heavy path we are
+      // optimizing.
+      if (!shareState.routerMinMisses) {
+        const configured = Number(options?.__styleShareElementUniverseMinMisses)
+        shareState.routerMinMisses = Number.isFinite(configured) && configured > 0
+          ? Math.max(1, Math.floor(configured))
+          : STYLE_SHARE_ELEMENT_UNIVERSE_MIN_MISSES
+      }
+      if (!shared) {
+        // Decide from PRIOR misses. With the production threshold of 5, the first five distinct
+        // snapshots stay pure R2; only later misses can pay R3. That protects low-cardinality
+        // sharing while recovering the high-entropy region without a whole-tree preflight.
+        allowSharedUniverse = shareState.snapshotMisses >= shareState.routerMinMisses
+        shareState.snapshotMisses++
+      }
+    }
+  }
   if (shared) {
     // Identity hit: copy the shared full read, then re-read only the layout-varying props on
     // THIS node. The non-enumerable riders carry over: __bgClipTextFix derives from colors,
@@ -1707,7 +1852,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       style,
       options,
       el,
-      elementUniverseFor(el, style, options, docUniverse, backgroundState),
+      elementUniverseFor(el, style, options, docUniverse, backgroundState, allowSharedUniverse),
       backgroundState,
     )
     if (shareInfo) {

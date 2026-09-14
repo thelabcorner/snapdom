@@ -162,6 +162,16 @@ export function createContext(options = {}) {
     // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
     // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
     __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,
+    // Internal R5 composition control. `true` forces R3's per-element property universe on
+    // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
+    // and `undefined` uses the adaptive production router. Identity hits still reuse the
+    // stored snapshot and re-read the existing used-value list.
+    __styleShareElementUniverse: options.__styleShareElementUniverse,
+    // Internal R5 tuning knob for the adaptive composition router. Production behavior uses
+    // the module default; tests/benchmarks can move the first-seen-identity crossover without
+    // source edits. A value of N means the first N DISTINCT share misses stay on pure R2 and
+    // only later misses may use R3. Identity hits do not advance the counter.
+    __styleShareElementUniverseMinMisses: options.__styleShareElementUniverseMinMisses,
 
     // Network
     useProxy: typeof options.useProxy === 'string' ? options.useProxy : '',
