@@ -125,7 +125,16 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (--state.budget < 0) return false
     const rule = rules[i]
     const style = rule.style
+    let hasAll = false
     if (style) {
+      // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
+      // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
+      // per selector below so an unrelated reset rule does not disable narrowing globally.
+      try {
+        hasAll = !!style.getPropertyValue('all') || /(?:^|;)\s*all\s*:/i.test(style.cssText || '')
+      } catch {
+        state.elementUniverseBlocked = true
+      }
       const pseudoRule = !!rule.selectorText && PSEUDO_ELEMENT_SEL_RE.test(rule.selectorText)
       for (let j = 0; j < style.length; j++) {
         const prop = style[j]
@@ -154,6 +163,35 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (sel && sel.includes('&')) {
       for (let p = rule.parentRule; p && sel.includes('&'); p = p.parentRule) {
         if (p.selectorText) sel = sel.replace(/&/g, `:is(${p.selectorText})`)
+      }
+    }
+    // Retain one selector -> declared-properties index for the per-element universe.
+    // Pseudo-element selectors do not style the host element. Unresolved nesting is kept
+    // conservatively as an always-relevant property set rather than trusted by matches().
+    if (sel && style && style.length) {
+      const props = []
+      if (!hasAll) {
+        for (let j = 0; j < style.length; j++) {
+          const prop = style[j]
+          if (prop !== 'all') props.push(prop)
+        }
+      }
+      for (const part of splitTopLevel(sel, ',')) {
+        const one = part.trim()
+        if (!one || PSEUDO_ELEMENT_SEL_RE.test(one)) continue
+        if (hasAll) {
+          if (one.includes('&')) state.elementUniverseBlocked = true
+          else state.elementAllRules.push({ sel: one, key: subjectKeyOf(one) })
+          continue
+        }
+        if (props.length) {
+          for (const prop of props) state.elementDeclaredProps.add(prop)
+          if (one.includes('&')) {
+            for (const prop of props) state.elementAlwaysProps.add(prop)
+          } else {
+            state.elementRules.push({ sel: one, key: subjectKeyOf(one), props })
+          }
+        }
       }
     }
     // Selectors that can style two elements with IDENTICAL tag + attributes + ancestor chain
@@ -302,18 +340,34 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  * - `marginUnstable` / `paddingUnstable`: a %, auto, calc() or var() value in that family
  *   anywhere, so twins re-read it.
  * - `importantProps`: every property some rule declares `!important`.
+ * - `elementRules` / `elementDeclaredProps` / `elementAlwaysProps`: selector-indexed
+ *   declarations used by the per-element property-universe fast path. They are null on an
+ *   unreliable scan; `elementAllRules` carries selector-scoped `all` resets,
+ *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
+ *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
   // the document has no `:has()`, and the narrowing must only run on a promise.
-  const unreliable = { universe: null, pseudoUniverse: null, usesHas: true, shareGate: null, marginUnstable: true, paddingUnstable: true, importantProps: null, pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null } }
+  const unreliable = {
+    universe: null, pseudoUniverse: null, usesHas: true, shareGate: null,
+    marginUnstable: true, paddingUnstable: true, importantProps: null,
+    pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
+    elementRules: null, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
+    elementUniverseBlocked: true, hasAnimations: true,
+  }
   try {
     const universe = new Set(ALWAYS_PROPS)
     const pseudoSels = { before: [], after: [], firstLetter: [], marker: [], firstLine: [] }
-    const state = { budget: MAX_SCAN_RULES, usesHas: false, shareUnsafeSels: new Set(), inContainer: 0, marginUnstable: false, paddingUnstable: false, importantProps: new Set(), pseudoProps: new Set() }
+    const state = {
+      budget: MAX_SCAN_RULES, usesHas: false, shareUnsafeSels: new Set(), inContainer: 0,
+      marginUnstable: false, paddingUnstable: false, importantProps: new Set(), pseudoProps: new Set(),
+      elementRules: [], elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
+      elementUniverseBlocked: false, hasAnimations: false,
+    }
     for (const sheet of doc.styleSheets) {
       if (!scanSheet(sheet, universe, pseudoSels, state)) return unreliable
     }
@@ -325,7 +379,9 @@ export function scanAuthorStyles(doc) {
     }
     // Programmatic (WAAPI) animations don't live in stylesheets — union their keyframe props.
     if (typeof doc.getAnimations === 'function') {
-      for (const anim of doc.getAnimations()) {
+      const animations = doc.getAnimations()
+      state.hasAnimations = animations.length > 0
+      for (const anim of animations) {
         const frames = anim.effect?.getKeyframes?.() || []
         for (const frame of frames) {
           for (const key of Object.keys(frame)) {
@@ -344,7 +400,22 @@ export function scanAuthorStyles(doc) {
     const pseudoUniverse = new Set(PSEUDO_BOX_PROPS)
     for (const p of INHERITED_PROPS) if (universe.has(p)) pseudoUniverse.add(p)
     for (const p of state.pseudoProps) pseudoUniverse.add(p)
-    return { universe, pseudoUniverse, pseudoGates: composePseudoGates(doc, pseudoSels), usesHas: state.usesHas, shareGate, marginUnstable: state.marginUnstable, paddingUnstable: state.paddingUnstable, importantProps: state.importantProps }
+    return {
+      universe,
+      pseudoUniverse,
+      pseudoGates: composePseudoGates(doc, pseudoSels),
+      usesHas: state.usesHas,
+      shareGate,
+      marginUnstable: state.marginUnstable,
+      paddingUnstable: state.paddingUnstable,
+      importantProps: state.importantProps,
+      elementRules: state.elementRules,
+      elementAllRules: state.elementAllRules,
+      elementDeclaredProps: state.elementDeclaredProps,
+      elementAlwaysProps: state.elementAlwaysProps,
+      elementUniverseBlocked: state.elementUniverseBlocked,
+      hasAnimations: state.hasAnimations,
+    }
   } catch {
     return unreliable
   }

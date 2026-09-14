@@ -156,6 +156,9 @@ export function createContext(options = {}) {
     cache: cachePolicy,
     // Internal: identity-share override (undefined = decide per capture in captureDOM).
     __styleShare: options.__styleShare,
+    // Internal test/benchmark control: false keeps the historical document-level property
+    // universe while leaving the DOM, CSS and every other capture option unchanged.
+    __elementUniverse: options.__elementUniverse,
 
     // Network
     useProxy: typeof options.useProxy === 'string' ? options.useProxy : '',
