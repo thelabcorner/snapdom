@@ -1416,11 +1416,13 @@ const SHARE_SKIP_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGR
 
 /** The capture's share state, made on first use: identity ids per node, the intern table,
  *  one snapshot record per identity. Lives on the session, so it dies with the capture. */
-function shareStateOf(session, selectors = null) {
+function shareStateOf(session, selectors = null, doc = document) {
   let st = session.__styleShare
   if (!st || st.selectors !== selectors) {
+    const scan = scanFor(doc)
     st = session.__styleShare = {
       ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors,
+      dataAttrs: scan.styleIdentityDataAttrs,
     }
   }
   return st
@@ -1449,7 +1451,10 @@ function shareSelectorFingerprint(el, selectors) {
   return out
 }
 
-/** Interned identity id: parent's id + own tag + every attribute + optional selector vector. */
+/** Interned identity id: parent's id + own tag + style-observable attributes + optional
+ * selector vector. R4 may omit a data-* attribute from THIS CACHE KEY only when styleScan's
+ * complete dependency index proves no selector or attr() declaration can observe it. The
+ * cloned/output DOM is untouched. */
 function identityFor(el, st, selectors = null) {
   let id = st.ids.get(el)
   if (id !== undefined) return id
@@ -1479,14 +1484,16 @@ function identityFor(el, st, selectors = null) {
   let attrs = ''
   const list = el.attributes
   if (list && list.length) {
-    if (list.length === 1) {
-      attrs = list[0].name + '=' + list[0].value
-    } else {
-      const parts = []
-      for (let i = 0; i < list.length; i++) parts.push(list[i].name + '=' + list[i].value)
-      parts.sort()
-      attrs = parts.join('\u0001')
+    const parts = []
+    const dataAttrs = st.dataAttrs
+    for (let i = 0; i < list.length; i++) {
+      const attr = list[i]
+      const name = attr.name
+      if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) continue
+      parts.push(name + '=' + attr.value)
     }
+    if (parts.length > 1) parts.sort()
+    attrs = parts.join('\u0001')
   }
   let fp = ''
   if (selectors && selectors.length) {
@@ -1885,7 +1892,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   let shareInfo = null
   if (ctx.options && ctx.options.__styleShare && session.styleMap) {
     const selectors = ctx.options.__styleShareSelectors || null
-    const st = shareStateOf(session, selectors)
+    const st = shareStateOf(session, selectors, source.ownerDocument || document)
     const id = identityFor(source, st, selectors)
     const doc = source.ownerDocument || document
     const active = doc.activeElement

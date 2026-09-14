@@ -117,6 +117,26 @@ function stripPseudo(selectorText) {
   return s.replace(/(^|,)(\s*)(?=,|$)/g, '$1$2*')
 }
 
+// R4 style-identity dependency index. Only data-* attributes are relaxed, and only when the
+// complete stylesheet scan proves CSS cannot observe them. Any syntax we cannot confidently
+// decode blocks the optimization wholesale; a false positive costs sharing, a false negative
+// can copy the wrong computed style.
+const DATA_ATTR_NAME_RE = /data-[a-zA-Z0-9_-]+/g
+function collectDataAttrText(text, state) {
+  if (!text) return
+  const lower = text.toLowerCase()
+  if (!lower.includes('data-')) return
+  // Escaped CSS identifiers can spell an attribute name without the literal source spelling.
+  // Do not implement a second CSS parser here: fail closed and keep every data-* in identity.
+  if (text.includes('\\')) {
+    state.dataAttrIdentityBlocked = true
+    return
+  }
+  DATA_ATTR_NAME_RE.lastIndex = 0
+  let m
+  while ((m = DATA_ATTR_NAME_RE.exec(text))) state.dataAttrDeps.add(m[0].toLowerCase())
+}
+
 /** Walks a CSSRuleList adding every set property name to `universe` and every
  *  pseudo-generating selector to `pseudoSels`.
  *  Returns false when an unreadable sheet or the rule budget makes the scan unreliable. */
@@ -143,26 +163,45 @@ function scanRules(rules, universe, pseudoSels, state) {
       } catch {
         state.elementUniverseBlocked = true
       }
+      const styleHasAttr = /attr\s*\(/i.test(style.cssText || '')
       const pseudoRule = !!rule.selectorText && PSEUDO_ELEMENT_SEL_RE.test(rule.selectorText)
       for (let j = 0; j < style.length; j++) {
         const prop = style[j]
+        // attr(data-x) observes the source attribute value even when no selector names it.
+        // Scanning every declaration rides the existing CSSOM pass and therefore also covers
+        // pseudo content and nested/grouped rules.
+        let propValue
+        const readValue = () => propValue ??= style.getPropertyValue(prop)
+        if (styleHasAttr) {
+          const value = readValue()
+          if (/attr\s*\(/i.test(value)) {
+            if (value.includes('\\')) state.dataAttrIdentityBlocked = true
+            else collectDataAttrText(value, state)
+          }
+        }
         universe.add(prop)
         if (pseudoRule) state.pseudoProps.add(prop)
         if (style.getPropertyPriority(prop)) state.importantProps.add(prop)
         if (prop === 'counter-reset' || prop === 'counter-increment' || prop === 'counter-set' ||
-            (prop === 'content' && /\bcounters?\s*\(/i.test(style.getPropertyValue(prop)))) {
+            (prop === 'content' && /\bcounters?\s*\(/i.test(readValue()))) {
           state.sharePartitionBlocked = true
         }
         if (prop.length > 5 && (prop[0] === 'm' || prop[0] === 'p')) {
           const fam = prop.startsWith('margin') ? 'marginUnstable'
             : prop.startsWith('padding') ? 'paddingUnstable' : null
-          if (fam && !state[fam] && UNSTABLE_LAYOUT_VALUE_RE.test(style.getPropertyValue(prop))) {
+          if (fam && !state[fam] && UNSTABLE_LAYOUT_VALUE_RE.test(readValue())) {
             state[fam] = true
           }
         }
       }
     }
     let sel = rule.selectorText
+    // Attribute selectors anywhere in the selector, including inside :has(), :is(), :not(),
+    // and ancestor compounds, make the named data attribute style-observable.
+    if (sel && sel.includes('[')) {
+      if (sel.includes('\\')) state.dataAttrIdentityBlocked = true
+      else collectDataAttrText(sel, state)
+    }
     // `:has()` is the one selector whose reach a DOM mutation cannot be walked back from — it
     // restyles ancestors AND, combined with a combinator, their other descendants. A document
     // that uses it keeps document-wide style invalidation (see nodeStamp in styles.js).
@@ -359,6 +398,8 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  * - `marginUnstable` / `paddingUnstable`: a %, auto, calc() or var() value in that family
  *   anywhere, so twins re-read it.
  * - `importantProps`: every property some rule declares `!important`.
+ * - `styleIdentityDataAttrs`: data-* names observable by selectors/attr(), or null when the
+ *   scan cannot prove observability completely. Used only to relax style-sharing identity.
  * - `elementRules` / `elementDeclaredProps` / `elementAlwaysProps`: selector-indexed
  *   declarations used by the per-element property-universe fast path. They are null on an
  *   unreliable scan; `elementAllRules` carries selector-scoped `all` resets,
@@ -366,13 +407,14 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
   // the document has no `:has()`, and the narrowing must only run on a promise.
   const unreliable = {
     universe: null, pseudoUniverse: null, usesHas: true, shareGate: null, sharePartition: null,
+    styleIdentityDataAttrs: null,
     marginUnstable: true, paddingUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
@@ -387,6 +429,8 @@ export function scanAuthorStyles(doc) {
       shareUnsafeSels: new Set(),
       shareContainerSels: new Set(),
       sharePartitionBlocked: false,
+      dataAttrDeps: new Set(),
+      dataAttrIdentityBlocked: false,
       inContainer: 0,
       marginUnstable: false,
       paddingUnstable: false,
@@ -434,6 +478,7 @@ export function scanAuthorStyles(doc) {
       usesHas: state.usesHas,
       shareGate,
       sharePartition: { blocked: state.sharePartitionBlocked, containerSels: state.shareContainerSels },
+      styleIdentityDataAttrs: state.dataAttrIdentityBlocked ? null : state.dataAttrDeps,
       marginUnstable: state.marginUnstable,
       paddingUnstable: state.paddingUnstable,
       importantProps: state.importantProps,
