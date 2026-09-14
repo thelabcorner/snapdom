@@ -196,4 +196,38 @@ describe('R5 R2/R3 composition', () => {
       expect(routed.reads).toBeLessThan(historical.reads * 0.9)
     }
   })
+
+  it('keeps adaptive SU on R2 when residual unkeyed selector work exceeds its safety budget', async () => {
+    let unused = ''
+    for (let i = 0; i < 300; i++) unused += `[data-r5c-never-${i}]{outline-offset:${i % 3}px}`
+    const make = () => mount(`
+      .r5c-budget-root { width:820px; font:13px Arial,sans-serif; }
+      .r5c-budget-row { display:block; color:#334155; padding:2px 4px; }
+      ${unused}
+    `, (root) => {
+      root.className = 'r5c-budget-root'
+      for (let i = 0; i < 120; i++) {
+        const el = document.createElement('span')
+        el.className = `r5c-budget-row entropy-${i}`
+        el.textContent = `row ${i}`
+        root.appendChild(el)
+      }
+    })
+
+    const adaptiveRoot = make()
+    const adaptive = await capture(adaptiveRoot, undefined)
+    adaptiveRoot.remove()
+    const historicalRoot = make()
+    const historical = await capture(historicalRoot, false)
+    historicalRoot.remove()
+    const forcedRoot = make()
+    const forced = await capture(forcedRoot, true)
+
+    expect(adaptive.raw).toBe(historical.raw)
+    expect(forced.raw).toBe(historical.raw)
+    // Adaptive routing should preserve the R2 read profile, while the forced semantic
+    // counterfactual still proves R3 composition is capable of narrowing this exact scene.
+    expect(adaptive.reads).toBeLessThanOrEqual(historical.reads * 1.01)
+    expect(forced.reads).toBeLessThan(adaptive.reads * 0.8)
+  })
 })

@@ -720,6 +720,13 @@ const ELEMENT_RULE_INDEX_KEYED_FRACTION_DENOM = 3 // >= ~33% of candidate rules 
 // mainly by the number of DISTINCT first-seen share identities. Keep the first few misses on pure
 // R2, then let later misses use R3. Hits never advance the counter.
 const STYLE_SHARE_ELEMENT_UNIVERSE_MIN_MISSES = 5
+// SU also exposes R3's selector interpreter. D can cheaply remove keyed rules, but every residual
+// unkeyed rule still requires matches() on every narrowed identity. Adaptive DOE found the
+// all-unkeyed wall-time crossover between ~250 and 300 residual rules on the 400-identity scene;
+// 192 residual rules remained favorable across multiple total-rule corpora. Stay deliberately
+// below the noisy crossover. Forced composition (`__styleShareElementUniverse:true`) bypasses
+// this production safety gate so the semantic counterfactual remains testable.
+const STYLE_SHARE_ELEMENT_UNIVERSE_MAX_UNKEYED_RULES = 192
 
 function universePeers() {
   if (elementUniversePeers) return elementUniversePeers
@@ -1637,6 +1644,7 @@ function shareStateOf(session, selectors = null, doc = document, useDataAttrIden
       dataAttrs: useDataAttrIdentity ? scan.styleIdentityDataAttrs : null,
       snapshotMisses: 0,
       routerMinMisses: 0,
+      routerUniverseAllowed: undefined,
     }
   }
   return st
@@ -1894,7 +1902,15 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
         // Decide from PRIOR misses. With the production threshold of 5, the first five distinct
         // snapshots stay pure R2; only later misses can pay R3. That protects low-cardinality
         // sharing while recovering the high-entropy region without a whole-tree preflight.
-        allowSharedUniverse = shareState.snapshotMisses >= shareState.routerMinMisses
+        if (shareState.routerUniverseAllowed === undefined) {
+          const scan = scanFor(el.ownerDocument || document)
+          const totalRules = scan.elementRules?.length || 0
+          const keyedRules = scan.elementKeyedRuleCount || 0
+          shareState.routerUniverseAllowed = totalRules - keyedRules <=
+            STYLE_SHARE_ELEMENT_UNIVERSE_MAX_UNKEYED_RULES
+        }
+        allowSharedUniverse = shareState.routerUniverseAllowed &&
+          shareState.snapshotMisses >= shareState.routerMinMisses
         shareState.snapshotMisses++
       }
     }
