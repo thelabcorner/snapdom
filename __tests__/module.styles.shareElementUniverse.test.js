@@ -199,7 +199,10 @@ describe('R5 R2/R3 composition', () => {
 
   it('keeps adaptive SU on R2 when residual unkeyed selector work exceeds its safety budget', async () => {
     let unused = ''
-    for (let i = 0; i < 300; i++) unused += `[data-r5c-never-${i}]{outline-offset:${i % 3}px}`
+    // Keep these deliberately outside D2's direct-attribute key domain. A functional-pseudo
+    // argument is not treated as a necessary subject key, so this remains a true residual-rule
+    // budget test even when direct `[data-*]` selectors become indexable.
+    for (let i = 0; i < 300; i++) unused += `:is([data-r5c-never-${i}]){outline-offset:${i % 3}px}`
     const make = () => mount(`
       .r5c-budget-root { width:820px; font:13px Arial,sans-serif; }
       .r5c-budget-row { display:block; color:#334155; padding:2px 4px; }

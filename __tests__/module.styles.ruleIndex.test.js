@@ -102,4 +102,38 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('indexes direct subject attributes without treating functional-pseudo attributes as required', async () => {
+    let css = ''
+    for (let i = 0; i < 600; i++) css += `[data-idx-unused-${i}]{outline-offset:${i % 3}px}`
+    // These selectors are semantic traps for an over-aggressive attribute extractor: the
+    // subject does NOT need data-blocked/data-choice/data-child to match them.
+    css += '.idx-row:not([data-blocked]){text-transform:none}'
+    css += '.idx-row:is([data-choice],.idx-hot){text-decoration-line:none}'
+    css += '.idx-parent:has([data-kind="hot"]){outline-width:0px}'
+    // Pseudo-only forms have no direct subject attribute. If D2 accidentally indexes the
+    // attribute nested inside the functional pseudo, these rules disappear from elements that
+    // should match and the raw-byte oracle below fails.
+    css += ':not([data-blocked]){text-rendering:auto}'
+    css += ':is([data-kind="hot"],[data-kind="cold"]){text-decoration-style:solid}'
+    css += ':where([data-kind]){text-emphasis-position:over right}'
+    css += ':has(> [data-kind="hot"]){outline-style:none}'
+    // Direct attributes remain safe when they coexist with functional pseudos, multiple
+    // attributes, combinators, and bracket-looking quoted values.
+    css += ':where(.idx-row)[data-kind]{font-kerning:auto}'
+    css += '.idx-parent > [data-kind][data-optional="x"]{text-transform:none}'
+    css += '[data-kind="hot"][data-note="[literal]"]{word-break:normal}'
+    // Escaped lowercase names are safe to decode into an attribute key; uppercase HTML
+    // attribute selectors deliberately stay unkeyed to avoid cross-namespace case assumptions.
+    css += '[\\64 ata-kind="hot"]{word-spacing:0.1px}'
+    css += '[DATA-KIND="hot"]{text-indent:0px}'
+    installCSS(css)
+
+    const indexedRoot = scene()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = scene()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
 })

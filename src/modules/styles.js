@@ -910,6 +910,7 @@ function subjectKeyMatches(el, key) {
   const value = key.slice(1)
   if (key[0] === 't') return el.localName === value
   if (key[0] === 'c') return !!el.classList?.contains(value)
+  if (key[0] === 'a') return el.hasAttribute?.(value) === true
   return el.id === value
 }
 
@@ -918,7 +919,7 @@ function subjectKeyMatches(el, key) {
  * turn a local R5-D win into a document-wide allocation tax. Each rule has exactly one necessary
  * subject key (or none); buckets are therefore disjoint and require no per-element dedup Set. */
 function compileElementRuleIndex(rules) {
-  const index = { unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map() }
+  const index = { unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map() }
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i]
     const key = rule.key
@@ -928,7 +929,8 @@ function compileElementRuleIndex(rules) {
     }
     const type = key.charCodeAt(0)
     const value = key.slice(1)
-    const map = type === 116 ? index.byTag : type === 105 ? index.byId : index.byClass
+    const map = type === 116 ? index.byTag : type === 105 ? index.byId :
+      type === 97 ? index.byAttr : index.byClass
     let bucket = map.get(value)
     if (!bucket) map.set(value, (bucket = []))
     bucket.push(rule)
@@ -937,7 +939,7 @@ function compileElementRuleIndex(rules) {
 }
 
 /** Visit only selector rules whose compile-time necessary subject key exists on `el`.
- * `subjectRuleIndex()` places each rule in exactly one bucket, so the tag/id/class buckets are
+ * `subjectRuleIndex()` places each rule in exactly one bucket, so tag/id/class/attribute buckets are
  * disjoint and no deduplication allocation is needed here. Returning false asks the caller to
  * bail to the full document universe. */
 function visitIndexedElementRules(el, index, visit) {
@@ -953,6 +955,12 @@ function visitIndexedElementRules(el, index, visit) {
   if (classes) {
     for (let i = 0; i < classes.length; i++) {
       if (!walk(index.byClass.get(classes[i]))) return false
+    }
+  }
+  const attrs = index.byAttr.size ? el.attributes : null
+  if (attrs) {
+    for (let i = 0; i < attrs.length; i++) {
+      if (!walk(index.byAttr.get(attrs[i].name))) return false
     }
   }
   return true

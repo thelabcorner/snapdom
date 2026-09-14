@@ -466,6 +466,73 @@ function splitTopLevel(sel, sep) {
   return out
 }
 
+/** A direct attribute selector on the subject compound is a necessary match condition, just like
+ * a tag/class/id. Return a bucket key only for simple lowercase, non-namespaced attribute names.
+ * Functional-pseudo arguments are deliberately ignored: `[x]` in `:not([x])`, `:is(...)`, or
+ * `:has(...)` is not necessarily required on the subject and must never become an index key. */
+function directSubjectAttributeKey(subject) {
+  let paren = 0, quote = null
+  const skipEscape = (i) => {
+    if (++i >= subject.length) return i
+    if (/[0-9a-fA-F]/.test(subject[i])) {
+      let count = 1
+      while (count < 6 && i + 1 < subject.length && /[0-9a-fA-F]/.test(subject[i + 1])) { i++; count++ }
+      if (i + 1 < subject.length && CSS_WS_RE.test(subject[i + 1])) {
+        if (subject[i + 1] === '\r' && subject[i + 2] === '\n') i++
+        i++
+      }
+    }
+    return i
+  }
+  for (let i = 0; i < subject.length; i++) {
+    const c = subject[i]
+    if (c === '\\') { i = skipEscape(i); continue }
+    if (quote) { if (c === quote) quote = null; continue }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === '(') { paren++; continue }
+    if (c === ')') { if (paren) paren--; continue }
+    if (paren || c !== '[') continue
+
+    let j = i + 1
+    while (j < subject.length && CSS_WS_RE.test(subject[j])) j++
+    let raw = '', namespaced = false
+    while (j < subject.length) {
+      const x = subject[j]
+      if (x === '\\') {
+        const start = j
+        j = skipEscape(j)
+        raw += subject.slice(start, j + 1)
+        j++
+        continue
+      }
+      if (x === '|' && subject[j + 1] !== '=') { namespaced = true; break }
+      if (x === ']' || CSS_WS_RE.test(x) || x === '=' ||
+          ((x === '~' || x === '|' || x === '^' || x === '$' || x === '*') && subject[j + 1] === '=')) break
+      raw += x
+      j++
+    }
+    if (!namespaced && raw) {
+      const name = decodeCssEscapes(raw)
+      // Lowercase-only is a deliberate cross-namespace safety restriction. It is correct for
+      // HTML and exact for lowercase SVG/XML attrs, while uppercase/case-sensitive names simply
+      // stay on the historical unkeyed path.
+      if (name === name.toLowerCase() && /^[-_a-z][-_a-z0-9]*$/.test(name)) return 'a' + name
+    }
+
+    // Skip this complete attribute selector before looking for another direct one. This avoids
+    // interpreting a literal `[` inside a quoted attribute value as a second selector.
+    let innerQuote = null
+    for (; i < subject.length; i++) {
+      const x = subject[i]
+      if (x === '\\') { i = skipEscape(i); continue }
+      if (innerQuote) { if (x === innerQuote) innerQuote = null; continue }
+      if (x === '"' || x === "'") { innerQuote = x; continue }
+      if (x === ']') break
+    }
+  }
+  return null
+}
+
 /** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
  *  the first class, else the id, else the tag of its RIGHTMOST compound (the compound the
  *  subject itself must satisfy). null = no usable key, always a candidate. Tailwind-shaped
@@ -497,6 +564,8 @@ function subjectKeyOf(sel) {
   if (cls) return 'c' + cls
   const id = ident((compound.match(/#((?:\\.|[\w-])+)/) || [])[1])
   if (id) return 'i' + id
+  const attr = directSubjectAttributeKey(sel.slice(cut))
+  if (attr) return attr
   const tag = (compound.match(/^([a-zA-Z][\w-]*)/) || [])[1]
   return tag ? 't' + tag.toLowerCase() : null
 }
