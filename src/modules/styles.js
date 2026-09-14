@@ -721,10 +721,10 @@ function elementUniverseStateFor(doc, scan) {
       missing: new Map(),
       measured: 0,
       blocked: false,
+      ancestor: new WeakMap(),
       seen: new Set(),
       trigger: new Set(),
       queue: [],
-      keyset: new Set(),
     }
     elementUniverseStates.set(doc, st)
   }
@@ -776,25 +776,105 @@ function measureElementTagDefaults(doc, st, tag, universe) {
   return { ua, missing }
 }
 
-function subjectKeyMatches(el, key) {
-  if (key === null) return true
-  const value = key.slice(1)
-  if (key[0] === 't') return el.localName === value
-  if (key[0] === 'c') return !!el.classList?.contains(value)
-  return el.id === value
+/** Visit only selector rules whose rightmost subject could be `el`, plus the conservative
+ * wildcard bucket. The stylesheet scan already paid to derive these keys; consuming the same
+ * dependency index here avoids O(all stylesheet rules × captured elements) work. */
+function forElementRuleCandidates(el, index, visit) {
+  if (!index) return true
+  const run = (key) => {
+    const list = index.get(key)
+    if (!list) return true
+    for (const rule of list) if (visit(rule) === false) return false
+    return true
+  }
+  if (!run(null)) return false
+  if (!run('t' + el.localName)) return false
+  if (el.id && !run('i' + el.id)) return false
+  const classes = el.classList
+  if (classes) for (let i = 0; i < classes.length; i++) if (!run('c' + classes[i])) return false
+  return true
 }
 
-function matchesElementAllRule(el, rules) {
-  if (!rules?.length) return false
-  for (const rule of rules) {
-    if (!subjectKeyMatches(el, rule.key)) continue
+function matchesElementAllRule(el, index) {
+  let matched = false
+  const safe = forElementRuleCandidates(el, index, (rule) => {
     try {
-      if (el.matches(rule.sel)) return true
+      if (el.matches(rule.sel)) { matched = true; return false }
     } catch {
-      return true
+      matched = true
+      return false
     }
+    return true
+  })
+  return matched || !safe
+}
+
+const EMPTY_ELEMENT_UNIVERSE_CONTEXT = Object.freeze({ unsafe: false, props: new Set() })
+
+/** Cumulative inherited dependency proof for one ancestor chain. Kept per scan/epoch so
+ * descendants reuse the same selector and UA/default work; uncertainty remains fail-closed. */
+function inheritedElementContextFor(node, scan, st, universe) {
+  if (!node || node.nodeType !== 1) return EMPTY_ELEMENT_UNIVERSE_CONTEXT
+  const hit = st.ancestor.get(node)
+  if (hit) return hit
+
+  const pending = []
+  let cur = node
+  let base = EMPTY_ELEMENT_UNIVERSE_CONTEXT
+  for (let depth = 0; cur && cur.nodeType === 1; depth++) {
+    if (depth >= 1024) return null
+    const cached = st.ancestor.get(cur)
+    if (cached) { base = cached; break }
+    pending.push(cur)
+    cur = cur.parentElement
   }
-  return false
+
+  for (let i = pending.length - 1; i >= 0; i--) {
+    const el = pending[i]
+    if (base.unsafe) {
+      st.ancestor.set(el, base)
+      continue
+    }
+    const tag = el.localName?.toLowerCase()
+    let unsafe = !!(tag && ELEMENT_UNIVERSE_RISK_ANCESTORS.has(tag))
+    if (!unsafe && matchesElementAllRule(el, scan.elementAllRuleIndex)) unsafe = true
+    if (!unsafe) {
+      const attrs = el.attributes
+      if (attrs) for (let j = 0; j < attrs.length; j++) {
+        if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[j].name)) { unsafe = true; break }
+      }
+    }
+    if (unsafe) {
+      base = { unsafe: true, props: base.props }
+      st.ancestor.set(el, base)
+      continue
+    }
+
+    const props = new Set(base.props)
+    if (tag && !tag.includes('-')) {
+      const measured = measureElementTagDefaults(el.ownerDocument || document, st, tag, universe)
+      if (!measured || st.blocked) return null
+      for (const prop of measured.ua) if (ELEMENT_UNIVERSE_INHERITED.has(prop)) props.add(prop)
+      for (const prop of measured.missing) if (ELEMENT_UNIVERSE_INHERITED.has(prop)) props.add(prop)
+    }
+    const inline = el.style
+    if (inline?.length) for (let j = 0; j < inline.length; j++) {
+      const prop = inline[j]
+      if (prop === 'all') return null
+      if (ELEMENT_UNIVERSE_INHERITED.has(prop)) props.add(prop)
+    }
+    const candidatesSafe = forElementRuleCandidates(el, scan.elementRuleIndex, (rule) => {
+      if (!rule.props.length) return true
+      let matched = false
+      try { matched = el.matches(rule.sel) } catch { return false }
+      if (matched) for (const prop of rule.props) if (ELEMENT_UNIVERSE_INHERITED.has(prop)) props.add(prop)
+      return true
+    })
+    if (!candidatesSafe) return null
+    base = { unsafe: false, props }
+    st.ancestor.set(el, base)
+  }
+  return base
 }
 
 /**
@@ -817,14 +897,13 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   } catch { return universe }
 
   const scan = scanFor(doc)
-  if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations) return universe
+  if (!scan.elementRuleIndex || scan.elementUniverseBlocked || scan.hasAnimations) return universe
   const st = elementUniverseStateFor(doc, scan)
   if (st.blocked) return universe
   const seen = st.seen
   const trigger = st.trigger
   const queue = st.queue
-  const keyset = st.keyset
-  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  seen.clear(); trigger.clear(); queue.length = 0
   const selected = new Set()
   const push = (prop) => {
     if (!trigger.has(prop)) { trigger.add(prop); queue.push(prop) }
@@ -834,12 +913,11 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     }
   }
   const bail = () => {
-    seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+    seen.clear(); trigger.clear(); queue.length = 0
     return universe
   }
 
   for (const prop of ELEMENT_UNIVERSE_MUST) push(prop)
-  for (const prop of scan.elementDeclaredProps || []) if (ELEMENT_UNIVERSE_INHERITED.has(prop)) push(prop)
   for (const prop of scan.elementAlwaysProps || []) push(prop)
   // Downstream snapshot contract: background.js intentionally reuses the cached snapshot.
   // Under the old document universe, an absent prop meant the document could not observe it.
@@ -850,45 +928,34 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   if (backgroundState?.needsInline) for (const prop of MASK_LAYOUT_PROPS) push(prop)
   if (backgroundState?.hasBackground) for (const prop of BG_LAYOUT_PROPS) push(prop)
 
-  // Ancestor context: UA/presentational risks and inline inherited declarations.
-  let a = el, depth = 0
-  while (a && a.nodeType === 1 && depth++ < 1024) {
-    const at = a.localName?.toLowerCase()
-    if (a !== el && at && ELEMENT_UNIVERSE_RISK_ANCESTORS.has(at)) return bail()
-    if (matchesElementAllRule(a, scan.elementAllRules)) return bail()
-    const attrs = a.attributes
-    if (attrs) for (let i = 0; i < attrs.length; i++) if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[i].name)) return bail()
-    if (at && !at.includes('-')) {
-      const measured = measureElementTagDefaults(doc, st, at, universe)
-      if (!measured || st.blocked) return bail()
-      for (const prop of measured.ua) push(prop)
-      for (const prop of measured.missing) push(prop)
+  const inherited = inheritedElementContextFor(el.parentElement, scan, st, universe)
+  if (!inherited || inherited.unsafe) return bail()
+  for (const prop of inherited.props) push(prop)
+
+  if (matchesElementAllRule(el, scan.elementAllRuleIndex)) return bail()
+  const attrs = el.attributes
+  if (attrs) for (let i = 0; i < attrs.length; i++) if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[i].name)) return bail()
+  if (!tag.includes('-')) {
+    const measured = measureElementTagDefaults(doc, st, tag, universe)
+    if (!measured || st.blocked) return bail()
+    for (const prop of measured.ua) push(prop)
+    for (const prop of measured.missing) push(prop)
+  }
+  const inline = el.style
+  if (inline?.length) for (let i = 0; i < inline.length; i++) {
+    const prop = inline[i]
+    if (prop === 'all') return bail()
+    push(prop)
+    if (prop === 'display') push('grid-auto-flow')
+    if (prop === 'border-image' || prop === 'border-image-source') {
+      for (const dep of BORDER_AUX_PROPS) push(dep)
     }
-    const inline = a.style
-    if (inline?.length) {
-      for (let i = 0; i < inline.length; i++) {
-        const prop = inline[i]
-        if (prop === 'all') return bail()
-        if (a === el || ELEMENT_UNIVERSE_INHERITED.has(prop)) {
-          push(prop)
-          if (a === el && prop === 'display') push('grid-auto-flow')
-          if (a === el && (prop === 'border-image' || prop === 'border-image-source')) {
-            for (const dep of BORDER_AUX_PROPS) push(dep)
-          }
-        }
-      }
-    }
-    if (a === doc.documentElement) break
-    a = a.parentElement
   }
 
-  keyset.add('t' + tag)
-  if (el.id) keyset.add('i' + el.id)
-  if (el.classList) for (let i = 0; i < el.classList.length; i++) keyset.add('c' + el.classList[i])
-  for (const rule of scan.elementRules) {
-    if (!subjectKeyMatches(el, rule.key) || !rule.props.length) continue
+  const candidatesSafe = forElementRuleCandidates(el, scan.elementRuleIndex, (rule) => {
+    if (!rule.props.length) return true
     let hit = false
-    try { hit = el.matches(rule.sel) } catch { return bail() }
+    try { hit = el.matches(rule.sel) } catch { return false }
     if (hit) {
       for (const prop of rule.props) {
         push(prop)
@@ -902,14 +969,16 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
         }
       }
     }
-  }
+    return true
+  })
+  if (!candidatesSafe) return bail()
 
   const peers = universePeers()
   for (let i = 0; i < queue.length; i++) {
     const extra = peers.get(queue[i])
     if (extra) for (const prop of extra) push(prop)
   }
-  seen.clear(); trigger.clear(); queue.length = 0; keyset.clear()
+  seen.clear(); trigger.clear(); queue.length = 0
   return selected.size ? selected : universe
 }
 /**
