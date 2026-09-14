@@ -652,16 +652,51 @@ function simpleSubjectIdent(m) {
   return m.replace(/\\(.)/g, '$1')
 }
 
+/** Collect unescaped direct class/ID tokens from an already-stripped subject compound. Regexes
+ * are subtly unsafe here: in `#foo\\.bar` the literal dot is part of the ID, not a `.bar` class;
+ * likewise `.foo\\#bar` contains no ID. Consume escapes while scanning so punctuation can only
+ * open a new simple selector when it is actual CSS syntax. Hex-escaped idents stay fail-closed. */
+function collectDirectIdentityKeys(compound, out) {
+  out.length = 0
+  for (let i = 0; i < compound.length; i++) {
+    const c = compound[i]
+    if (c === '\\') { i = skipCssEscape(compound, i); continue }
+    if (c !== '.' && c !== '#') continue
+    const prefix = c === '.' ? 'c' : 'i'
+    let raw = ''
+    let j = i + 1
+    for (; j < compound.length;) {
+      const x = compound[j]
+      if (x === '\\') {
+        const end = skipCssEscape(compound, j)
+        raw += compound.slice(j, end + 1)
+        j = end + 1
+        continue
+      }
+      if (!/[\w-]/.test(x)) break
+      raw += x
+      j++
+    }
+    const ident = simpleSubjectIdent(raw)
+    if (ident) out.push(prefix + ident)
+    if (j > i + 1) i = j - 1
+  }
+  return out
+}
+
+const SUBJECT_KEY_SCRATCH = []
+
 /** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
  *  the first class, else the id, else a direct attribute, else the tag of its RIGHTMOST compound
  *  (the compound the subject itself must satisfy). null = no usable key, always a candidate. */
 function subjectKeyOf(sel) {
   const subject = subjectTailOf(sel)
   const compound = subjectCompoundOf(subject)
-  const cls = simpleSubjectIdent((compound.match(/\.((?:\\.|[\w-])+)/) || [])[1])
-  if (cls) return 'c' + cls
-  const id = simpleSubjectIdent((compound.match(/#((?:\\.|[\w-])+)/) || [])[1])
-  if (id) return 'i' + id
+  const identities = collectDirectIdentityKeys(compound, SUBJECT_KEY_SCRATCH)
+  // Preserve D1's historical class-first priority; D5 may later re-key the compiled rule to a
+  // more selective simultaneously-necessary condition, but the scan's primary key remains stable.
+  for (let i = 0; i < identities.length; i++) if (identities[i][0] === 'c') return identities[i]
+  for (let i = 0; i < identities.length; i++) if (identities[i][0] === 'i') return identities[i]
   const attr = directSubjectAttributeKey(subject)
   if (attr) return attr
   const tag = (compound.match(/^([a-zA-Z][\w-]*)/) || [])[1]
@@ -678,6 +713,43 @@ export function subjectAlternativeAttributeKey(sel, primary = null) {
   const subject = subjectTailOf(sel)
   const key = directSubjectAttributeKey(subject)
   return key && key !== primary ? key : null
+}
+
+/**
+ * Collect additional direct necessary keys from the selector's rightmost compound. This is a
+ * deliberately conservative planner surface, not a general selector AST: classes/IDs are read
+ * only after functional-pseudo and attribute arguments have been stripped, hex-escaped idents
+ * fail closed through simpleSubjectIdent(), and the browser still executes the full selector.
+ * `out` is caller-owned scratch storage so hot planner buckets can reuse one array.
+ */
+export function collectSubjectAlternativeKeys(sel, primary, out) {
+  out.length = 0
+  const subject = subjectTailOf(sel)
+  const compound = subjectCompoundOf(subject)
+  const add = (key) => {
+    if (!key || key === primary) return
+    for (let i = 0; i < out.length; i++) if (out[i] === key) return
+    out.push(key)
+  }
+
+  // Reuse the caller-owned scratch array all the way through. D1 chose classes before IDs, while
+  // the planner considers every simultaneously-necessary identity condition; syntax order does
+  // not matter because destination cost breaks the tie. Compact in place to drop the primary and
+  // duplicate tokens such as `.a.a` without allocating a second array per parsed rule.
+  collectDirectIdentityKeys(compound, out)
+  let write = 0
+  for (let i = 0; i < out.length; i++) {
+    const key = out[i]
+    if (!key || key === primary) continue
+    let duplicate = false
+    for (let j = 0; j < write; j++) if (out[j] === key) { duplicate = true; break }
+    if (!duplicate) out[write++] = key
+  }
+  out.length = write
+
+  const attr = directSubjectAttributeKey(subject)
+  if (attr) add(attr)
+  return out
 }
 
 /** One matches()/querySelector-ready selector list from collected parts: '' when there are

@@ -172,6 +172,10 @@ export function createContext(options = {}) {
     // lets index compilation choose the least-populated necessary subject key; the full selector
     // is still checked by matches(), so only candidate dispatch changes.
     __elementRuleKeySelectivity: options.__elementRuleKeySelectivity,
+    // Internal R5-D5 counterfactual: false limits D4 planning to its exact-attribute alternative.
+    // Default behavior also considers additional direct class/ID conditions in the subject
+    // compound while preserving browser matches() as the final semantic oracle.
+    __elementRuleCompoundKeyPlanner: options.__elementRuleCompoundKeyPlanner,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the

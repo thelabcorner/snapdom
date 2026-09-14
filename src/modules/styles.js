@@ -20,7 +20,7 @@ import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getS
 import { getDefaultStyleForTag, LOGICAL_TO_PHYSICAL } from '../utils/css.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
-import { scanAuthorStyles, scanInlineStyleDataAttrs, subjectAlternativeAttributeKey } from './styleScan.js'
+import { scanAuthorStyles, scanInlineStyleDataAttrs, subjectAlternativeAttributeKey, collectSubjectAlternativeKeys } from './styleScan.js'
 import { isInternalNode, markInternalNode } from '../utils/ownership.js'
 import {
   BACKGROUND_INLINE_FLAG_PROPS,
@@ -948,6 +948,16 @@ function indexedAttrBucketSize(index, key) {
   return index.byAttrValue.get(value.slice(0, cut))?.get(value.slice(cut + 1))?.length || 0
 }
 
+function indexedRuleBucketSize(index, key) {
+  if (!key) return Infinity
+  const value = key.slice(1)
+  const type = key.charCodeAt(0)
+  if (type === 99) return index.byClass.get(value)?.length || 0
+  if (type === 105) return index.byId.get(value)?.length || 0
+  if (type === 116) return index.byTag.get(value)?.length || 0
+  return indexedAttrBucketSize(index, key)
+}
+
 function pushIndexedAttrRule(index, key, rule) {
   const value = key.slice(1)
   if (key[0] === 'a') {
@@ -967,73 +977,97 @@ function pushIndexedAttrRule(index, key, rule) {
   bucket.push(rule)
 }
 
+function pushIndexedRule(index, key, rule) {
+  const type = key?.charCodeAt(0)
+  if (type === 97 || type === 118) {
+    pushIndexedAttrRule(index, key, rule)
+    return
+  }
+  const value = key?.slice(1)
+  const map = type === 116 ? index.byTag : type === 105 ? index.byId : type === 99 ? index.byClass : null
+  if (!map) return
+  let bucket = map.get(value)
+  if (!bucket) map.set(value, (bucket = []))
+  bucket.push(rule)
+}
+
 /**
  * Re-key only repeated class/id buckets whose rightmost compound proves that another direct
  * attribute condition could partition the bucket more finely. The D3 index itself is the
  * frequency table: singleton buckets are already optimal, so the common "many unique classes"
  * control path allocates no planner maps and reparses no selectors.
  */
-function rekeySelectiveBuckets(index, map, prefix, useAttrValue) {
+function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys = false) {
+  const scratch = []
   for (const [value, bucket] of map) {
     const sourceSize = bucket.length
     if (sourceSize < 2) continue
 
     // Avoid the selector parser entirely for ordinary class/id-only buckets. `some()` normally
     // exits on the first rule for the mixed-compound workload D4 targets.
-    let hasAttrSyntax = false
+    let hasAlternativeSyntax = false
     for (let i = 0; i < sourceSize; i++) {
-      if (bucket[i].sel.includes('[')) { hasAttrSyntax = true; break }
-    }
-    if (!hasAttrSyntax) continue
-
-    const primary = prefix + value
-    let sampled = false, sampleValue = null, heterogeneous = false
-    // Adaptive scout: 0, powers of two, and the last rule. A homogeneous alternative cannot
-    // beat its source bucket: moving N rules together creates an N-sized destination at best.
-    for (let i = 0; i < sourceSize;) {
-      const alternative = normalizedRuleIndexKey(
-        subjectAlternativeAttributeKey(bucket[i].sel, primary),
-        useAttrValue,
-      )
-      if (!sampled) {
-        sampled = true
-        sampleValue = alternative
-      } else if (sampleValue !== alternative) {
-        heterogeneous = true
+      const sel = bucket[i].sel
+      if (sel.includes('[') || (useCompoundKeys &&
+          (sel.includes('#') || (prefix === 'c' && sel.indexOf('.', sel.indexOf('.') + 1) >= 0)))) {
+        hasAlternativeSyntax = true
         break
       }
-      if (i === sourceSize - 1) break
-      let next = i === 0 ? 1 : i << 1
-      if (next >= sourceSize) next = sourceSize - 1
-      if (next === i) break
-      i = next
     }
-    if (!heterogeneous) continue
+    if (!hasAlternativeSyntax) continue
 
-    // Only a proven heterogeneous source pays the full parse. Count the prospective arrivals
-    // per destination before moving anything, then move a rule only when that complete
-    // destination remains strictly smaller than the source. Previously moved buckets are already
-    // reflected in `index`, making multi-source collisions conservative rather than optimistic.
+    const primary = prefix + value
+    // Enumerate every rule in the repeated source bucket before deciding whether to move any of
+    // them. The earlier logarithmic scout was attractive as a compile-time shortcut, but it was
+    // not semantics-safe: a useful minority alternative can live entirely between sampled
+    // positions. Once other rules move away, leaving that minority behind can make the primary
+    // bucket incomplete for an element. Full enumeration is confined to repeated class/id buckets
+    // that actually advertise alternative syntax, while singleton and class-only controls still
+    // take the cheap veto above.
     const alternatives = new Array(sourceSize)
+    const support = new Map()
+    for (let i = 0; i < sourceSize; i++) {
+      let keys
+      if (useCompoundKeys) keys = collectSubjectAlternativeKeys(bucket[i].sel, primary, [])
+      else {
+        const attr = normalizedRuleIndexKey(subjectAlternativeAttributeKey(bucket[i].sel, primary), useAttrValue)
+        keys = attr ? [attr] : []
+      }
+      for (let j = 0; j < keys.length; j++) keys[j] = normalizedRuleIndexKey(keys[j], useAttrValue)
+      alternatives[i] = keys
+      for (const key of keys) support.set(key, (support.get(key) || 0) + 1)
+    }
+
+    // Choose one necessary key per rule using a conservative destination-size estimate. The
+    // support count intentionally assumes every rule that COULD choose a key does choose it;
+    // this can only miss an optimization, never make a destination look cheaper than it is.
+    const chosen = new Array(sourceSize)
     const arrivals = new Map()
     for (let i = 0; i < sourceSize; i++) {
-      const alternative = normalizedRuleIndexKey(
-        subjectAlternativeAttributeKey(bucket[i].sel, primary),
-        useAttrValue,
-      )
-      if (!alternative || alternative === primary) continue
-      alternatives[i] = alternative
-      arrivals.set(alternative, (arrivals.get(alternative) || 0) + 1)
+      const keys = alternatives[i]
+      let best = null, bestCost = sourceSize
+      for (let j = 0; j < keys.length; j++) {
+        const key = keys[j]
+        const cost = indexedRuleBucketSize(index, key) + (support.get(key) || 0)
+        if (cost < bestCost || (cost === bestCost && best !== null && key < best)) {
+          best = key
+          bestCost = cost
+        }
+      }
+      if (best) {
+        chosen[i] = best
+        arrivals.set(best, (arrivals.get(best) || 0) + 1)
+      }
     }
 
     let kept = null
     for (let i = 0; i < sourceSize; i++) {
-      const alternative = alternatives[i]
+      const alternative = chosen[i]
       const shouldMove = alternative &&
-        indexedAttrBucketSize(index, alternative) + arrivals.get(alternative) < sourceSize
+        indexedRuleBucketSize(index, alternative) + arrivals.get(alternative) < sourceSize
       if (shouldMove) {
         if (!kept) kept = bucket.slice(0, i)
-        pushIndexedAttrRule(index, alternative, bucket[i])
+        pushIndexedRule(index, alternative, bucket[i])
       } else if (kept) {
         kept.push(bucket[i])
       }
@@ -1045,7 +1079,7 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue) {
   }
 }
 
-function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity = true) {
+function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity = true, useCompoundKeys = true) {
   const index = {
     unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map(),
     byAttrValue: new Map(),
@@ -1083,8 +1117,8 @@ function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity =
   // avoids a second global frequency table and makes singleton class/id corpora almost identical
   // to D3. Only repeated class/id buckets can improve by moving to an attribute condition.
   if (useKeySelectivity) {
-    rekeySelectiveBuckets(index, index.byClass, 'c', useAttrValue)
-    rekeySelectiveBuckets(index, index.byId, 'i', useAttrValue)
+    rekeySelectiveBuckets(index, index.byClass, 'c', useAttrValue, useCompoundKeys)
+    rekeySelectiveBuckets(index, index.byId, 'i', useAttrValue, useCompoundKeys)
   }
   return index
 }
@@ -1254,6 +1288,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   const indexMode = options?.__elementRuleIndex
   const attrValueMode = options?.__elementRuleAttrValueIndex !== false
   const keySelectivityMode = options?.__elementRuleKeySelectivity !== false
+  const compoundKeyMode = options?.__elementRuleCompoundKeyPlanner !== false
   let useRuleIndex = indexMode === true
   if (!useRuleIndex && indexMode !== false) {
     const keyed = scan.elementKeyedRuleCount || 0
@@ -1284,12 +1319,15 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     }
   } else {
     const slot = keySelectivityMode
-      ? (attrValueMode ? 'ruleIndexSelective' : 'ruleIndexAttrNameSelective')
+      ? (compoundKeyMode
+          ? (attrValueMode ? 'ruleIndexCompoundSelective' : 'ruleIndexAttrNameCompoundSelective')
+          : (attrValueMode ? 'ruleIndexSelective' : 'ruleIndexAttrNameSelective'))
       : (attrValueMode ? 'ruleIndex' : 'ruleIndexAttrName')
     const ruleIndex = st[slot] || (st[slot] = compileElementRuleIndex(
       scan.elementRules,
       attrValueMode,
       keySelectivityMode,
+      compoundKeyMode,
     ))
     if (!visitIndexedElementRules(el, ruleIndex, applyRule)) return bail()
   }

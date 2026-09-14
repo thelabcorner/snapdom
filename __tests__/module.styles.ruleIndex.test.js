@@ -324,4 +324,192 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('plans additional direct class/id keys without treating functional-pseudo classes as required', async () => {
+    let css = ''
+    for (let i = 0; i < 240; i++) {
+      css += `.idx-row.state-${i}{outline-offset:${i % 3}px}`
+    }
+    css += '.idx-row#idx-target{text-transform:uppercase}'
+    css += '.idx-row.state\\+hot{word-spacing:0.4px}'
+    // These nested classes are alternatives, not necessary subject conditions. A planner that
+    // extracts them as direct keys will silently drop matching rules when the other branch wins.
+    css += '.idx-row:is(.idx-hot,.never-nested){text-decoration-line:none}'
+    css += '.idx-row:not(.never-nested){text-rendering:auto}'
+    installCSS(css)
+
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows.forEach((row, i) => row.classList.add(`state-${i % 240}`))
+      rows[0].classList.add('state+hot')
+      return root
+    }
+
+    const plannedRoot = make()
+    const planned = await raw(plannedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: true,
+    })
+    plannedRoot.remove()
+    const d4Root = make()
+    const d4 = await raw(d4Root, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: false,
+    })
+    d4Root.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(planned).toBe(d4)
+    expect(planned).toBe(linear)
+  })
+
+  it('keeps a selective first class when a second direct class is common', async () => {
+    let css = ''
+    for (let i = 0; i < 240; i++) css += `.state-${i}.idx-row{outline-offset:${i % 3}px}`
+    installCSS(css)
+    const make = () => {
+      const root = scene()
+      root.querySelectorAll('.idx-row').forEach((row, i) => row.classList.add(`state-${i % 240}`))
+      return root
+    }
+
+    const plannedRoot = make()
+    const planned = await raw(plannedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: true,
+    })
+    plannedRoot.remove()
+    const d4Root = make()
+    const d4 = await raw(d4Root, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: false,
+    })
+    d4Root.remove()
+    expect(planned).toBe(d4)
+  })
+
+  it('survives a Juan-style adversarial compound-selector corpus against the linear oracle', async () => {
+    installCSS(`
+      .idx-row.direct-a.direct-b { outline-offset:1px; }
+      .idx-row.direct-a:is(.branch-never,.branch-live).direct-c { word-spacing:0.31px; }
+      .idx-row.direct-a:not(.blocked-never).direct-d { letter-spacing:0.32px; }
+      .idx-row.direct-a:where(.branch-never,.branch-live).direct-e { text-indent:0.33px; }
+      .idx-row.direct-a:nth-child(2n of .idx-row).direct-f { border-top-width:1px; }
+      .idx-row.direct-a[data-plan="yes"].direct-g { border-right-width:1px; }
+      .idx-row.direct-a#idx-target.direct-h { border-bottom-width:1px; }
+      .idx-row.direct-a/* > + ~ , .fake #fake [data-fake=x] */.direct-i { border-left-width:1px; }
+      .idx-row.direct-a.direct\\+plus { padding-left:7px; }
+      .idx-row.direct-a.direct\\,comma { padding-right:8px; }
+      .idx-row.direct-a.direct\\[bracket { padding-top:9px; }
+      .idx-row.direct-a.direct\\:colon { padding-bottom:10px; }
+      .idx-row.direct-a.hex\\2b class { margin-left:11px; }
+      :where(.idx-parent) > .idx-row.direct-a.direct-j { margin-right:12px; }
+      [data-parent="yes"] .idx-row.direct-a.direct-k { margin-top:13px; }
+      span.idx-row.direct-a.direct-l { margin-bottom:14px; }
+      .idx-row.direct-a:has(+ .idx-row).direct-m { outline-width:1px; }
+      .idx-row.direct-a:is(.branch-live,[data-other="x"]).direct-n { text-transform:none; }
+      .idx-row.direct-a:not(:is(.blocked-never,.also-never)).direct-o { text-rendering:auto; }
+    `)
+
+    const make = () => {
+      const root = scene()
+      root.dataset.parent = 'yes'
+      const rows = root.querySelectorAll('.idx-row')
+      for (const row of rows) row.classList.add('direct-a')
+      const names = ['direct-b','direct-c','direct-d','direct-e','direct-f','direct-g','direct-h','direct-i',
+        'direct+plus','direct,comma','direct[bracket','direct:colon','hex+class','direct-j','direct-k','direct-l',
+        'direct-m','direct-n','direct-o']
+      names.forEach((name, i) => rows[i].classList.add(name))
+      rows[1].classList.add('branch-live')
+      rows[3].classList.add('branch-live')
+      rows[5].dataset.plan = 'yes'
+      rows[17].classList.add('branch-live')
+      return root
+    }
+
+    const plannedRoot = make()
+    const planned = await raw(plannedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: true,
+    })
+    plannedRoot.remove()
+    const d4Root = make()
+    const d4 = await raw(d4Root, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: false,
+    })
+    d4Root.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(planned).toBe(d4)
+    expect(planned).toBe(linear)
+  })
+
+  it('does not reinterpret escaped dot/hash punctuation as new class or ID selectors', async () => {
+    installCSS(`
+      #idx\\.dot { text-transform:uppercase; }
+      .idx-row.class\\#hash { word-spacing:0.41px; }
+      .idx-row.class\\.dot { letter-spacing:0.42px; }
+      #idx\\#hash { text-indent:0.43px; }
+    `)
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows[0].id = 'idx.dot'
+      rows[1].classList.add('class#hash')
+      rows[2].classList.add('class.dot')
+      rows[3].id = 'idx#hash'
+      return root
+    }
+
+    const plannedRoot = make()
+    const planned = await raw(plannedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: true,
+    })
+    plannedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(planned).toBe(linear)
+  })
+
+  it('does not let logarithmic planner sampling hide a minority necessary key', async () => {
+    let css = ''
+    // Old scout positions 0,1,2,4,8,last all expose no alternative. Position 3 is the only
+    // selective direct class. If the planner re-keys some later-discovered rules while missing
+    // this one, the retained common bucket is no longer a complete candidate set.
+    const second = [null, null, null, 'needle', null, null, 'other-a', 'other-b', null]
+    for (let i = 0; i < second.length; i++) {
+      css += second[i]
+        ? `.idx-row.${second[i]}{outline-offset:${i + 1}px}`
+        : `.idx-row{outline-offset:${i + 1}px}`
+    }
+    installCSS(css)
+    const make = () => {
+      const root = scene()
+      root.querySelector('.idx-row').classList.add('needle')
+      return root
+    }
+
+    const plannedRoot = make()
+    const planned = await raw(plannedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+      __elementRuleCompoundKeyPlanner: true,
+    })
+    plannedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(planned).toBe(linear)
+  })
 })
