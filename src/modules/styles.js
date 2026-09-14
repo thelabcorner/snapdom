@@ -604,6 +604,79 @@ function scanFor(doc) {
   }
   return rec
 }
+
+const SHARE_PARTITION_PSEUDOS = new Set([
+  'nth-child', 'nth-last-child', 'nth-of-type', 'nth-last-of-type',
+  'first-child', 'last-child', 'only-child', 'first-of-type', 'last-of-type',
+  'only-of-type', 'empty', 'has', 'not', 'is', 'where', 'dir', 'lang',
+])
+
+/** Filters the scan's potentially splitting selectors to subjects that can exist under root. */
+function relevantShareGate(el, gate) {
+  if (!gate.length) return []
+  const present = new Set()
+  const note = (n) => {
+    present.add('t' + n.localName)
+    if (n.id) present.add('i' + n.id)
+    const cl = n.classList
+    for (let i = 0; i < cl.length; i++) present.add('c' + cl[i])
+  }
+  note(el)
+  for (const n of el.querySelectorAll('*')) note(n)
+  return gate.filter(({ key }) => key === null || present.has(key))
+}
+
+function shareGateMatches(el, gate) {
+  if (!gate.length) return false
+  const sel = gate.map((x) => x.sel).join(',')
+  return el.matches(sel) || el.querySelector(sel) !== null
+}
+
+/** Whether every pseudo token in a splitting selector is represented by the fingerprint. */
+function partitionableShareSelector(sel) {
+  if (!sel || sel.includes('::')) return false
+  const re = /:{1,2}([\w-]+)/g
+  let m
+  while ((m = re.exec(sel))) {
+    if (!SHARE_PARTITION_PSEUDOS.has(m[1].toLowerCase())) return false
+  }
+  return true
+}
+
+/**
+ * Share decision used by captureDOM. `selectors === null` is the historical whole-capture
+ * fast path; a non-empty selector array means identical structural identities are further
+ * partitioned by the exact match-status vector of these selectors. Any uncertainty returns
+ * `{ share:false }`, preserving the released-v3 full-read behavior.
+ * @param {Element} el capture root
+ * @returns {{share: boolean, selectors: Array<{sel: string, key: string|null}>|null}}
+ */
+export function styleSharePlan(el) {
+  try {
+    const doc = el.ownerDocument || document
+    const scan = scanFor(doc)
+    const gate = scan.shareGate
+    if (gate === null) return { share: false, selectors: null }
+    if (!gate.length) return { share: true, selectors: null }
+    const relevant = relevantShareGate(el, gate)
+    if (!relevant.length || !shareGateMatches(el, relevant)) return { share: true, selectors: null }
+
+    const part = scan.sharePartition
+    if (!part || part.blocked) return { share: false, selectors: null }
+    const probe = doc.createElement('div')
+    for (const entry of relevant) {
+      if (part.containerSels.has(entry.sel) || !partitionableShareSelector(entry.sel)) {
+        return { share: false, selectors: null }
+      }
+      // Validate each selector independently too. The joined share gate is validated by
+      // styleScan, but an individual failure must never silently collapse a fingerprint bit.
+      try { probe.matches(entry.sel) } catch { return { share: false, selectors: null } }
+    }
+    return { share: true, selectors: relevant }
+  } catch {
+    return { share: false, selectors: null }
+  }
+}
 /**
  * Whether the identity-share fast path is sound for THIS capture: no author selector that
  * can style two elements with identical tag + attributes + ancestor identity chain
@@ -619,29 +692,8 @@ function scanFor(doc) {
  * @returns {boolean}
  */
 export function styleShareSafe(el) {
-  try {
-    const gate = scanFor(el.ownerDocument || document).shareGate
-    if (gate === null) return false
-    if (!gate.length) return true
-    // Presence index of the subtree (root included): a selector whose subject compound
-    // names a class/id/tag nobody here carries cannot match here, and stays out of the query.
-    const present = new Set()
-    const note = (n) => {
-      present.add('t' + n.localName)
-      if (n.id) present.add('i' + n.id)
-      const cl = n.classList
-      for (let i = 0; i < cl.length; i++) present.add('c' + cl[i])
-    }
-    note(el)
-    for (const n of el.querySelectorAll('*')) note(n)
-    const parts = []
-    for (const { sel, key } of gate) if (key === null || present.has(key)) parts.push(sel)
-    if (!parts.length) return true
-    const sel = parts.join(',')
-    return !el.matches(sel) && el.querySelector(sel) === null
-  } catch {
-    return false
-  }
+  const plan = styleSharePlan(el)
+  return plan.share && plan.selectors === null
 }
 
 /**
@@ -1111,16 +1163,41 @@ const SHARE_SKIP_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGR
 
 /** The capture's share state, made on first use: identity ids per node, the intern table,
  *  one snapshot record per identity. Lives on the session, so it dies with the capture. */
-function shareStateOf(session) {
+function shareStateOf(session, selectors = null) {
   let st = session.__styleShare
-  if (!st) {
-    st = session.__styleShare = { ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false }
+  if (!st || st.selectors !== selectors) {
+    st = session.__styleShare = {
+      ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors,
+    }
   }
   return st
 }
 
-/** Interned identity id: parent's id + own tag + every attribute, order-normalized. */
-function identityFor(el, st) {
+function shareSelectorFingerprint(el, selectors) {
+  let out = ''
+  for (let i = 0; i < selectors.length; i++) {
+    const entry = selectors[i]
+    const key = entry.key
+    if (key !== null) {
+      const type = key.charCodeAt(0)
+      const value = key.slice(1)
+      if (type === 116) { // t
+        if (el.localName !== value) continue
+      } else if (type === 99) { // c
+        if (!el.classList || !el.classList.contains(value)) continue
+      } else if (el.id !== value) { // i
+        continue
+      }
+    }
+    let hit
+    try { hit = el.matches(entry.sel) } catch { return null }
+    if (hit) out += (out ? ',' : '') + i
+  }
+  return out
+}
+
+/** Interned identity id: parent's id + own tag + every attribute + optional selector vector. */
+function identityFor(el, st, selectors = null) {
   let id = st.ids.get(el)
   if (id !== undefined) return id
   const parent = el.parentElement
@@ -1158,7 +1235,15 @@ function identityFor(el, st) {
       attrs = parts.join('\u0001')
     }
   }
-  const key = pid + '|' + el.tagName + '|' + attrs
+  let fp = ''
+  if (selectors && selectors.length) {
+    fp = shareSelectorFingerprint(el, selectors)
+    if (fp === null) {
+      st.ids.set(el, -1)
+      return -1
+    }
+  }
+  const key = pid + '|' + el.tagName + '|' + attrs + (selectors && selectors.length ? '\u0002' + fp : '')
   id = st.intern.get(key)
   if (id === undefined) {
     id = st.intern.size
@@ -1535,8 +1620,9 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
 
   let shareInfo = null
   if (ctx.options && ctx.options.__styleShare && session.styleMap) {
-    const st = shareStateOf(session)
-    const id = identityFor(source, st)
+    const selectors = ctx.options.__styleShareSelectors || null
+    const st = shareStateOf(session, selectors)
+    const id = identityFor(source, st, selectors)
     const doc = source.ownerDocument || document
     const active = doc.activeElement
     // A shadow host and a slotted node are styled by a root sheet the scan never read:
