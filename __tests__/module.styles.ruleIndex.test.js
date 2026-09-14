@@ -136,4 +136,52 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('indexes exact data-* equality by decoded value without changing selector semantics', async () => {
+    let css = ''
+    // Large same-name value family: the D2 name bucket must visit every rule, while D3 should
+    // visit only the exact value carried by each subject.
+    for (let i = 0; i < 600; i++) css += `[data-state="v${i}"]{outline-offset:${i % 3}px}`
+    css += '[data-kind="hot"]{letter-spacing:0.2px}'
+    css += '[data-kind=hot]{word-spacing:0.3px}'
+    css += '[data-kind^="h"]{text-indent:0px}'
+    css += '[data-case="ABC" i]{text-transform:none}'
+    css += '[data-case="ABC"]{text-decoration-line:none}'
+    css += '[data-empty=""]{font-kerning:auto}'
+    css += '[data-note="a b"]{text-rendering:auto}'
+    // CSS hex escape plus terminator whitespace decodes to the live DOM value "hot".
+    css += '[data-escaped="h\\6f t"]{text-decoration-style:solid}'
+    installCSS(css)
+
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows.forEach((row, i) => {
+        row.dataset.state = `v${i % 600}`
+        row.dataset.case = i & 1 ? 'abc' : 'ABC'
+        row.dataset.empty = ''
+        row.dataset.note = 'a b'
+        row.dataset.escaped = 'hot'
+      })
+      return root
+    }
+
+    const valueRoot = make()
+    const valueIndexed = await raw(valueRoot, { __elementRuleIndex: true })
+    valueRoot.remove()
+    const nameRoot = make()
+    const nameIndexed = await raw(nameRoot, {
+      __elementRuleIndex: true,
+      __elementRuleAttrValueIndex: false,
+    })
+    nameRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, {
+      __elementRuleIndex: false,
+      __elementRuleAttrValueIndex: false,
+    })
+
+    expect(valueIndexed).toBe(nameIndexed)
+    expect(valueIndexed).toBe(linear)
+  })
 })

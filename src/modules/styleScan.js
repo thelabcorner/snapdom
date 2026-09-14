@@ -468,8 +468,10 @@ function splitTopLevel(sel, sep) {
 
 /** A direct attribute selector on the subject compound is a necessary match condition, just like
  * a tag/class/id. Return a bucket key only for simple lowercase, non-namespaced attribute names.
- * Functional-pseudo arguments are deliberately ignored: `[x]` in `:not([x])`, `:is(...)`, or
- * `:has(...)` is not necessarily required on the subject and must never become an index key. */
+ * For exact, case-sensitive `data-*` equality strengthen presence (`a<name>`) to exact value
+ * (`v<name>\0<value>`). We deliberately keep the value route data-* only: unlike many HTML
+ * enumerated attributes, custom data values are case-sensitive by default. Functional-pseudo
+ * arguments are ignored because `[x]` inside :not/:is/:where/:has is not necessarily required. */
 function directSubjectAttributeKey(subject) {
   let paren = 0, quote = null
   const skipEscape = (i) => {
@@ -516,7 +518,45 @@ function directSubjectAttributeKey(subject) {
       // Lowercase-only is a deliberate cross-namespace safety restriction. It is correct for
       // HTML and exact for lowercase SVG/XML attrs, while uppercase/case-sensitive names simply
       // stay on the historical unkeyed path.
-      if (name === name.toLowerCase() && /^[-_a-z][-_a-z0-9]*$/.test(name)) return 'a' + name
+      if (name === name.toLowerCase() && /^[-_a-z][-_a-z0-9]*$/.test(name)) {
+        const presenceKey = 'a' + name
+        while (j < subject.length && CSS_WS_RE.test(subject[j])) j++
+        if (name.startsWith('data-') && subject[j] === '=') {
+          j++
+          while (j < subject.length && CSS_WS_RE.test(subject[j])) j++
+          let rawValue = '', valid = true
+          const q = subject[j] === '"' || subject[j] === "'" ? subject[j++] : null
+          if (q) {
+            let closed = false
+            for (; j < subject.length; j++) {
+              const x = subject[j]
+              if (x === q) { closed = true; j++; break }
+              if (x === '\\') {
+                const start = j
+                j = skipEscape(j)
+                rawValue += subject.slice(start, j + 1)
+                continue
+              }
+              rawValue += x
+            }
+            if (!closed) valid = false
+          } else {
+            for (; j < subject.length && !CSS_WS_RE.test(subject[j]) && subject[j] !== ']'; j++) {
+              if (subject[j] === '\\') {
+                const start = j
+                j = skipEscape(j)
+                rawValue += subject.slice(start, j + 1)
+              } else rawValue += subject[j]
+            }
+            if (!rawValue) valid = false
+          }
+          while (j < subject.length && CSS_WS_RE.test(subject[j])) j++
+          // Any explicit matching modifier (i/s/future syntax) stays on name-only bucketing.
+          // That keeps value keys independent of engine-specific folding semantics.
+          if (valid && subject[j] === ']') return 'v' + name + '\0' + decodeCssEscapes(rawValue)
+        }
+        return presenceKey
+      }
     }
 
     // Skip this complete attribute selector before looking for another direct one. This avoids

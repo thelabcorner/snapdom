@@ -101,4 +101,23 @@ describe('identity share — subtree gate', () => {
     expect(on.url).toBe(off.url)
     expect(on.n).toBeLessThan(off.n * 0.9)
   })
+
+  it('keeps direct-attribute subject keys visible to structural share partitioning', async () => {
+    mountCSS('[data-share-state="hot"]:first-child{color:rgb(201,22,33)}')
+    const make = () => {
+      const root = document.createElement('div')
+      root.innerHTML = '<span data-share-state="hot">same</span><span data-share-state="hot">same</span>'
+      document.body.appendChild(root)
+      mounted.push(root)
+      return root
+    }
+    const a = make()
+    await settle()
+    const on = await readsOf(a, {})
+    a.remove()
+    const b = make()
+    await settle()
+    const off = await readsOf(b, { __styleShare: false })
+    expect(on.url).toBe(off.url)
+  })
 })

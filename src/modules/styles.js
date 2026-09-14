@@ -632,6 +632,12 @@ function relevantShareGate(el, gate) {
     if (n.id) present.add('i' + n.id)
     const cl = n.classList
     for (let i = 0; i < cl.length; i++) present.add('c' + cl[i])
+    const attrs = n.attributes
+    for (let i = 0; attrs && i < attrs.length; i++) {
+      const attr = attrs[i]
+      present.add('a' + attr.name)
+      if (attr.name.startsWith('data-')) present.add('v' + attr.name + '\u0000' + attr.value)
+    }
   }
   note(el)
   for (const n of el.querySelectorAll('*')) note(n)
@@ -905,12 +911,20 @@ function measureElementTagDefaults(doc, st, tag, universe) {
   return { ua, missing }
 }
 
-function subjectKeyMatches(el, key) {
+function subjectKeyMatches(el, key, useAttrValue = true) {
   if (key === null) return true
   const value = key.slice(1)
   if (key[0] === 't') return el.localName === value
   if (key[0] === 'c') return !!el.classList?.contains(value)
   if (key[0] === 'a') return el.hasAttribute?.(value) === true
+  if (key[0] === 'v') {
+    const cut = value.indexOf('\0')
+    if (cut < 0) return true
+    const name = value.slice(0, cut)
+    return useAttrValue
+      ? el.getAttribute?.(name) === value.slice(cut + 1)
+      : el.hasAttribute?.(name) === true
+  }
   return el.id === value
 }
 
@@ -918,8 +932,11 @@ function subjectKeyMatches(el, key) {
  * identity-sharing captures never consume this index, so eagerly building it in styleScan would
  * turn a local R5-D win into a document-wide allocation tax. Each rule has exactly one necessary
  * subject key (or none); buckets are therefore disjoint and require no per-element dedup Set. */
-function compileElementRuleIndex(rules) {
-  const index = { unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map() }
+function compileElementRuleIndex(rules, useAttrValue = true) {
+  const index = {
+    unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map(),
+    byAttrValue: new Map(),
+  }
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i]
     const key = rule.key
@@ -929,6 +946,25 @@ function compileElementRuleIndex(rules) {
     }
     const type = key.charCodeAt(0)
     const value = key.slice(1)
+    if (type === 118) { // v = exact data-* attribute value
+      const cut = value.indexOf('\0')
+      if (cut >= 0) {
+        const name = value.slice(0, cut)
+        if (useAttrValue) {
+          let values = index.byAttrValue.get(name)
+          if (!values) index.byAttrValue.set(name, (values = new Map()))
+          const exact = value.slice(cut + 1)
+          let bucket = values.get(exact)
+          if (!bucket) values.set(exact, (bucket = []))
+          bucket.push(rule)
+          continue
+        }
+        let bucket = index.byAttr.get(name)
+        if (!bucket) index.byAttr.set(name, (bucket = []))
+        bucket.push(rule)
+        continue
+      }
+    }
     const map = type === 116 ? index.byTag : type === 105 ? index.byId :
       type === 97 ? index.byAttr : index.byClass
     let bucket = map.get(value)
@@ -957,10 +993,13 @@ function visitIndexedElementRules(el, index, visit) {
       if (!walk(index.byClass.get(classes[i]))) return false
     }
   }
-  const attrs = index.byAttr.size ? el.attributes : null
+  const attrs = (index.byAttr.size || index.byAttrValue.size) ? el.attributes : null
   if (attrs) {
     for (let i = 0; i < attrs.length; i++) {
-      if (!walk(index.byAttr.get(attrs[i].name))) return false
+      const attr = attrs[i]
+      if (!walk(index.byAttr.get(attr.name))) return false
+      const values = index.byAttrValue.get(attr.name)
+      if (values && !walk(values.get(attr.value))) return false
     }
   }
   return true
@@ -1098,6 +1137,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
     return true
   }
   const indexMode = options?.__elementRuleIndex
+  const attrValueMode = options?.__elementRuleAttrValueIndex !== false
   let useRuleIndex = indexMode === true
   if (!useRuleIndex && indexMode !== false) {
     const keyed = scan.elementKeyedRuleCount || 0
@@ -1123,11 +1163,12 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   }
   if (!useRuleIndex) {
     for (const rule of scan.elementRules) {
-      if (!subjectKeyMatches(el, rule.key)) continue
+      if (!subjectKeyMatches(el, rule.key, attrValueMode)) continue
       if (!applyRule(rule)) return bail()
     }
   } else {
-    const ruleIndex = st.ruleIndex || (st.ruleIndex = compileElementRuleIndex(scan.elementRules))
+    const slot = attrValueMode ? 'ruleIndex' : 'ruleIndexAttrName'
+    const ruleIndex = st[slot] || (st[slot] = compileElementRuleIndex(scan.elementRules, attrValueMode))
     if (!visitIndexedElementRules(el, ruleIndex, applyRule)) return bail()
   }
 
@@ -1670,7 +1711,17 @@ function shareSelectorFingerprint(el, selectors) {
         if (el.localName !== value) continue
       } else if (type === 99) { // c
         if (!el.classList || !el.classList.contains(value)) continue
-      } else if (el.id !== value) { // i
+      } else if (type === 97) { // a
+        if (!el.hasAttribute?.(value)) continue
+      } else if (type === 118) { // v = exact data-* value
+        const cut = value.indexOf('\0')
+        if (cut < 0 || el.getAttribute?.(value.slice(0, cut)) !== value.slice(cut + 1)) continue
+      } else if (type === 105) { // i
+        if (el.id !== value) continue
+      } else {
+        try {
+          if (el.matches(entry.sel)) out += (out ? ',' : '') + i
+        } catch { return null }
         continue
       }
     }

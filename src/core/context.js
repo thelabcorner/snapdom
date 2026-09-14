@@ -165,6 +165,9 @@ export function createContext(options = {}) {
     // Internal R5-D counterfactual/benchmark override: false forces R3's historical linear
     // rule scan; true forces the compiled subject-key index; undefined uses the tiered router.
     __elementRuleIndex: options.__elementRuleIndex,
+    // Internal R5-D3 counterfactual: false collapses exact data-* value keys back to the D2
+    // attribute-name condition while preserving the same selector scan and capture semantics.
+    __elementRuleAttrValueIndex: options.__elementRuleAttrValueIndex,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
