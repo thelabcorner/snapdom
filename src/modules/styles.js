@@ -998,13 +998,23 @@ function pushIndexedRule(index, key, rule) {
  * control path allocates no planner maps and reparses no selectors.
  */
 function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys = false) {
-  const scratch = []
-  for (const [value, bucket] of map) {
-    const sourceSize = bucket.length
-    if (sourceSize < 2) continue
+  const sources = []
 
-    // Avoid the selector parser entirely for ordinary class/id-only buckets. `some()` normally
-    // exits on the first rule for the mixed-compound workload D4 targets.
+  // Snapshot ORIGINAL source membership before moving anything. D5 can move a class-primary rule
+  // into another class bucket; mutating a Map while iterating it would otherwise let newly-created
+  // destinations become new planning sources and make results depend on insertion order.
+  for (const [value, bucket] of map) {
+    if (bucket.length >= 2) sources.push({ value, bucket: bucket.slice() })
+  }
+  if (!sources.length) return
+
+  const moves = new Map()
+  const plannedArrivals = new Map()
+
+  for (let s = 0; s < sources.length; s++) {
+    const { value, bucket } = sources[s]
+    const sourceSize = bucket.length
+
     let hasAlternativeSyntax = false
     for (let i = 0; i < sourceSize; i++) {
       const sel = bucket[i].sel
@@ -1017,13 +1027,9 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys
     if (!hasAlternativeSyntax) continue
 
     const primary = prefix + value
-    // Enumerate every rule in the repeated source bucket before deciding whether to move any of
-    // them. The earlier logarithmic scout was attractive as a compile-time shortcut, but it was
-    // not semantics-safe: a useful minority alternative can live entirely between sampled
-    // positions. Once other rules move away, leaving that minority behind can make the primary
-    // bucket incomplete for an element. Full enumeration is confined to repeated class/id buckets
-    // that actually advertise alternative syntax, while singleton and class-only controls still
-    // take the cheap veto above.
+    // Full enumeration is deliberate. A logarithmic selector sample was faster to compile but
+    // unsound as a planner: a useful minority alternative can live entirely between sampled
+    // positions. Missing it after moving the rest can make the remaining primary bucket incomplete.
     const alternatives = new Array(sourceSize)
     const support = new Map()
     for (let i = 0; i < sourceSize; i++) {
@@ -1038,17 +1044,18 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys
       for (const key of keys) support.set(key, (support.get(key) || 0) + 1)
     }
 
-    // Choose one necessary key per rule using a conservative destination-size estimate. The
-    // support count intentionally assumes every rule that COULD choose a key does choose it;
-    // this can only miss an optimization, never make a destination look cheaper than it is.
+    // Choose one necessary key per rule. Base destination sizes come from the untouched D3 index;
+    // plannedArrivals carries cross-source collisions. We intentionally do NOT credit departures
+    // from a destination that is itself an original source bucket, so estimates are conservative.
     const chosen = new Array(sourceSize)
-    const arrivals = new Map()
+    const localArrivals = new Map()
     for (let i = 0; i < sourceSize; i++) {
       const keys = alternatives[i]
       let best = null, bestCost = sourceSize
       for (let j = 0; j < keys.length; j++) {
         const key = keys[j]
-        const cost = indexedRuleBucketSize(index, key) + (support.get(key) || 0)
+        const cost = indexedRuleBucketSize(index, key) +
+          (plannedArrivals.get(key) || 0) + (support.get(key) || 0)
         if (cost < bestCost || (cost === bestCost && best !== null && key < best)) {
           best = key
           bestCost = cost
@@ -1056,29 +1063,44 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys
       }
       if (best) {
         chosen[i] = best
-        arrivals.set(best, (arrivals.get(best) || 0) + 1)
+        localArrivals.set(best, (localArrivals.get(best) || 0) + 1)
       }
     }
 
-    let kept = null
     for (let i = 0; i < sourceSize; i++) {
       const alternative = chosen[i]
-      const shouldMove = alternative &&
-        indexedRuleBucketSize(index, alternative) + arrivals.get(alternative) < sourceSize
-      if (shouldMove) {
+      if (!alternative) continue
+      const finalCost = indexedRuleBucketSize(index, alternative) +
+        (plannedArrivals.get(alternative) || 0) + (localArrivals.get(alternative) || 0)
+      if (finalCost < sourceSize) moves.set(bucket[i], alternative)
+    }
+    for (const [key] of localArrivals) {
+      let admitted = 0
+      for (let i = 0; i < sourceSize; i++) if (moves.get(bucket[i]) === key) admitted++
+      if (admitted) plannedArrivals.set(key, (plannedArrivals.get(key) || 0) + admitted)
+    }
+  }
+
+  if (!moves.size) return
+
+  // Apply in two phases. First remove moved ORIGINAL rules from all source buckets, then append
+  // arrivals. A destination that is also an original source therefore cannot lose newly-arrived
+  // rules when that source is compacted later.
+  for (let s = 0; s < sources.length; s++) {
+    const { value, bucket } = sources[s]
+    let kept = null
+    for (let i = 0; i < bucket.length; i++) {
+      if (moves.has(bucket[i])) {
         if (!kept) kept = bucket.slice(0, i)
-        pushIndexedRule(index, alternative, bucket[i])
-      } else if (kept) {
-        kept.push(bucket[i])
-      }
+      } else if (kept) kept.push(bucket[i])
     }
     if (kept) {
       if (kept.length) map.set(value, kept)
       else map.delete(value)
     }
   }
+  for (const [rule, key] of moves) pushIndexedRule(index, key, rule)
 }
-
 function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity = true, useCompoundKeys = true) {
   const index = {
     unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map(),
@@ -1117,8 +1139,11 @@ function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity =
   // avoids a second global frequency table and makes singleton class/id corpora almost identical
   // to D3. Only repeated class/id buckets can improve by moving to an attribute condition.
   if (useKeySelectivity) {
+    // ID-primary selectors cannot hide a class (class-first D1 priority would have selected it),
+    // so keep the historical D4 exact-attribute planner there. Run it BEFORE the class planner so
+    // D5 class -> ID moves are final and never become a second planning source.
+    rekeySelectiveBuckets(index, index.byId, 'i', useAttrValue, false)
     rekeySelectiveBuckets(index, index.byClass, 'c', useAttrValue, useCompoundKeys)
-    rekeySelectiveBuckets(index, index.byId, 'i', useAttrValue, useCompoundKeys)
   }
   return index
 }
@@ -1289,8 +1314,13 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   const attrValueMode = options?.__elementRuleAttrValueIndex !== false
   const keySelectivityMode = options?.__elementRuleKeySelectivity !== false
   const compoundKeyMode = options?.__elementRuleCompoundKeyPlanner !== false
-  let useRuleIndex = indexMode === true
-  if (!useRuleIndex && indexMode !== false) {
+  // In HTML quirks mode class/ID selector matching can use ASCII case-folding rules that are not
+  // equivalent to classList.contains()/direct id equality. The index is only a dispatch hint, so
+  // fail closed to the historical browser-matched linear interpreter instead of duplicating
+  // quirks selector semantics here. Internal force flags never override this fidelity gate.
+  const indexSemanticsSafe = (el.ownerDocument || document)?.compatMode === 'CSS1Compat'
+  let useRuleIndex = indexSemanticsSafe && indexMode === true
+  if (indexSemanticsSafe && !useRuleIndex && indexMode !== false) {
     const keyed = scan.elementKeyedRuleCount || 0
     // A large corpus is not sufficient by itself: when most rules are unkeyed the indexed
     // interpreter still walks nearly the whole rule list, so its Map/bucket overhead buys little.

@@ -605,7 +605,13 @@ function subjectTailOf(sel) {
     else if (c === '/' && sel[i + 1] === '*') i = skipCssComment(sel, i)
     else if (c === '(' || c === '[') depth++
     else if (c === ')' || c === ']') depth--
-    else if (depth === 0 && (c === ' ' || c === '>' || c === '+' || c === '~')) cut = i + 1
+    else if (depth === 0 && c === '|' && sel[i + 1] === '|') {
+      // Selectors Level 4 column combinator. Treat it exactly like the other top-level
+      // combinators if/when the host engine accepts it. A namespace separator is a single `|`,
+      // so it must NOT take this route.
+      cut = i + 2
+      i++
+    } else if (depth === 0 && (c === ' ' || c === '>' || c === '+' || c === '~')) cut = i + 1
   }
   return sel.slice(cut)
 }
@@ -673,7 +679,12 @@ function collectDirectIdentityKeys(compound, out) {
         j = end + 1
         continue
       }
-      if (!/[\w-]/.test(x)) break
+      // CSS identifiers admit non-ASCII code points directly. Stopping at one would truncate
+      // `.café` to a bogus necessary key `.caf`, which is worse than staying unkeyed because the
+      // candidate index may then suppress a rule that really matches. Surrogate code units are
+      // accepted together as ordinary non-ASCII identifier content; CSSOM only gives us valid
+      // serialized selectors here.
+      if (!/[\w-]/.test(x) && x.charCodeAt(0) < 0x80) break
       raw += x
       j++
     }
@@ -685,6 +696,21 @@ function collectDirectIdentityKeys(compound, out) {
 }
 
 const SUBJECT_KEY_SCRATCH = []
+
+/** Conservative type-selector key. Tag matching is namespace/document-mode sensitive, while our
+ * runtime bucket probe compares directly against `el.localName`. Only key a complete, lowercase
+ * ASCII, unnamespaced type token; everything else remains a browser-matched candidate. This gives
+ * up a tiny amount of dispatch for uppercase HTML / mixed-case SVG / escaped or non-ASCII type
+ * selectors instead of manufacturing a false necessary condition. */
+function directSubjectTagKey(compound) {
+  const m = compound.match(/^([a-z][a-z0-9-]*)/)
+  if (!m) return null
+  const end = m[1].length
+  const next = compound[end]
+  if (next === '|' || next === '\\') return null // namespace or escaped continuation
+  if (next && (/[_a-zA-Z0-9-]/.test(next) || next.charCodeAt(0) >= 0x80)) return null
+  return 't' + m[1]
+}
 
 /** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
  *  the first class, else the id, else a direct attribute, else the tag of its RIGHTMOST compound
@@ -699,8 +725,7 @@ function subjectKeyOf(sel) {
   for (let i = 0; i < identities.length; i++) if (identities[i][0] === 'i') return identities[i]
   const attr = directSubjectAttributeKey(subject)
   if (attr) return attr
-  const tag = (compound.match(/^([a-zA-Z][\w-]*)/) || [])[1]
-  return tag ? 't' + tag.toLowerCase() : null
+  return directSubjectTagKey(compound)
 }
 
 /**

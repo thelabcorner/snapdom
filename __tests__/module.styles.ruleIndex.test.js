@@ -512,4 +512,78 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(planned).toBe(linear)
   })
+
+  it('keeps non-ASCII class identifiers exact instead of truncating a necessary key', async () => {
+    installCSS(`
+      .café { letter-spacing:3px; }
+      .日本語 { word-spacing:4px; }
+      .emoji-😀 { text-indent:5px; }
+    `)
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows[0].classList.add('café')
+      rows[1].classList.add('日本語')
+      rows[2].classList.add('emoji-😀')
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
+
+  it('fails closed for namespace and mixed-case type selectors', async () => {
+    installCSS(`
+      @namespace svg url(http://www.w3.org/2000/svg);
+      svg|path { stroke-width:7px; }
+      linearGradient { color:rgb(17, 34, 51); }
+    `)
+    const make = () => {
+      const root = scene()
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+      const gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient')
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', 'M0 0L10 10')
+      defs.appendChild(gradient)
+      svg.append(defs, path)
+      root.appendChild(svg)
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
+
+  it('uses the linear browser oracle in quirks mode rather than assuming case-sensitive keys', async () => {
+    const iframe = document.createElement('iframe')
+    document.body.appendChild(iframe)
+    mounted.push(iframe)
+    const doc = iframe.contentDocument
+    // about:blank initially inherits the outer document's mode. Reparse the child document
+    // explicitly without a doctype so the browser really enters quirks mode.
+    doc.open()
+    doc.write('<html><head><style>.QuIrK{letter-spacing:6px}</style></head><body><div id="root"><span class="quirk">x</span></div></body></html>')
+    doc.close()
+    expect(doc.compatMode).toBe('BackCompat')
+    const root = doc.getElementById('root')
+    const subject = root.firstElementChild
+
+    // Chromium currently exposes the legacy quirks fold through selector matching. The assertion
+    // documents why a classList/id-key shortcut is not a valid replacement in this mode.
+    expect(subject.matches('.QuIrK')).toBe(true)
+    expect(subject.classList.contains('QuIrK')).toBe(false)
+
+    const indexed = await raw(root, { __elementRuleIndex: true })
+    const linear = await raw(root, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
 })

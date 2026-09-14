@@ -60,6 +60,24 @@ describe('identity share — the fast path itself', () => {
     const off = await snapdom.toRaw(el, { burst: false, __styleShare: false })
     expect(on).toBe(off)
   })
+
+  it('does not collide attribute tuples containing the old identity delimiters', async () => {
+    const el = mount(
+      '<span class="identity-delim">a</span><span class="identity-delim" a="1" b="2">b</span>',
+      '.identity-delim{display:block;color:rgb(0,0,255)} .identity-delim[b="2"]{color:rgb(255,0,0)}')
+    const [a] = el.querySelectorAll('.identity-delim')
+    // Make the first element's ONE attribute payload serialize exactly like the second element's
+    // TWO old `name=value` parts joined by U+0001. If identity tuples are delimiter-concatenated,
+    // these structurally different elements alias and the second can inherit the first snapshot.
+    a.setAttribute('a', '1' + String.fromCharCode(1) + 'b=2')
+    await settle()
+    // Force the share so this regression test exercises the identity encoder itself rather than
+    // depending on whatever unrelated stylesheet gates happen to exist in the test document.
+    const on = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: true })
+    await settle()
+    const off = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(on).toBe(off)
+  })
 })
 
 describe('identity share — the gates, in pixels', () => {
