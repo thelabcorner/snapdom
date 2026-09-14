@@ -181,15 +181,14 @@ function scanRules(rules, universe, pseudoSels, state) {
         if (!one || PSEUDO_ELEMENT_SEL_RE.test(one)) continue
         if (hasAll) {
           if (one.includes('&')) state.elementUniverseBlocked = true
-          else state.elementAllRules.push({ sel: one, key: subjectKeyOf(one) })
+          else addIndexedRule(state.elementAllRuleIndex, { sel: one }, subjectKeyOf(one))
           continue
         }
         if (props.length) {
-          for (const prop of props) state.elementDeclaredProps.add(prop)
           if (one.includes('&')) {
             for (const prop of props) state.elementAlwaysProps.add(prop)
           } else {
-            state.elementRules.push({ sel: one, key: subjectKeyOf(one), props })
+            addIndexedRule(state.elementRuleIndex, { sel: one, props }, subjectKeyOf(one))
           }
         }
       }
@@ -230,6 +229,16 @@ function scanRules(rules, universe, pseudoSels, state) {
     }
   }
   return true
+}
+
+/** Adds one selector rule to the rightmost-subject dependency index. A null key is the
+ * conservative wildcard bucket: callers always visit it. Every keyed rule lives in exactly
+ * one bucket, so candidate lookup does not require deduplication. */
+function addIndexedRule(index, rule, key) {
+  const bucket = key ?? null
+  let list = index.get(bucket)
+  if (!list) index.set(bucket, (list = []))
+  list.push(rule)
 }
 
 /** One sheet through scanRules. False on a cross-origin sheet, whose cssRules getter throws. */
@@ -340,14 +349,14 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  * - `marginUnstable` / `paddingUnstable`: a %, auto, calc() or var() value in that family
  *   anywhere, so twins re-read it.
  * - `importantProps`: every property some rule declares `!important`.
- * - `elementRules` / `elementDeclaredProps` / `elementAlwaysProps`: selector-indexed
+ * - `elementRuleIndex` / `elementAlwaysProps`: selector-indexed
  *   declarations used by the per-element property-universe fast path. They are null on an
- *   unreliable scan; `elementAllRules` carries selector-scoped `all` resets,
+ *   unreliable scan; `elementAllRuleIndex` carries selector-scoped `all` resets,
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRuleIndex: Map<string|null,Array<{sel:string,props:string[]}>>|null, elementAllRuleIndex: Map<string|null,Array<{sel:string}>>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -356,7 +365,7 @@ export function scanAuthorStyles(doc) {
     universe: null, pseudoUniverse: null, usesHas: true, shareGate: null,
     marginUnstable: true, paddingUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
-    elementRules: null, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
+    elementRuleIndex: null, elementAllRuleIndex: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true,
   }
   try {
@@ -365,7 +374,8 @@ export function scanAuthorStyles(doc) {
     const state = {
       budget: MAX_SCAN_RULES, usesHas: false, shareUnsafeSels: new Set(), inContainer: 0,
       marginUnstable: false, paddingUnstable: false, importantProps: new Set(), pseudoProps: new Set(),
-      elementRules: [], elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
+      elementRuleIndex: new Map(), elementAllRuleIndex: new Map(),
+      elementAlwaysProps: new Set(),
       elementUniverseBlocked: false, hasAnimations: false,
     }
     for (const sheet of doc.styleSheets) {
@@ -409,9 +419,8 @@ export function scanAuthorStyles(doc) {
       marginUnstable: state.marginUnstable,
       paddingUnstable: state.paddingUnstable,
       importantProps: state.importantProps,
-      elementRules: state.elementRules,
-      elementAllRules: state.elementAllRules,
-      elementDeclaredProps: state.elementDeclaredProps,
+      elementRuleIndex: state.elementRuleIndex,
+      elementAllRuleIndex: state.elementAllRuleIndex,
       elementAlwaysProps: state.elementAlwaysProps,
       elementUniverseBlocked: state.elementUniverseBlocked,
       hasAnimations: state.hasAnimations,

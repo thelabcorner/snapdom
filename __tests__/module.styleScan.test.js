@@ -127,3 +127,29 @@ describe('pruned snapshots keep fidelity', () => {
     expect(svg).toContain('column-count')
   })
 })
+
+describe('per-element dependency index', () => {
+  afterEach(() => {
+    document.head.querySelectorAll('style[data-scan-test]').forEach((s) => s.remove())
+    document.body.innerHTML = ''
+  })
+
+  it('indexes rules by a necessary rightmost-subject key and keeps wildcard selectors', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    style.textContent = `
+      .zz-card { color:red; }
+      #zz-one { letter-spacing:1px; }
+      article { word-spacing:2px; }
+      :where(.zz-any) { text-transform:uppercase; }
+    `
+    document.head.appendChild(style)
+    const scan = scanAuthorStyles(document)
+
+    expect(scan.elementRuleIndex.get('czz-card')?.some((r) => r.sel === '.zz-card')).toBe(true)
+    expect(scan.elementRuleIndex.get('izz-one')?.some((r) => r.sel === '#zz-one')).toBe(true)
+    expect(scan.elementRuleIndex.get('tarticle')?.some((r) => r.sel === 'article')).toBe(true)
+    // Functional-only subjects intentionally have no cheap key and must remain candidates.
+    expect(scan.elementRuleIndex.get(null)?.some((r) => r.sel === ':where(.zz-any)')).toBe(true)
+  })
+})
