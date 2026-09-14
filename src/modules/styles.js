@@ -20,7 +20,7 @@ import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getS
 import { getDefaultStyleForTag, LOGICAL_TO_PHYSICAL } from '../utils/css.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
-import { scanAuthorStyles, scanInlineStyleDataAttrs } from './styleScan.js'
+import { scanAuthorStyles, scanInlineStyleDataAttrs, subjectAlternativeAttributeKey } from './styleScan.js'
 import { isInternalNode, markInternalNode } from '../utils/ownership.js'
 import {
   BACKGROUND_INLINE_FLAG_PROPS,
@@ -932,14 +932,118 @@ function subjectKeyMatches(el, key, useAttrValue = true) {
  * identity-sharing captures never consume this index, so eagerly building it in styleScan would
  * turn a local R5-D win into a document-wide allocation tax. Each rule has exactly one necessary
  * subject key (or none); buckets are therefore disjoint and require no per-element dedup Set. */
-function compileElementRuleIndex(rules, useAttrValue = true) {
+function normalizedRuleIndexKey(key, useAttrValue) {
+  if (!key || useAttrValue || key[0] !== 'v') return key
+  const value = key.slice(1)
+  const cut = value.indexOf('\0')
+  return cut >= 0 ? 'a' + value.slice(0, cut) : key
+}
+
+function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity = true) {
   const index = {
     unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map(),
     byAttrValue: new Map(),
   }
+
+  // R5-D4: compounds can expose several simultaneously necessary conditions. D1-D3 used a
+  // fixed class > id > attribute > tag priority, which makes `.row[data-state="v137"]` place
+  // every rule into the same `.row` bucket even when each exact data value identifies one rule.
+  // Estimate bucket cardinality only after the adaptive router has already decided an index is
+  // worthwhile, then store each rule under its least-populated necessary key. Candidate arrays
+  // are compile-local and discarded; the persistent index still stores each rule exactly once.
+  let alternatives = null
+  let baseFrequency = null
+  let alternativeFrequency = null
+  if (useKeySelectivity) {
+    // Fast veto for the overwhelmingly common case where D3's primary class/id keys cannot be
+    // hiding a direct attribute key at all. This keeps pure utility/class corpora on essentially
+    // the historical compile path: one cheap scan that exits immediately on the first plausible
+    // mixed compound, and no frequency maps / selector reparsing when there is no '[' syntax.
+    // Check the already-decoded primary key type first so attribute-only/tag-only corpora do not
+    // even pay the string search.
+    let mayHaveAlternative = false
+    for (let i = 0; i < rules.length; i++) {
+      const key = normalizedRuleIndexKey(rules[i].key, useAttrValue)
+      const type = key?.charCodeAt(0)
+      if ((type === 99 || type === 105) && rules[i].sel.includes('[')) {
+        mayHaveAlternative = true
+        break
+      }
+    }
+
+    if (mayHaveAlternative) {
+    // Stage 1 is intentionally parse-free: count the buckets D3 would build from keys already
+    // produced by styleScan. This is the protected-control cost of D4.
+    baseFrequency = new Map()
+    for (let i = 0; i < rules.length; i++) {
+      const rule = rules[i]
+      const primary = normalizedRuleIndexKey(rule.key, useAttrValue)
+      if (!primary) continue
+      baseFrequency.set(primary, (baseFrequency.get(primary) || 0) + 1)
+    }
+
+    // Stage 2 is an adaptive cheap scout inside the compiler. We only need to know whether a
+    // class/id bucket appears to contain DIFFERENT direct-attribute keys. Probe occurrence 0,
+    // powers of two and the final rule in each bucket. A homogeneous bucket (the inverse case
+    // `.unique-class[data-state="common"]`) costs O(log bucket) selector parses and stops there;
+    // a heterogeneous bucket promotes itself to the full planner below. A false negative can
+    // only miss a speedup — it cannot change selector semantics.
+    const occurrences = new Map()
+    const samples = new Map()
+    const planned = new Set()
+    for (let i = 0; i < rules.length; i++) {
+      const rule = rules[i]
+      const primary = normalizedRuleIndexKey(rule.key, useAttrValue)
+      if (!primary || planned.has(primary)) continue
+      const type = primary.charCodeAt(0)
+      if (type !== 99 && type !== 105) continue // only class/id can hide a direct attr today
+      const total = baseFrequency.get(primary) || 0
+      if (total < 2) continue
+      const occurrence = occurrences.get(primary) || 0
+      occurrences.set(primary, occurrence + 1)
+      const shouldSample = occurrence === 0 || (occurrence & (occurrence - 1)) === 0 || occurrence === total - 1
+      if (!shouldSample) continue
+      const alternative = normalizedRuleIndexKey(
+        subjectAlternativeAttributeKey(rule.sel, rule.key),
+        useAttrValue,
+      )
+      let sample = samples.get(primary)
+      if (!sample) {
+        samples.set(primary, { value: alternative, set: true })
+      } else if (sample.value !== alternative) {
+        planned.add(primary)
+      }
+    }
+
+    // Stage 3 spends the full parse budget only on buckets whose scout proved heterogeneity.
+    // The alternative count includes any existing D3 bucket with the same key, so a reassignment
+    // is made only when its conservative destination bucket is still smaller than the source.
+    if (planned.size) {
+      alternatives = new Array(rules.length)
+      alternativeFrequency = new Map()
+      for (let i = 0; i < rules.length; i++) {
+        const rule = rules[i]
+        const primary = normalizedRuleIndexKey(rule.key, useAttrValue)
+        if (!planned.has(primary)) continue
+        const alternative = normalizedRuleIndexKey(
+          subjectAlternativeAttributeKey(rule.sel, rule.key),
+          useAttrValue,
+        )
+        if (!alternative || alternative === primary) continue
+        alternatives[i] = alternative
+        alternativeFrequency.set(alternative, (alternativeFrequency.get(alternative) || 0) + 1)
+      }
+    }
+    }
+  }
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i]
-    const key = rule.key
+    let key = normalizedRuleIndexKey(rule.key, useAttrValue)
+    const alternative = alternatives?.[i]
+    if (alternative) {
+      const destination = (baseFrequency.get(alternative) || 0) + (alternativeFrequency.get(alternative) || 0)
+      if (destination < (baseFrequency.get(key) || Infinity)) key = alternative
+    }
     if (key === null) {
       index.unkeyed.push(rule)
       continue
@@ -950,17 +1054,11 @@ function compileElementRuleIndex(rules, useAttrValue = true) {
       const cut = value.indexOf('\0')
       if (cut >= 0) {
         const name = value.slice(0, cut)
-        if (useAttrValue) {
-          let values = index.byAttrValue.get(name)
-          if (!values) index.byAttrValue.set(name, (values = new Map()))
-          const exact = value.slice(cut + 1)
-          let bucket = values.get(exact)
-          if (!bucket) values.set(exact, (bucket = []))
-          bucket.push(rule)
-          continue
-        }
-        let bucket = index.byAttr.get(name)
-        if (!bucket) index.byAttr.set(name, (bucket = []))
+        let values = index.byAttrValue.get(name)
+        if (!values) index.byAttrValue.set(name, (values = new Map()))
+        const exact = value.slice(cut + 1)
+        let bucket = values.get(exact)
+        if (!bucket) values.set(exact, (bucket = []))
         bucket.push(rule)
         continue
       }
@@ -1138,6 +1236,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   }
   const indexMode = options?.__elementRuleIndex
   const attrValueMode = options?.__elementRuleAttrValueIndex !== false
+  const keySelectivityMode = options?.__elementRuleKeySelectivity !== false
   let useRuleIndex = indexMode === true
   if (!useRuleIndex && indexMode !== false) {
     const keyed = scan.elementKeyedRuleCount || 0
@@ -1167,8 +1266,14 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
       if (!applyRule(rule)) return bail()
     }
   } else {
-    const slot = attrValueMode ? 'ruleIndex' : 'ruleIndexAttrName'
-    const ruleIndex = st[slot] || (st[slot] = compileElementRuleIndex(scan.elementRules, attrValueMode))
+    const slot = keySelectivityMode
+      ? (attrValueMode ? 'ruleIndexSelective' : 'ruleIndexAttrNameSelective')
+      : (attrValueMode ? 'ruleIndex' : 'ruleIndexAttrName')
+    const ruleIndex = st[slot] || (st[slot] = compileElementRuleIndex(
+      scan.elementRules,
+      attrValueMode,
+      keySelectivityMode,
+    ))
     if (!visitIndexedElementRules(el, ruleIndex, applyRule)) return bail()
   }
 

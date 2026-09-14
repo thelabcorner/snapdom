@@ -573,41 +573,78 @@ function directSubjectAttributeKey(subject) {
   return null
 }
 
-/** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
- *  the first class, else the id, else the tag of its RIGHTMOST compound (the compound the
- *  subject itself must satisfy). null = no usable key, always a candidate. Tailwind-shaped
- *  sheets carry thousands of `.hover\:x:hover` rules; querying them all against a 3000-node
- *  subtree cost 55 ms, and 276 ms at 15k — the index makes the gate O(nodes + rules). */
-function subjectKeyOf(sel) {
+function subjectTailOf(sel) {
   let depth = 0, quote = null, cut = 0
   for (let i = 0; i < sel.length; i++) {
     const c = sel[i]
+    if (c === '\\') {
+      // A combinator-looking code point can be part of an escaped identifier (`.gap\\+x`),
+      // and a hex escape may consume one whitespace terminator (`.gap\\2b x`). Neither is a
+      // compound boundary. D1's original scanner did not skip escapes here, which could turn a
+      // legal utility-class selector into a bogus tag key and incorrectly suppress the rule.
+      if (++i >= sel.length) break
+      if (/[0-9a-fA-F]/.test(sel[i])) {
+        let count = 1
+        while (count < 6 && i + 1 < sel.length && /[0-9a-fA-F]/.test(sel[i + 1])) { i++; count++ }
+        if (i + 1 < sel.length && CSS_WS_RE.test(sel[i + 1])) {
+          if (sel[i + 1] === '\r' && sel[i + 2] === '\n') i++
+          i++
+        }
+      }
+      continue
+    }
     if (quote) { if (c === quote && sel[i - 1] !== '\\') quote = null; continue }
     if (c === '"' || c === '\'') quote = c
     else if (c === '(' || c === '[') depth++
     else if (c === ')' || c === ']') depth--
     else if (depth === 0 && (c === ' ' || c === '>' || c === '+' || c === '~')) cut = i + 1
   }
+  return sel.slice(cut)
+}
+
+function subjectCompoundOf(subject) {
   // Drop functional/attribute arguments: a class inside :not()/[…] is not a condition on the subject.
   let compound = '', d = 0
-  for (const c of sel.slice(cut)) {
+  for (const c of subject) {
     if (c === '(' || c === '[') d++
     else if (c === ')' || c === ']') d--
     else if (d === 0) compound += c
   }
-  const ident = (m) => {
-    if (!m) return null
-    if (/\\[0-9a-fA-F]/.test(m)) return null // hex escape: not worth decoding, stay a candidate
-    return m.replace(/\\(.)/g, '$1')
-  }
-  const cls = ident((compound.match(/\.((?:\\.|[\w-])+)/) || [])[1])
+  return compound
+}
+
+function simpleSubjectIdent(m) {
+  if (!m) return null
+  if (/\\[0-9a-fA-F]/.test(m)) return null // hex escape: not worth decoding, stay a candidate
+  return m.replace(/\\(.)/g, '$1')
+}
+
+/** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
+ *  the first class, else the id, else a direct attribute, else the tag of its RIGHTMOST compound
+ *  (the compound the subject itself must satisfy). null = no usable key, always a candidate. */
+function subjectKeyOf(sel) {
+  const subject = subjectTailOf(sel)
+  const compound = subjectCompoundOf(subject)
+  const cls = simpleSubjectIdent((compound.match(/\.((?:\\.|[\w-])+)/) || [])[1])
   if (cls) return 'c' + cls
-  const id = ident((compound.match(/#((?:\\.|[\w-])+)/) || [])[1])
+  const id = simpleSubjectIdent((compound.match(/#((?:\\.|[\w-])+)/) || [])[1])
   if (id) return 'i' + id
-  const attr = directSubjectAttributeKey(sel.slice(cut))
+  const attr = directSubjectAttributeKey(subject)
   if (attr) return attr
   const tag = (compound.match(/^([a-zA-Z][\w-]*)/) || [])[1]
   return tag ? 't' + tag.toLowerCase() : null
+}
+
+/**
+ * R5-D4's measured residual is specifically a class/id key hiding a more selective direct
+ * exact-data attribute key, e.g. `.row[data-state="v137"]`. Expose only that alternative here.
+ * Keeping the API scalar avoids an array per rule during index compilation and deliberately does
+ * not turn the experiment into a generic selector planner before evidence justifies that cost.
+ */
+export function subjectAlternativeAttributeKey(sel, primary = null) {
+  const subject = subjectTailOf(sel)
+  const key = directSubjectAttributeKey(subject)
+  return key && key !== primary ? key : null
 }
 
 /** One matches()/querySelector-ready selector list from collected parts: '' when there are

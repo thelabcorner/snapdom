@@ -168,6 +168,10 @@ export function createContext(options = {}) {
     // Internal R5-D3 counterfactual: false collapses exact data-* value keys back to the D2
     // attribute-name condition while preserving the same selector scan and capture semantics.
     __elementRuleAttrValueIndex: options.__elementRuleAttrValueIndex,
+    // Internal R5-D4 counterfactual: false preserves D3's fixed bucket-key priority. The default
+    // lets index compilation choose the least-populated necessary subject key; the full selector
+    // is still checked by matches(), so only candidate dispatch changes.
+    __elementRuleKeySelectivity: options.__elementRuleKeySelectivity,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the

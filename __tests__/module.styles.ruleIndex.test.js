@@ -184,4 +184,94 @@ describe('R5-D compiled element-rule subject index', () => {
     expect(valueIndexed).toBe(nameIndexed)
     expect(valueIndexed).toBe(linear)
   })
+
+  it('chooses a selective exact-value key over a common class without changing bytes', async () => {
+    let css = ''
+    for (let i = 0; i < 600; i++) {
+      css += `.idx-row[data-state="v${i}"]{outline-offset:${i % 3}px}`
+    }
+    installCSS(css)
+    const make = () => {
+      const root = scene()
+      root.querySelectorAll('.idx-row').forEach((row, i) => { row.dataset.state = `v${i % 600}` })
+      return root
+    }
+
+    const selectiveRoot = make()
+    const selective = await raw(selectiveRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+    })
+    selectiveRoot.remove()
+    const fixedRoot = make()
+    const fixed = await raw(fixedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: false,
+    })
+    fixedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(selective).toBe(fixed)
+    expect(selective).toBe(linear)
+  })
+
+  it('keeps a selective class key when an exact data value is common', async () => {
+    let css = ''
+    for (let i = 0; i < 240; i++) {
+      css += `.selective-${i}[data-state="common"]{outline-offset:${i % 3}px}`
+    }
+    installCSS(css)
+    const make = () => {
+      const root = scene()
+      root.querySelectorAll('.idx-row').forEach((row, i) => {
+        row.classList.add(`selective-${i}`)
+        row.dataset.state = 'common'
+      })
+      return root
+    }
+
+    const selectiveRoot = make()
+    const selective = await raw(selectiveRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: true,
+    })
+    selectiveRoot.remove()
+    const fixedRoot = make()
+    const fixed = await raw(fixedRoot, {
+      __elementRuleIndex: true,
+      __elementRuleKeySelectivity: false,
+    })
+    fixedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(selective).toBe(fixed)
+    expect(selective).toBe(linear)
+  })
+
+  it('does not mistake escaped combinators or hex-escape terminators for subject boundaries', async () => {
+    installCSS(`
+      .idx\\+escaped { text-transform:uppercase; }
+      .idx\\>escaped { text-decoration-line:underline; }
+      .idx\\~escaped { word-spacing:0.7px; }
+      .hex\\2b escaped { letter-spacing:0.4px; }
+    `)
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows[0].classList.add('idx+escaped')
+      rows[1].classList.add('idx>escaped')
+      rows[2].classList.add('idx~escaped')
+      rows[3].classList.add('hex+escaped')
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
 })
