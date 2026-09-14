@@ -274,4 +274,54 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('does not mistake escaped bracket/paren code points for selector syntax', async () => {
+    installCSS(`
+      .idx\\[escaped { text-transform:uppercase; }
+      .idx\\]escaped { text-decoration-line:underline; }
+      .idx\\(escaped { word-spacing:0.7px; }
+      .idx\\)escaped { letter-spacing:0.4px; }
+    `)
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows[0].classList.add('idx[escaped')
+      rows[1].classList.add('idx]escaped')
+      rows[2].classList.add('idx(escaped')
+      rows[3].classList.add('idx)escaped')
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
+
+  it('does not split escaped commas or treat punctuation inside comments as selector structure', async () => {
+    installCSS(`
+      .idx\\,comma { text-transform:uppercase; }
+      .idx-comment/* > + ~ , [data-fake=x] */[data-kind="hot"] { word-spacing:0.8px; }
+      .idx-comment/* :is(.fake,.also-fake) */[data-kind="cold"] { letter-spacing:0.6px; }
+    `)
+    const make = () => {
+      const root = scene()
+      const rows = root.querySelectorAll('.idx-row')
+      rows[0].classList.add('idx,comma')
+      rows[1].classList.add('idx-comment')
+      rows[2].classList.add('idx-comment')
+      rows[1].dataset.kind = 'hot'
+      rows[2].dataset.kind = 'cold'
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(linear)
+  })
 })

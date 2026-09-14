@@ -450,14 +450,40 @@ function scanSheet(sheet, universe, pseudoSels, state) {
   return scanRules(rules, universe, pseudoSels, state)
 }
 
-/** Splits `sel` on `sep` outside parentheses, brackets and quotes. */
+/** Return the final source index consumed by one CSS escape starting at `i` (`text[i] === '\\'`).
+ * CSS hex escapes consume 1-6 hex digits plus one optional whitespace terminator. Keeping this
+ * tiny tokenizer primitive shared matters: every selector-scanning fast path must agree on where
+ * syntax boundaries actually are or an escaped punctuation character can become a false key. */
+function skipCssEscape(text, i) {
+  if (++i >= text.length) return i
+  if (/[0-9a-fA-F]/.test(text[i])) {
+    let count = 1
+    while (count < 6 && i + 1 < text.length && /[0-9a-fA-F]/.test(text[i + 1])) { i++; count++ }
+    if (i + 1 < text.length && CSS_WS_RE.test(text[i + 1])) {
+      if (text[i + 1] === '\r' && text[i + 2] === '\n') i++
+      i++
+    }
+  }
+  return i
+}
+
+/** CSS comments are token whitespace. Return the closing slash index when one starts at `i`. */
+function skipCssComment(text, i) {
+  if (text[i] !== '/' || text[i + 1] !== '*') return i
+  const end = text.indexOf('*/', i + 2)
+  return end < 0 ? text.length - 1 : end + 1
+}
+
+/** Splits `sel` on `sep` outside parentheses, brackets, comments, escapes and quotes. */
 function splitTopLevel(sel, sep) {
   const out = []
   let depth = 0, quote = null, start = 0
   for (let i = 0; i < sel.length; i++) {
     const c = sel[i]
-    if (quote) { if (c === quote && sel[i - 1] !== '\\') quote = null; continue }
+    if (c === '\\') { i = skipCssEscape(sel, i); continue }
+    if (quote) { if (c === quote) quote = null; continue }
     if (c === '"' || c === '\'') quote = c
+    else if (c === '/' && sel[i + 1] === '*') i = skipCssComment(sel, i)
     else if (c === '(' || c === '[') depth++
     else if (c === ')' || c === ']') depth--
     else if (depth === 0 && c === sep) { out.push(sel.slice(start, i)); start = i + 1 }
@@ -474,23 +500,12 @@ function splitTopLevel(sel, sep) {
  * arguments are ignored because `[x]` inside :not/:is/:where/:has is not necessarily required. */
 function directSubjectAttributeKey(subject) {
   let paren = 0, quote = null
-  const skipEscape = (i) => {
-    if (++i >= subject.length) return i
-    if (/[0-9a-fA-F]/.test(subject[i])) {
-      let count = 1
-      while (count < 6 && i + 1 < subject.length && /[0-9a-fA-F]/.test(subject[i + 1])) { i++; count++ }
-      if (i + 1 < subject.length && CSS_WS_RE.test(subject[i + 1])) {
-        if (subject[i + 1] === '\r' && subject[i + 2] === '\n') i++
-        i++
-      }
-    }
-    return i
-  }
   for (let i = 0; i < subject.length; i++) {
     const c = subject[i]
-    if (c === '\\') { i = skipEscape(i); continue }
+    if (c === '\\') { i = skipCssEscape(subject, i); continue }
     if (quote) { if (c === quote) quote = null; continue }
     if (c === '"' || c === "'") { quote = c; continue }
+    if (c === '/' && subject[i + 1] === '*') { i = skipCssComment(subject, i); continue }
     if (c === '(') { paren++; continue }
     if (c === ')') { if (paren) paren--; continue }
     if (paren || c !== '[') continue
@@ -502,7 +517,7 @@ function directSubjectAttributeKey(subject) {
       const x = subject[j]
       if (x === '\\') {
         const start = j
-        j = skipEscape(j)
+        j = skipCssEscape(subject, j)
         raw += subject.slice(start, j + 1)
         j++
         continue
@@ -533,7 +548,7 @@ function directSubjectAttributeKey(subject) {
               if (x === q) { closed = true; j++; break }
               if (x === '\\') {
                 const start = j
-                j = skipEscape(j)
+                j = skipCssEscape(subject, j)
                 rawValue += subject.slice(start, j + 1)
                 continue
               }
@@ -544,7 +559,7 @@ function directSubjectAttributeKey(subject) {
             for (; j < subject.length && !CSS_WS_RE.test(subject[j]) && subject[j] !== ']'; j++) {
               if (subject[j] === '\\') {
                 const start = j
-                j = skipEscape(j)
+                j = skipCssEscape(subject, j)
                 rawValue += subject.slice(start, j + 1)
               } else rawValue += subject[j]
             }
@@ -564,7 +579,7 @@ function directSubjectAttributeKey(subject) {
     let innerQuote = null
     for (; i < subject.length; i++) {
       const x = subject[i]
-      if (x === '\\') { i = skipEscape(i); continue }
+      if (x === '\\') { i = skipCssEscape(subject, i); continue }
       if (innerQuote) { if (x === innerQuote) innerQuote = null; continue }
       if (x === '"' || x === "'") { innerQuote = x; continue }
       if (x === ']') break
@@ -582,19 +597,12 @@ function subjectTailOf(sel) {
       // and a hex escape may consume one whitespace terminator (`.gap\\2b x`). Neither is a
       // compound boundary. D1's original scanner did not skip escapes here, which could turn a
       // legal utility-class selector into a bogus tag key and incorrectly suppress the rule.
-      if (++i >= sel.length) break
-      if (/[0-9a-fA-F]/.test(sel[i])) {
-        let count = 1
-        while (count < 6 && i + 1 < sel.length && /[0-9a-fA-F]/.test(sel[i + 1])) { i++; count++ }
-        if (i + 1 < sel.length && CSS_WS_RE.test(sel[i + 1])) {
-          if (sel[i + 1] === '\r' && sel[i + 2] === '\n') i++
-          i++
-        }
-      }
+      i = skipCssEscape(sel, i)
       continue
     }
-    if (quote) { if (c === quote && sel[i - 1] !== '\\') quote = null; continue }
+    if (quote) { if (c === quote) quote = null; continue }
     if (c === '"' || c === '\'') quote = c
+    else if (c === '/' && sel[i + 1] === '*') i = skipCssComment(sel, i)
     else if (c === '(' || c === '[') depth++
     else if (c === ')' || c === ']') depth--
     else if (depth === 0 && (c === ' ' || c === '>' || c === '+' || c === '~')) cut = i + 1
@@ -604,10 +612,35 @@ function subjectTailOf(sel) {
 
 function subjectCompoundOf(subject) {
   // Drop functional/attribute arguments: a class inside :not()/[…] is not a condition on the subject.
-  let compound = '', d = 0
-  for (const c of subject) {
+  // Escaped delimiters are identifier code points, not syntax. Treating `.foo\\[bar` as an
+  // attribute opener can truncate the subject and manufacture a bogus class key — exactly the
+  // kind of rare CSS-token edge case that can turn a performance hint into a fidelity bug.
+  let compound = '', d = 0, quote = null
+  for (let i = 0; i < subject.length; i++) {
+    const c = subject[i]
+    if (c === '\\') {
+      if (d === 0) compound += c
+      const end = skipCssEscape(subject, i)
+      if (d === 0) compound += subject.slice(i + 1, end + 1)
+      i = end
+      continue
+    }
+    if (quote) {
+      if (c === quote) quote = null
+      if (d === 0) compound += c
+      continue
+    }
+    if (c === '"' || c === "'") {
+      quote = c
+      if (d === 0) compound += c
+      continue
+    }
+    if (c === '/' && subject[i + 1] === '*') {
+      i = skipCssComment(subject, i)
+      continue
+    }
     if (c === '(' || c === '[') d++
-    else if (c === ')' || c === ']') d--
+    else if (c === ')' || c === ']') { if (d) d-- }
     else if (d === 0) compound += c
   }
   return compound
