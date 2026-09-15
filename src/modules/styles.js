@@ -2174,16 +2174,22 @@ function identityFor(el, st, selectors = null) {
  *  Pinned by __tests__/module.styles.identityShare.test.js.
  *  @param {{snap: object, rr: string[]|null, sig: string|null, h: boolean, b: boolean}} rec
  *  @param {Element} el the identity's first twin
+ *  @param {boolean} [copyForSpread=true] materialize the historical spread-optimized base.
+ *    Snapshot overlays never spread the base, so they can build the lists/signature directly
+ *    from the canonical object and avoid this one full-object copy per reused identity.
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
-function shareLists(rec, el) {
-  // Re-copied once here, riders included: the identity's own object was built by keyed
-  // stores (dictionary mode in V8) and every twin spreads it — off a spread-made copy the
-  // 500-row table's twins clone 6 ms faster, and only identities WITH twins pay the copy.
+function shareLists(rec, el, copyForSpread = true) {
+  // Historical copy path: the identity's own object is built by keyed stores (dictionary mode
+  // in V8), and twins that spread it clone faster from a spread-made object. R7 overlays do not
+  // spread the base at all, so paying this copy would be pure setup overhead.
   const src = rec.snap
-  const stored = rec.snap = { ...src }
-  Object.defineProperty(stored, '__needsBgInline', { value: src.__needsBgInline, enumerable: false })
-  if (src.__bgClipTextFix !== undefined) {
-    Object.defineProperty(stored, '__bgClipTextFix', { value: src.__bgClipTextFix, enumerable: false })
+  let stored = src
+  if (copyForSpread) {
+    stored = rec.snap = { ...src }
+    Object.defineProperty(stored, '__needsBgInline', { value: src.__needsBgInline, enumerable: false })
+    if (src.__bgClipTextFix !== undefined) {
+      Object.defineProperty(stored, '__bgClipTextFix', { value: src.__bgClipTextFix, enumerable: false })
+    }
   }
   const scan = scanFor(el.ownerDocument || document)
   const attr = (el.getAttribute && el.getAttribute('style')) || ''
@@ -2278,6 +2284,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   const style = preStyle || getComputedStyle(el)
   let snap
   let dyn = null
+  let isOverlay = false
   const shared = shareInfo && shareInfo.st.snaps.get(shareInfo.id)
   let allowSharedUniverse = false
   if (shareInfo) {
@@ -2319,24 +2326,46 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     // all non-geometry computed values, identical between identity twins by construction
     // (same matched rules; animations disable the share). Recomputing the flag per twin was
     // 7 live reads a node for an answer the identity already holds.
-    snap = { ...shared.snap }
+    const useOverlay = options?.__styleShareSnapshotOverlay !== false
+    let rrList
+    if (useOverlay) {
+      // R7 does not need shareLists()' historical spread-optimization copy. Build the compact
+      // identity plan against the retained first-node template, then layer this twin's own
+      // layout-varying values. The template may carry first-node local corrections; correctness
+      // relies on every node-varying corrected slot being an overlay-owned re-read/tombstone,
+      // while identity-invariant corrections are allowed to remain inherited.
+      rrList = shared.rr || shareLists(shared, el, false)
+      snap = Object.create(shared.snap)
+      isOverlay = true
+    } else {
+      // Keep the false counterfactual mechanism-for-mechanism historical: its first hit spreads
+      // the original dictionary-mode object before shareLists() swaps in the spread-optimized
+      // base for subsequent twins.
+      snap = { ...shared.snap }
+      rrList = shared.rr || shareLists(shared, el)
+    }
     // Direct loop over the identity's re-read list (built on its first twin): the old form
     // walked all ~150 keys with a regex test per key, per twin (10.8ms of getSnapshot
     // self-time on the 500-row table, profiled). The values feed `dyn`, which composes this
     // twin's snapshotKeyCache signature from the identity's base signature — styleSignature
     // re-hashed the whole snapshot per twin for another 11ms otherwise.
-    const rrList = shared.rr || shareLists(shared, el)
     dyn = []
     for (let i = 0; i < rrList.length; i++) {
       const p = rrList[i]
       const v = style.getPropertyValue(p)
       if (v) snap[p] = v
+      // `delete` would expose the inherited identity value on an overlay. An empty own value is
+      // the tombstone: every existing style consumer already treats empty as absent, and an own
+      // property suppresses the prototype's same-named enumerable property during for...in.
+      else if (useOverlay) snap[p] = ''
       else delete snap[p]
       dyn.push(v)
     }
-    Object.defineProperty(snap, '__needsBgInline', { value: shared.snap.__needsBgInline, enumerable: false })
-    if (shared.snap.__bgClipTextFix !== undefined) {
-      Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
+    if (!useOverlay) {
+      Object.defineProperty(snap, '__needsBgInline', { value: shared.snap.__needsBgInline, enumerable: false })
+      if (shared.snap.__bgClipTextFix !== undefined) {
+        Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
+      }
     }
   } else {
     const docUniverse = universeFor(el)
@@ -2352,15 +2381,14 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       backgroundState,
     )
     if (shareInfo) {
-      // Stored by REFERENCE, with the riders it already carries: the copy that used to be
-      // made here, plus a re-read list and a base signature per identity, cost 27 ms of a
-      // 134 ms pipeline on a tree whose nodes are all unique (the deep-tree scene: 1,936
-      // leaves, each with its own inline background) for lists no twin ever read. Two
-      // passes mutate this object after it is stored, and both are deterministic for the
-      // twins: the flex-item min-width floor writes the value every twin gets too, and
-      // stripHeightForWrappers judges this node's OWN children, so it may delete height /
-      // block-size that a twin keeps — the flags let shareLists put them back on the
-      // re-read list, where the twin reads its own.
+      // Keep the first occurrence allocation-free: most high-entropy identities never get a
+      // twin, so creating a second object here would impose a global memory/allocation tax just
+      // to preserve sharing state nobody consumes. If reuse does occur, R7 treats this completed
+      // first-node snapshot as a stable template and EVERY layout-varying slot in `rr` is written
+      // as an own property/tombstone on each later overlay before any consumer sees it. Local
+      // gutter/flex corrections on later twins also land on the overlay. The first-node gutter is
+      // safe because width/inline-size are unconditional re-read slots, and the idempotent gutter
+      // correction derives from the live baseline (pinned by the bidirectional gutter oracles).
       shareInfo.st.snaps.set(shareInfo.id, { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap })
     }
   }
@@ -2405,13 +2433,15 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       } catch { /* Typed OM is optional; keep the computed style if unsupported. */ }
     }
   }
-  stripHeightForWrappers(el, style, snap)
+  stripHeightForWrappers(el, style, snap, isOverlay)
   if (dyn !== null) {
     if (restoredAutoMargin) dyn.push('\u0005', ...MARGIN_PROPS.map(prop => snap[prop]))
     // Seed the signature memo AFTER the strip: it deletes at most height/block-size, and two
     // twins with different strip outcomes must not collide onto one key.
+    const hasHeight = isOverlay ? snap.height !== '' && snap.height !== undefined : 'height' in snap
+    const hasBlockSize = isOverlay ? snap['block-size'] !== '' && snap['block-size'] !== undefined : 'block-size' in snap
     __snapshotSig.set(snap, shared.sig + '\u0002' + dyn.join('\u0001') +
-      ('height' in snap ? '' : '\u0003') + ('block-size' in snap ? '' : '\u0004'))
+      (hasHeight ? '' : '\u0003') + (hasBlockSize ? '' : '\u0004'))
   }
   const hosts = shadowHostsOf(el)
   snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
@@ -2856,8 +2886,9 @@ function autoContentHeight(el) {
  * @param {Element} el
  * @param {CSSStyleDeclaration} cs
  * @param {Record<string, any>} snap
+ * @param {boolean} [isOverlay=false] whether `snap` inherits its static properties from a shared base
  */
-function stripHeightForWrappers(el, cs, snap) {
+function stripHeightForWrappers(el, cs, snap, isOverlay = false) {
   // 1) Respect an author inline height
   if (isHTMLEl(el) && el.style && el.style.height) return
 
@@ -2919,6 +2950,12 @@ function stripHeightForWrappers(el, cs, snap) {
   if (Number.isFinite(usedH) && Number.isFinite(autoH) && Math.abs(usedH - autoH) > TOL) return
 
   // 7) Now drop height and block-size from the snapshot
-  delete snap.height
-  delete snap['block-size']
+  if (isOverlay) {
+    // Tombstone inherited dimensions without materializing/copying the identity snapshot.
+    snap.height = ''
+    snap['block-size'] = ''
+  } else {
+    delete snap.height
+    delete snap['block-size']
+  }
 }
