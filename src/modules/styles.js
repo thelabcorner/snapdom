@@ -1909,10 +1909,24 @@ function usedWidthDiffersFromAvailable(el, cs) {
 }
 
 const __snapshotSig = new WeakMap()
+
+// Diagnostic-only R7 probe. This worktree is not a production candidate: fixture harnesses
+// install `globalThis.__snapdomSnapshotProbe = {}` and read aggregate cardinalities after one
+// capture. Keeping this instrumentation off the timing frontier prevents the counters themselves
+// from perturbing the candidate we eventually benchmark.
+function snapshotProbeAdd(key, value = 1) {
+  const probe = globalThis.__snapdomSnapshotProbe
+  if (probe) probe[key] = (probe[key] || 0) + value
+}
 /** The snapshot's key into snapshotKeyCache, memoized per snapshot object. */
 function styleSignature(snap) {
+  snapshotProbeAdd('signatureCalls')
   let sig = __snapshotSig.get(snap)
-  if (sig) return sig
+  if (sig) {
+    snapshotProbeAdd('signatureMemoHits')
+    return sig
+  }
+  snapshotProbeAdd('signatureFullBuilds')
   // Built in INSERTION order, not sorted. This string is only ever a key into
   // snapshotKeyCache — never rendered, serialized, or compared for ordering — and
   // snapshotComputedStyleFull fills every snapshot by walking the same property universe, so
@@ -1936,7 +1950,9 @@ function styleSignature(snap) {
   // getStyleKey call, never a wrong key. `__needsBgInline` is non-enumerable, so for...in
   // sees exactly what Object.entries saw.
   const parts = []
-  for (const k in snap) parts.push(k, snap[k])
+  let propCount = 0
+  for (const k in snap) { parts.push(k, snap[k]); propCount++ }
+  snapshotProbeAdd('signatureFullProps', propCount)
   sig = parts.join('\u0001')
   __snapshotSig.set(snap, sig)
   return sig
@@ -2176,6 +2192,7 @@ function identityFor(el, st, selectors = null) {
  *  @param {Element} el the identity's first twin
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
 function shareLists(rec, el) {
+  snapshotProbeAdd('shareListBuilds')
   // Re-copied once here, riders included: the identity's own object was built by keyed
   // stores (dictionary mode in V8) and every twin spreads it — off a spread-made copy the
   // 500-row table's twins clone 6 ms faster, and only identities WITH twins pay the copy.
@@ -2206,6 +2223,8 @@ function shareLists(rec, el) {
   const staticParts = []
   for (const k in stored) { if (!rrSet.has(k)) staticParts.push(k, stored[k]) }
   rec.rr = rrList
+  snapshotProbeAdd('shareListRrProps', rrList.length)
+  snapshotProbeAdd('shareListSnapshotProps', Object.keys(stored).length)
   rec.sig = staticParts.join('\u0001') + '\u0002' + rrList.join('\u0001')
   return rrList
 }
@@ -2265,6 +2284,7 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
  * @returns {Record<string, string>}
  */
 function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
+  snapshotProbeAdd('getSnapshotCalls')
   const rec = snapshotCache.get(el)
   // The snapshot content depends on embedFonts (extra font props) and excludeStyleProps
   // (skipped props), which no invalidation signal tracks. Capturing the same element twice
@@ -2274,7 +2294,11 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   const ef = !!(options && options.embedFonts)
   const ex = (options && options.excludeStyleProps) || null
   if (typeof ex !== 'function' && rec && snapshotIsCurrent(rec, el) &&
-      rec.embedFonts === ef && rec.excludeStyleProps === ex) return rec.snapshot
+      rec.embedFonts === ef && rec.excludeStyleProps === ex) {
+    snapshotProbeAdd('snapshotCacheHits')
+    return rec.snapshot
+  }
+  snapshotProbeAdd('snapshotCacheMisses')
   const style = preStyle || getComputedStyle(el)
   let snap
   let dyn = null
@@ -2313,6 +2337,8 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     }
   }
   if (shared) {
+    snapshotProbeAdd('shareHits')
+    snapshotProbeAdd('shareHitCopiedProps', Object.keys(shared.snap).length)
     // Identity hit: copy the shared full read, then re-read only the layout-varying props on
     // THIS node. The non-enumerable riders carry over: __bgClipTextFix derives from colors,
     // and __needsBgInline from the PRESENCE of url()/gradient/mask/border-image values —
@@ -2326,6 +2352,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     // twin's snapshotKeyCache signature from the identity's base signature — styleSignature
     // re-hashed the whole snapshot per twin for another 11ms otherwise.
     const rrList = shared.rr || shareLists(shared, el)
+    snapshotProbeAdd('shareHitRrProps', rrList.length)
     dyn = []
     for (let i = 0; i < rrList.length; i++) {
       const p = rrList[i]
@@ -2339,6 +2366,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
     }
   } else {
+    snapshotProbeAdd(shareInfo ? 'shareMisses' : 'unsharedSnapshots')
     const docUniverse = universeFor(el)
     // This probe already existed inside snapshotComputedStyleFull. Compute it once up front so
     // R3 can preserve the exact downstream properties background.js will consume, then reuse
@@ -2351,6 +2379,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       elementUniverseFor(el, style, options, docUniverse, backgroundState, allowSharedUniverse),
       backgroundState,
     )
+    snapshotProbeAdd('freshSnapshotProps', Object.keys(snap).length)
     if (shareInfo) {
       // Stored by REFERENCE, with the riders it already carries: the copy that used to be
       // made here, plus a re-read list and a base signature per identity, cost 27 ms of a
@@ -2386,8 +2415,12 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     let typed
     for (const prop of MARGIN_PROPS) {
       if (snap[prop] !== '0px') continue
+      snapshotProbeAdd('zeroMarginCandidates')
       try {
-        typed ||= el.computedStyleMap()
+        if (!typed) {
+          snapshotProbeAdd('typedMapCalls')
+          typed = el.computedStyleMap()
+        }
         if (typed.get(prop)?.toString() === 'auto') {
           snap[prop] = 'auto'
           restoredAutoMargin = true
@@ -2404,6 +2437,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       ('height' in snap ? '' : '\u0003') + ('block-size' in snap ? '' : '\u0004'))
   }
   const hosts = shadowHostsOf(el)
+  if (hosts) snapshotProbeAdd('shadowHostSnapshots')
   snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
   return snap
 }
@@ -2670,6 +2704,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   }
   let key = persist.snapshotKeyCache.get(sig)
   if (key === undefined) {
+    snapshotProbeAdd('snapshotKeyMisses')
     key = getStyleKey(snap, tag, sizedByContent, flexItem)
     // Bound at INSERTION: evicting only on an epoch bump left the Map unbounded for as long
     // as the page's styles held still. Map iterates in insertion order, so this is FIFO.
@@ -2677,7 +2712,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
       persist.snapshotKeyCache.delete(persist.snapshotKeyCache.keys().next().value)
     }
     persist.snapshotKeyCache.set(sig, key)
-  }
+  } else snapshotProbeAdd('snapshotKeyHits')
   session.styleMap.set(clone, key)
 }
 /**
