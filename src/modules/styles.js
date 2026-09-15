@@ -632,6 +632,12 @@ function relevantShareGate(el, gate) {
     if (n.id) present.add('i' + n.id)
     const cl = n.classList
     for (let i = 0; i < cl.length; i++) present.add('c' + cl[i])
+    // R5-D2 can choose a direct subject attribute as the necessary selector key. The share gate
+    // reuses the same key space to cheaply discard selectors that cannot exist under the capture
+    // root, so it must describe attributes too; otherwise `[data-x]:hover` would be incorrectly
+    // filtered out before the stateful-selector safety check ever sees it.
+    const attrs = n.attributes
+    for (let i = 0; attrs && i < attrs.length; i++) present.add('a' + attrs[i].name)
   }
   note(el)
   for (const n of el.querySelectorAll('*')) note(n)
@@ -1670,7 +1676,16 @@ function shareSelectorFingerprint(el, selectors) {
         if (el.localName !== value) continue
       } else if (type === 99) { // c
         if (!el.classList || !el.classList.contains(value)) continue
-      } else if (el.id !== value) { // i
+      } else if (type === 97) { // a
+        if (!el.hasAttribute?.(value)) continue
+      } else if (type === 105) { // i
+        if (el.id !== value) continue
+      } else {
+        // Unknown key kinds are never allowed to suppress a safety selector. If a future
+        // selector index adds one, fingerprint it with matches() until this gate learns it.
+        try {
+          if (el.matches(entry.sel)) out += (out ? ',' : '') + i
+        } catch { return null }
         continue
       }
     }
