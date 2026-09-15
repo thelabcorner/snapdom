@@ -185,6 +185,12 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R7-P counterfactuals. Pseudo-element identity hits can use a copy-on-write
+    // snapshot overlay instead of spreading the whole shared pseudo snapshot, and can reuse
+    // generated style keys by compact semantic signature. False restores each historical leg
+    // independently so the two mechanisms can be measured as a 2x2 factorial.
+    __styleSharePseudoOverlay: options.__styleSharePseudoOverlay,
+    __styleSharePseudoKeyCache: options.__styleSharePseudoKeyCache,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
