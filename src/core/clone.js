@@ -258,7 +258,10 @@ function makeClipHusk(node, sessionCache, options) {
  */
 export async function deepClone(node, sessionCache, options) {
   if (!node) throw new Error('Invalid node')
-  const clonedAssignedNodes = new Set()
+  // Only shadow hosts populate/read this set. Ordinary DOM historically allocated an empty Set
+  // for every element in the tree, creating pure allocation/GC pressure on the clone hot path.
+  // Keep the old behavior as an internal counterfactual until C1 clears controlled timing.
+  let clonedAssignedNodes = options.__cloneLazyAssignedSet === true ? null : new Set()
   let pendingSelectedOptions = null
   let pendingTextAreaValue = null
   if (node.nodeType === Node.ELEMENT_NODE) {
@@ -659,6 +662,7 @@ export async function deepClone(node, sessionCache, options) {
     } catch { }
   }
   if (node.shadowRoot) {
+    clonedAssignedNodes ||= new Set()
     // Wire this root into the style-snapshot invalidation. Nothing else can see inside it:
     // the document observer stops at the boundary, so without this a component that
     // re-renders between captures keeps serving its previous frame's snapshots.
@@ -726,7 +730,7 @@ export async function deepClone(node, sessionCache, options) {
   // latter injected content the page never shows, twice over for the common component that
   // reads its own light DOM and renders a copy inside its shadow tree.
   const skipLightChild = (child) =>
-    clonedAssignedNodes.has(child) || (node.shadowRoot && !child.assignedSlot)
+    clonedAssignedNodes?.has(child) || (node.shadowRoot && !child.assignedSlot)
   const cloneList = await Promise.all(Array.from(node.childNodes).map((child) =>
     skipLightChild(child)
       ? null

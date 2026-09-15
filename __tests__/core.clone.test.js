@@ -9,8 +9,8 @@ const sessionCache = {
         nodeMap: new Map()
       }
 
-async function runClone(node) {
-  return await deepClone(node, sessionCache, {...options})
+async function runClone(node, extra = {}) {
+  return await deepClone(node, sessionCache, {...options, ...extra})
 }
 
 describe('deepClone', () => {
@@ -214,6 +214,29 @@ describe('deepClone — slotted light DOM is cloned exactly once', () => {
     })
     expect(occurrences(clone, 'FIRSTWORD')).toBe(1)
     expect(occurrences(clone, 'SECONDWORD')).toBe(1)
+  })
+
+  it('lazy assigned-node bookkeeping preserves shadow-slot semantics', async () => {
+    const build = () => {
+      const wrap = document.createElement('div')
+      wrap.innerHTML = '<div id="host"><span slot="named">NAMEDWORD</span><b>DEFAULTWORD</b><i slot="missing">DROPPEDWORD</i></div>'
+      wrap.querySelector('#host').attachShadow({ mode: 'open' }).innerHTML =
+        '<section><slot name="named"></slot><slot></slot></section>'
+      return wrap
+    }
+    const historical = build(), lazy = build()
+    document.body.append(historical, lazy)
+    try {
+      const a = await runClone(historical, { __cloneLazyAssignedSet: false })
+      const b = await runClone(lazy, { __cloneLazyAssignedSet: true })
+      expect(b.textContent).toBe(a.textContent)
+      expect(occurrences(b, 'NAMEDWORD')).toBe(1)
+      expect(occurrences(b, 'DEFAULTWORD')).toBe(1)
+      expect(occurrences(b, 'DROPPEDWORD')).toBe(0)
+    } finally {
+      historical.remove()
+      lazy.remove()
+    }
   })
 })
 

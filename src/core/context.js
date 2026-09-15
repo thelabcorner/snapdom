@@ -182,6 +182,10 @@ export function createContext(options = {}) {
     // source edits. A value of N means the first N DISTINCT share misses stay on pure R2 and
     // only later misses may use R3. Identity hits do not advance the counter.
     __styleShareElementUniverseMinMisses: options.__styleShareElementUniverseMinMisses,
+    // Internal R5-C1 counterfactual. When true, deepClone allocates its assigned-light-DOM
+    // bookkeeping Set only for actual shadow hosts. False/undefined preserves the historical
+    // one-Set-per-element path for same-build performance comparison.
+    __cloneLazyAssignedSet: options.__cloneLazyAssignedSet,
 
     // Network
     useProxy: typeof options.useProxy === 'string' ? options.useProxy : '',
