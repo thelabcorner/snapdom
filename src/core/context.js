@@ -185,6 +185,10 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R7 representation experiment: default/true stores identity twins as a tiny
+    // own-property overlay whose prototype is the immutable shared snapshot; false forces the
+    // historical full object spread for byte/timing counterfactuals.
+    __styleShareSnapshotOverlay: options.__styleShareSnapshotOverlay,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
