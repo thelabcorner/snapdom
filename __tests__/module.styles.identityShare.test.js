@@ -215,4 +215,26 @@ describe('identity share — layout re-read narrowing', () => {
   it('logical sizes are used values, like width and height', async () => {
     await byteIdentical(twinFixture('inline-size:50%'))
   })
+
+  it('keeps snapshot-key signatures distinct when only one twin gains a classic scrollbar gutter', async () => {
+    const el = mount(
+      `<div class="gutter-twin"><i class="short">x</i></div>
+       <div class="gutter-twin"><i class="tall">x</i></div>`,
+      `.gutter-twin{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}
+       .short{display:block;height:10px}.tall{display:block;height:160px}`
+    )
+    const [a, b] = el.querySelectorAll('.gutter-twin')
+    // Overlay-scrollbar engines have no gutter to distinguish here. The invariant under test
+    // is the classic-gutter path (#498), so make the fixture self-selecting rather than baking
+    // an engine-specific scrollbar width into the assertion.
+    const gutterA = a.offsetWidth - a.clientWidth
+    const gutterB = b.offsetWidth - b.clientWidth
+    if (!(gutterB > gutterA + 0.5)) return
+
+    await settle()
+    const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    await dirty(el)
+    const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(shared).toBe(full)
+  })
 })
