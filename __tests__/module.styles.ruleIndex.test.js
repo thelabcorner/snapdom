@@ -641,4 +641,73 @@ describe('R5-D compiled element-rule subject index', () => {
     expect(cse).toBe(d5)
     expect(cse).toBe(linear)
   })
+
+  it('rebuilds selector CSE after CSSOM mutation instead of retaining a stale merged program', async () => {
+    let css = ''
+    for (let i = 0; i < 80; i++) {
+      css += `.idx-row{letter-spacing:${(i % 5) / 10}px}`
+    }
+    const style = installCSS(css)
+
+    const beforeRoot = scene()
+    const before = await raw(beforeRoot, {
+      __elementRuleIndex: true,
+      __elementRuleSelectorCSE: true,
+    })
+    beforeRoot.remove()
+
+    style.sheet.insertRule('.idx-row{word-spacing:7px}', style.sheet.cssRules.length)
+    flushStyleInvalidations()
+
+    const cseRoot = scene()
+    const cse = await raw(cseRoot, {
+      __elementRuleIndex: true,
+      __elementRuleSelectorCSE: true,
+    })
+    cseRoot.remove()
+    const d5Root = scene()
+    const d5 = await raw(d5Root, {
+      __elementRuleIndex: true,
+      __elementRuleSelectorCSE: false,
+    })
+    d5Root.remove()
+    const linearRoot = scene()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(cse).toBe(d5)
+    expect(cse).toBe(linear)
+    expect(cse).not.toBe(before)
+  })
+
+  it('coalesces identical selectors across grouping rules without inventing grouping semantics', async () => {
+    installCSS(`
+      .cse-group { --cse-a:1; letter-spacing:1px; }
+      @media (min-width:1px) { .cse-group { --cse-b:2; word-spacing:2px; } }
+      @media (max-width:1px) { .cse-group { --cse-c:3; text-indent:3px; } }
+      @supports (display:grid) { .cse-group { --cse-d:4; text-decoration-thickness:1px; } }
+    `)
+    const make = () => {
+      const root = scene()
+      root.querySelectorAll('.idx-row').forEach((row) => row.classList.add('cse-group'))
+      return root
+    }
+
+    const cseRoot = make()
+    const cse = await raw(cseRoot, {
+      __elementRuleIndex: true,
+      __elementRuleSelectorCSE: true,
+    })
+    cseRoot.remove()
+    const d5Root = make()
+    const d5 = await raw(d5Root, {
+      __elementRuleIndex: true,
+      __elementRuleSelectorCSE: false,
+    })
+    d5Root.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(cse).toBe(d5)
+    expect(cse).toBe(linear)
+  })
 })
