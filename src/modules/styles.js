@@ -622,6 +622,12 @@ const SHARE_PARTITION_PSEUDOS = new Set([
   'first-child', 'last-child', 'only-child', 'first-of-type', 'last-of-type',
   'only-of-type', 'empty', 'has', 'not', 'is', 'where', 'dir', 'lang',
 ])
+// Focus state is special among the interaction pseudos: the actually focused element already
+// stays on the conservative full-read path below (`activeElement === source`). Partitioning the
+// selector vector therefore only recovers sharing for its unfocused twins and for ancestors whose
+// :focus-within bit differs. Other volatile/UA state remains a capture-wide veto until separately
+// proven. Kept separate so one internal counterfactual can restore the historical router exactly.
+const SHARE_PARTITION_FOCUS_PSEUDOS = new Set(['focus', 'focus-visible', 'focus-within'])
 
 /** Filters the scan's potentially splitting selectors to subjects that can exist under root. */
 function relevantShareGate(el, gate) {
@@ -651,12 +657,14 @@ function shareGateMatches(el, gate) {
 }
 
 /** Whether every pseudo token in a splitting selector is represented by the fingerprint. */
-function partitionableShareSelector(sel) {
+function partitionableShareSelector(sel, focusPartition = true) {
   if (!sel || sel.includes('::')) return false
   const re = /:{1,2}([\w-]+)/g
   let m
   while ((m = re.exec(sel))) {
-    if (!SHARE_PARTITION_PSEUDOS.has(m[1].toLowerCase())) return false
+    const pseudo = m[1].toLowerCase()
+    if (!SHARE_PARTITION_PSEUDOS.has(pseudo) &&
+        !(focusPartition && SHARE_PARTITION_FOCUS_PSEUDOS.has(pseudo))) return false
   }
   return true
 }
@@ -667,9 +675,10 @@ function partitionableShareSelector(sel) {
  * partitioned by the exact match-status vector of these selectors. Any uncertainty returns
  * `{ share:false }`, preserving the released-v3 full-read behavior.
  * @param {Element} el capture root
+ * @param {boolean} [focusPartition=true] internal counterfactual for focus-state partitioning
  * @returns {{share: boolean, selectors: Array<{sel: string, key: string|null}>|null}}
  */
-export function styleSharePlan(el) {
+export function styleSharePlan(el, focusPartition = true) {
   try {
     const doc = el.ownerDocument || document
     const scan = scanFor(doc)
@@ -683,7 +692,7 @@ export function styleSharePlan(el) {
     if (!part || part.blocked) return { share: false, selectors: null }
     const probe = doc.createElement('div')
     for (const entry of relevant) {
-      if (part.containerSels.has(entry.sel) || !partitionableShareSelector(entry.sel)) {
+      if (part.containerSels.has(entry.sel) || !partitionableShareSelector(entry.sel, focusPartition)) {
         return { share: false, selectors: null }
       }
       // Validate each selector independently too. The joined share gate is validated by

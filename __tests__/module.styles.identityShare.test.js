@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { snapdom } from '../src/index.js'
 import { flushStyleInvalidations } from '../src/modules/styles.js'
 import { bigTableHTML } from './category.libs.js'
+import { diffCanvas } from '@zumer/snapdiff/diff'
 
 const mounted = []
 afterEach(() => { while (mounted.length) mounted.pop().remove() })
@@ -39,6 +40,10 @@ async function settle() {
 
 async function px(el, fx, fy, opts = {}) {
   const c = await snapdom.toCanvas(el, { embedFonts: false, scale: 1, dpr: 1, burst: false, ...opts })
+  return canvasPx(c, fx, fy)
+}
+
+function canvasPx(c, fx, fy) {
   const d = c.getContext('2d').getImageData(
     Math.min(c.width - 1, Math.round(c.width * fx)),
     Math.min(c.height - 1, Math.round(c.height * fy)), 1, 1).data
@@ -112,15 +117,22 @@ describe('identity share — the gates, in pixels', () => {
 
   it('the focused element keeps its focus styling', async () => {
     const el = mount(
-      '<button class="foc-g">a</button><button class="foc-g">a</button>',
-      `.foc-g { ${BOX}; border:0; background: rgb(0,0,255) } .foc-g:focus { background: rgb(255,0,0) }`)
-    el.querySelectorAll('button')[1].focus()
-    // Dominance, not equality: the UA focus ring blends over the button at some sample
-    // points, so exact red is engine-dependent — red-vs-blue dominance is not.
-    const [fr, , fb] = (await px(el, 0.75, 0.5)).split(',').map(Number)
+      '<span class="foc-g" tabindex="0"></span><span class="foc-g" tabindex="0"></span>',
+      `.foc-g { ${BOX}; background: rgb(0,0,255) } .foc-g:focus { background: rgb(255,0,0) }`)
+    el.querySelectorAll('.foc-g')[1].focus()
+    await settle()
+    const options = { embedFonts: false, scale: 1, dpr: 1, burst: false, cache: 'disabled' }
+    const production = await snapdom.toCanvas(el, options)
+    await settle()
+    const conservative = await snapdom.toCanvas(el, { ...options, __styleShare: false })
+    const visual = diffCanvas(conservative, production, { threshold: 0.1, includeAA: false })
+    expect(visual.dimsMatch).toBe(true)
+    expect(visual.diff).toBe(0)
+    expect(visual.ratio).toBe(0)
+    const [fr, , fb] = canvasPx(production, 0.75, 0.5).split(',').map(Number)
     expect(fr).toBeGreaterThan(120)
     expect(fb).toBeLessThan(80)
-    const [ur, , ub] = (await px(el, 0.2, 0.5)).split(',').map(Number)
+    const [ur, , ub] = canvasPx(production, 0.2, 0.5).split(',').map(Number)
     expect(ub).toBeGreaterThan(120)
     expect(ur).toBeLessThan(80)
   })

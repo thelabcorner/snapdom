@@ -70,6 +70,7 @@ const crossOriginCss = (() => {
 const network = await networkGate.status()
 
 export default defineConfig({
+  optimizeDeps: { include: ['@zumer/snapdiff/diff'] },
   // packages/plugins/* import '@zumer/snapdom' by NAME (they are published separately, so they
   // must). Under test that name resolved to whatever npm had installed in node_modules — the
   // last PUBLISHED release, 2.24.1 — so gif-export and video-export ran their internal
