@@ -185,6 +185,10 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R7-SA1 counterfactual. False prevents the content-visibility preparation pass
+    // from handing its already-acquired live CSSStyleDeclaration to deepClone, restoring the
+    // historical second getComputedStyle() acquisition in inlineAllStyles.
+    __contentVisibilityStyleSeed: options.__contentVisibilityStyleSeed,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the

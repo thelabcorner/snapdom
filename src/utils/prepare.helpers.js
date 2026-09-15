@@ -114,9 +114,12 @@ export function stabilizeLayout(element) {
  * __tests__/utils.prepare.helpers.test.js.
  * @param {Element} root
  * @param {{left:number,top:number,right:number,bottom:number}|null} [clipRect]
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache] optional capture-local
+ *   computed-style cache. The declaration returned here is live on supported engines, so the
+ *   same object can be consumed by deepClone after any temporary content-visibility override.
  * @returns {() => void}
  */
-export function forceContentVisibility(root, clipRect = null) {
+export function forceContentVisibility(root, clipRect = null, styleCache = null) {
   const undos = []
   const force = (el) => {
     if (!isHTMLEl(el)) return
@@ -125,6 +128,13 @@ export function forceContentVisibility(root, clipRect = null) {
       return
     }
     const cs = getComputedStyle(el)
+    // `inlineAllStyles()` historically acquires this same declaration again moments later.
+    // Seed only the capture-local cache owned by that pipeline; direct/diff callers pass no
+    // cache and retain the exact historical behavior. CSSStyleDeclaration from
+    // getComputedStyle is live in Chromium/Firefox/WebKit, including across the temporary
+    // `content-visibility:auto -> visible` override below, so later reads still observe the
+    // forced state exactly as a fresh getComputedStyle call would.
+    styleCache?.set?.(el, cs)
     const computed = cs.contentVisibility || cs.getPropertyValue('content-visibility') || ''
     if (computed === 'auto') {
       undos.push(transientStyles(el, [['content-visibility', 'visible']], activeVisibility))

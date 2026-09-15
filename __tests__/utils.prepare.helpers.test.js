@@ -52,6 +52,26 @@ describe('forceContentVisibility (#281)', () => {
     expect(child.style.contentVisibility).toBe('auto')
   })
 
+  it('can seed the capture style cache with the same live declaration used by the force pass', () => {
+    const el = document.createElement('div')
+    el.style.cssText = 'content-visibility:auto;color:rgb(1,2,3)'
+    document.body.appendChild(el)
+    const styleCache = new WeakMap()
+
+    const undo = forceContentVisibility(el, null, styleCache)
+    const cached = styleCache.get(el)
+    expect(cached).toBeTruthy()
+    // The cache is seeded before transientStyles writes the override. getComputedStyle returns
+    // a live declaration, so the exact same object must expose the post-write state consumed by
+    // deepClone rather than freezing the pre-force `auto` value.
+    expect(cached.contentVisibility || cached.getPropertyValue('content-visibility')).toBe('visible')
+
+    el.style.color = 'rgb(9, 8, 7)'
+    expect(cached.color).toBe('rgb(9, 8, 7)')
+    undo()
+    expect(cached.contentVisibility || cached.getPropertyValue('content-visibility')).toBe('auto')
+  })
+
   it('leaves elements without content-visibility unchanged', () => {
     const el = document.createElement('div')
     el.style.color = 'red'
