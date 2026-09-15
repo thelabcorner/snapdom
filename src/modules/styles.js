@@ -1898,6 +1898,56 @@ function computeBackgroundInlineState(style) {
   return { needsInline: hasBackground, hasBackground }
 }
 
+// UA/presentational backgrounds on controls/tables/media are intentionally outside this set.
+// These ordinary HTML containers have transparent/no-image UA defaults on the three supported
+// engines, and background/mask/border-image are non-inherited unless author CSS explicitly uses
+// inherit/all — both channels are part of the fail-closed proof below.
+const BG_STATE_NEUTRAL_TAGS = new Set([
+  'div', 'span', 'p', 'section', 'article', 'main', 'header', 'footer', 'nav', 'aside',
+])
+const BG_STATE_DECL_RE = /^(?:background(?:-|$)|mask(?:-|$)|-webkit-mask(?:-|$)|border-image(?:-|$))/i
+
+/** Whether this element is provably unable to make computeBackgroundInlineState() true.
+ *
+ * The document-level part is cached on scanFor()'s epoch-scoped record. Per element we only
+ * inspect inline declarations when one exists. Any uncertainty preserves the historical live
+ * CSSOM probe. This is an admission optimization only: it never synthesizes serialized style.
+ */
+function canSkipBackgroundInlineStateProbe(el, options, docUniverse) {
+  if (options?.__backgroundStateProbeGate === false || !el || !docUniverse) return false
+  const tag = el.localName || el.tagName?.toLowerCase()
+  if (!BG_STATE_NEUTRAL_TAGS.has(tag)) return false
+  const doc = el.ownerDocument || document
+  if (el.getRootNode?.() !== doc || el.shadowRoot || el.assignedSlot) return false
+  try {
+    const scan = scanFor(doc)
+    let safe = scan.__backgroundStateProbeSafe
+    if (safe === undefined) {
+      safe = !!scan.elementRules && !scan.elementUniverseBlocked && !scan.hasAnimations &&
+        Array.isArray(scan.elementAllRules) && scan.elementAllRules.length === 0 &&
+        !!scan.elementDeclaredProps
+      if (safe) {
+        for (const prop of scan.elementDeclaredProps) {
+          if (BG_STATE_DECL_RE.test(prop)) { safe = false; break }
+        }
+      }
+      Object.defineProperty(scan, '__backgroundStateProbeSafe', { value: safe, configurable: true })
+    }
+    if (!safe) return false
+
+    const inline = el.style
+    if (inline?.length) {
+      for (let i = 0; i < inline.length; i++) {
+        const prop = inline[i]
+        if (prop === 'all' || BG_STATE_DECL_RE.test(prop)) return false
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 function computeNeedsBgInline(style) {
   return computeBackgroundInlineState(style).needsInline
 }
@@ -2458,7 +2508,9 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     // This probe already existed inside snapshotComputedStyleFull. Compute it once up front so
     // R3 can preserve the exact downstream properties background.js will consume, then reuse
     // the result for the non-enumerable snapshot flag instead of paying the probe twice.
-    const backgroundState = computeBackgroundInlineState(style)
+    const backgroundState = canSkipBackgroundInlineStateProbe(el, options, docUniverse)
+      ? { needsInline: false, hasBackground: false }
+      : computeBackgroundInlineState(style)
     snap = snapshotComputedStyleFull(
       style,
       options,

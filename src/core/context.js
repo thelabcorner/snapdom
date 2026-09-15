@@ -224,6 +224,11 @@ export function createContext(options = {}) {
     // source properties this engine can actually expose (plus compatibility aliases proven by
     // the engine family). False restores BGS1's complete seven-source probe set.
     __backgroundSourceBasis: options.__backgroundSourceBasis,
+    // Internal R7-BGSTATE1 counterfactual. Unique neutral HTML elements can skip the roughly
+    // ten-read background/mask/border-image admission probe only when the complete author scan
+    // and this node's inline/shadow state prove none of those non-inherited families can apply.
+    // False restores the historical probe unconditionally.
+    __backgroundStateProbeGate: options.__backgroundStateProbeGate,
     __svgDefsStyleReuse: options.__svgDefsStyleReuse,
     __imageStyleReuse: options.__imageStyleReuse,
     __svgPaintStyleReuse: options.__svgPaintStyleReuse,
