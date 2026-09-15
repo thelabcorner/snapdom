@@ -2642,7 +2642,11 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // the default auto value, so the generated CSS class includes it and we don't
   // need a blanket foreignObject *{min-width:0} rule (which breaks inline-flex+gap).
   if (flexItem) {
-    const mw = pre.getPropertyValue('min-width')
+    // `min-width` is part of the snapshot's mandatory geometry universe. Reuse the exact
+    // same-capture value when present; an excluded/missing value takes the historical live read.
+    const mw = ctx.options?.__minWidthSnapshotReuse !== false && 'min-width' in snap
+      ? snap['min-width']
+      : pre.getPropertyValue('min-width')
     if (!mw || mw === 'auto' || mw === '0px') {
       if (snap['min-width'] !== '0px') {
         snap['min-width'] = '0px'
