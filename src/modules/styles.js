@@ -1941,6 +1941,18 @@ function styleSignature(snap) {
   __snapshotSig.set(snap, sig)
   return sig
 }
+
+/**
+ * `getSnapshot()` seeds a compact signature for shared twins before inlineAllStyles applies
+ * the handful of node-local post-snapshot corrections. Keep that O(dynamic-props) fast path
+ * valid without re-hashing the full snapshot: if a compact signature already exists, append
+ * an injective mutation suffix. First-seen/full snapshots have no signature yet and therefore
+ * need no repair — styleSignature() will observe their final values normally.
+ */
+function extendSnapshotSignature(snap, suffix) {
+  const sig = __snapshotSig.get(snap)
+  if (sig !== undefined) __snapshotSig.set(snap, sig + '\u0006' + suffix)
+}
 /** A cached snapshot is current while nothing document-wide happened (env epoch) and nothing
  *  a selector could follow to this node did (its stamp). */
 function snapshotIsCurrent(rec, el) {
@@ -2577,7 +2589,16 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     clone.style.setProperty('-webkit-text-fill-color', snap.__bgClipTextFix, 'important')
   }
 
-  addScrollbarGutter(source, pre, snap)
+  const gutterMask = addScrollbarGutter(source, pre, snap)
+  if (gutterMask) {
+    // Encode the actual final values, not just the gutter width. Two twins can reach the same
+    // gutter through different pre-gutter used widths, and only equal FINAL snapshots may share
+    // a generated style key.
+    let suffix = 'g' + gutterMask
+    if (gutterMask & 1) suffix += '\u0001' + (snap.width ?? '') + '\u0001' + (snap['inline-size'] ?? '')
+    if (gutterMask & 2) suffix += '\u0001' + (snap.height ?? '') + '\u0001' + (snap['block-size'] ?? '')
+    extendSnapshotSignature(snap, suffix)
+  }
 
   const flexItem = isFlexOrGridItem(source)
 
@@ -2588,7 +2609,10 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   if (flexItem) {
     const mw = pre.getPropertyValue('min-width')
     if (!mw || mw === 'auto' || mw === '0px') {
-      snap['min-width'] = '0px'
+      if (snap['min-width'] !== '0px') {
+        snap['min-width'] = '0px'
+        extendSnapshotSignature(snap, 'm\u0001min-width\u00010px')
+      }
     }
   }
 
@@ -2646,22 +2670,36 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
 export function addScrollbarGutter(source, pre, snap) {
   const ox = pre.getPropertyValue('overflow-x')
   const oy = pre.getPropertyValue('overflow-y')
-  if ((ox === 'visible' || !ox) && (oy === 'visible' || !oy)) return
-  if (pre.getPropertyValue('box-sizing') === 'border-box') return
-  if (typeof source.clientWidth !== 'number' || !source.offsetWidth) return
+  if ((ox === 'visible' || !ox) && (oy === 'visible' || !oy)) return 0
+  if (pre.getPropertyValue('box-sizing') === 'border-box') return 0
+  if (typeof source.clientWidth !== 'number' || !source.offsetWidth) return 0
   const px = (v) => parseFloat(v) || 0
   const vGutter = source.offsetWidth - source.clientWidth -
     px(pre.getPropertyValue('border-left-width')) - px(pre.getPropertyValue('border-right-width'))
   const hGutter = source.offsetHeight - source.clientHeight -
     px(pre.getPropertyValue('border-top-width')) - px(pre.getPropertyValue('border-bottom-width'))
+  let changed = 0
   const bump = (prop, gutter) => {
     const v = snap[prop]
-    if (!v || !v.endsWith('px')) return
+    if (!v || !v.endsWith('px')) return false
     const n = parseFloat(v)
-    if (Number.isFinite(n)) snap[prop] = `${Math.round((n + gutter) * 1000) / 1000}px`
+    if (!Number.isFinite(n)) return false
+    const next = `${Math.round((n + gutter) * 1000) / 1000}px`
+    if (next === v) return false
+    snap[prop] = next
+    return true
   }
-  if (vGutter > 0.5) { bump('width', vGutter); bump('inline-size', vGutter) }
-  if (hGutter > 0.5) { bump('height', hGutter); bump('block-size', hGutter) }
+  if (vGutter > 0.5) {
+    const widthChanged = bump('width', vGutter)
+    const inlineChanged = bump('inline-size', vGutter)
+    if (widthChanged || inlineChanged) changed |= 1
+  }
+  if (hGutter > 0.5) {
+    const heightChanged = bump('height', hGutter)
+    const blockChanged = bump('block-size', hGutter)
+    if (heightChanged || blockChanged) changed |= 2
+  }
+  return changed
 }
 
 /**

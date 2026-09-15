@@ -233,4 +233,38 @@ describe('identity share — layout re-read narrowing', () => {
   it('logical sizes are used values, like width and height', async () => {
     await byteIdentical(twinFixture('inline-size:50%'))
   })
+
+  it('keeps snapshot-key signatures distinct when only one twin gains a classic scrollbar gutter', async () => {
+    const el = mount(
+      `<div class="gutter-twin"><i class="short">x</i></div>
+       <div class="gutter-twin"><i class="short">x</i></div>
+       <div class="gutter-twin"><i class="tall">x</i></div>`,
+      `.gutter-twin{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}
+       .short{display:block;height:10px}.tall{display:block;height:160px}`
+    )
+    const [a, b, c] = el.querySelectorAll('.gutter-twin')
+    // Browser-mode CI uses overlay scrollbars on every engine, so the native geometry cannot
+    // exercise #498's classic-gutter correction. Override ONLY the layout-box accessors that
+    // addScrollbarGutter consumes: both twins keep identical computed styles, while the second
+    // reports a 17px vertical scrollbar gutter. This deterministically reaches the same branch
+    // as Windows/Linux classic scrollbars without changing style identity.
+    // The first twin establishes the shared full snapshot. The second twin seeds the compact
+    // shared-twin signature/cache entry with NO gutter. The third has the same pre-gutter style
+    // values but gains a gutter after getSnapshot() has memoized that signature; that is the
+    // collision sequence this regression is meant to pin.
+    for (const [node, offsetWidth, clientWidth] of [[a, 120, 120], [b, 120, 120], [c, 137, 120]]) {
+      Object.defineProperties(node, {
+        offsetWidth: { configurable: true, get: () => offsetWidth },
+        clientWidth: { configurable: true, get: () => clientWidth },
+        offsetHeight: { configurable: true, get: () => 40 },
+        clientHeight: { configurable: true, get: () => 40 },
+      })
+    }
+
+    await settle()
+    const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    await dirty(el)
+    const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(shared).toBe(full)
+  })
 })
