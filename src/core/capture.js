@@ -229,7 +229,12 @@ export async function captureDOM(element, options) {
     // backdrop-filter can't be trusted to the svg rasterizer (#457): pre-compose it
     // from the already-inlined clone. Non-blocking — a failure just loses the effect.
     try {
-      emulateBackdropFilters(state.element, state.clone, state.nodeMap)
+      emulateBackdropFilters(
+        state.element,
+        state.clone,
+        state.nodeMap,
+        state.options?.__backdropStyleReuse === false ? null : state.styleCache,
+      )
     } catch (e) {
       sessionWarn(options.__session, 'backdrop-filter-failed', 'backdrop-filter emulation failed', e)
       console.warn('[snapdom] backdrop-filter emulation failed:', e)

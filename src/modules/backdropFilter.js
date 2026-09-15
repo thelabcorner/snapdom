@@ -29,17 +29,25 @@ import { getStyle } from '../utils'
  * @param {Element} clone - Prepared clone (styles and resources already inlined)
  * @param {Map<Node, Node>} [nodeMap] - Session clone→source map; pass the capture's own
  *   reference — the global fallback can be stale after nested iframe captures.
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache] - capture-local exact
+ *   computed-style declarations acquired while cloning. Missing entries fall back to
+ *   historical getStyle(source).
  */
-export function emulateBackdropFilters(root, clone, nodeMap = new Map()) {
+export function emulateBackdropFilters(root, clone, nodeMap = new Map(), styleCache = null) {
   const targets = []
   const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT)
   for (let n = walker.currentNode; n; n = walker.nextNode()) {
     const orig = nodeMap.get(n)
     if ((orig?.nodeType !== 1)) continue
-    const cs = getStyle(orig)
+    const cached = styleCache?.get?.(orig)
+    // getStyle() uses a zero-length CSSStyleDeclaration-like object when a source cannot be
+    // read. Treat such entries as unknown, not evidence: retry the complete historical oracle.
+    // Normal computed declarations enumerate hundreds of properties, so this keeps the common
+    // reuse path allocation-free while failing closed on detached/unreadable sources.
+    const cs = cached?.length ? cached : getStyle(orig)
     const bf = cs.getPropertyValue('backdrop-filter') || cs.getPropertyValue('-webkit-backdrop-filter')
     // Skip the capture root itself: its backdrop lies outside the captured subtree.
-    if (bf && bf !== 'none' && n !== clone) targets.push({ cloneEl: n, orig, bf, path: pathTo(clone, n) })
+    if (bf && bf !== 'none' && n !== clone) targets.push({ cloneEl: n, orig, cs, bf, path: pathTo(clone, n) })
   }
   if (!targets.length) return
 
@@ -61,14 +69,14 @@ export function emulateBackdropFilters(root, clone, nodeMap = new Map()) {
     return { ...t, copy }
   })
 
-  for (const { cloneEl, orig, bf, copy } of jobs) {
+  for (const { cloneEl, orig, cs, bf, copy } of jobs) {
     // A replaced element renders no children, so the frost and backdrop layers this
     // emulation prepends would never paint — while the element's OWN background has already
     // been wiped with !important to make room for them. The net effect on an <input>, a
     // <textarea> or an <img> was losing the background and gaining nothing. Leaving the
     // element alone loses the blur, which is the lesser of the two.
     if (REPLACED_ELEMENTS.has(cloneEl.tagName)) continue
-    insertFrost(cloneEl, orig, bf, copy, rootRect)
+    insertFrost(cloneEl, orig, cs, bf, copy, rootRect)
   }
 }
 
@@ -84,14 +92,14 @@ const REPLACED_ELEMENTS = new Set([
  * box lands on the same spot of the copy it occupies in the live page.
  * @param {HTMLElement} cloneEl
  * @param {Element} orig - the live element, for its rect and computed background
+ * @param {CSSStyleDeclaration} cs - the same live declaration used to identify the target
  * @param {string} bf - the backdrop-filter value, applied as `filter` on the copy
  * @param {HTMLElement} copy - the pruned clone copy, from emulateBackdropFilters
  * @param {DOMRect} rootRect
  */
-function insertFrost(cloneEl, orig, bf, copy, rootRect) {
+function insertFrost(cloneEl, orig, cs, bf, copy, rootRect) {
   const r = orig.getBoundingClientRect()
   if (!r.width || !r.height) return
-  const cs = getStyle(orig)
 
   // The copy re-applies the transforms it contains, and the element's ancestor
   // transforms scale it again. Counter-scale so the frost content lands 1:1;

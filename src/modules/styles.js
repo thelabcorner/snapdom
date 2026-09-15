@@ -2532,15 +2532,25 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
 
   const { session, persist } = ctx
 
-  if (!session.styleCache.has(source)) {
+  let pre = session.styleCache.get(source)
+  if (!pre) {
     // ROB-1: getComputedStyle() on detached nodes can return an empty or unstable
     // CSSStyleDeclaration in some environments. Wrap defensively so a stale/detached
     // element never throws and callers always receive a usable style object.
     let computed = null
     try { computed = getComputedStyle(source) } catch { /* detached / cross-origin */ }
-    session.styleCache.set(source, computed || getComputedStyle((source.ownerDocument || document).documentElement))
+    if (computed) {
+      pre = computed
+      session.styleCache.set(source, computed)
+    } else {
+      // The document-root fallback is deliberately NOT cached under `source`: later phases
+      // may reuse styleCache entries as exact source declarations. Caching an unrelated root
+      // declaration here made presence in the map lie about provenance after a transient
+      // getComputedStyle(source) failure. The fallback remains local to this call exactly as
+      // before, while a later consumer is free to retry the real source fail-closed.
+      pre = getComputedStyle((source.ownerDocument || document).documentElement)
+    }
   }
-  const pre = session.styleCache.get(source)
 
   // Replace authored inline style with computed values so !important in stylesheets
   // correctly overrides inline styles in the clone (fixes #328)
