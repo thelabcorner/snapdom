@@ -267,4 +267,33 @@ describe('identity share — layout re-read narrowing', () => {
     const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
     expect(shared).toBe(full)
   })
+
+  it('does not leak a first-twin classic scrollbar gutter into later twins', async () => {
+    const el = mount(
+      `<div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>`,
+      `.gutter-first{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}
+       .gutter-first>i{display:block;height:10px}`
+    )
+    const [a, b, c] = el.querySelectorAll('.gutter-first')
+    // The identity's first snapshot is stored by reference before inlineAllStyles applies the
+    // classic-scrollbar correction. If that node-local write mutates the shared BASE object,
+    // later twins can inherit/copy a 137px width even though their own geometry has no gutter.
+    // Reverse the existing CORR1 sequence specifically to prove the base remains immutable.
+    for (const [node, offsetWidth, clientWidth] of [[a, 137, 120], [b, 120, 120], [c, 120, 120]]) {
+      Object.defineProperties(node, {
+        offsetWidth: { configurable: true, get: () => offsetWidth },
+        clientWidth: { configurable: true, get: () => clientWidth },
+        offsetHeight: { configurable: true, get: () => 40 },
+        clientHeight: { configurable: true, get: () => 40 },
+      })
+    }
+
+    await settle()
+    const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    await dirty(el)
+    const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(shared).toBe(full)
+  })
 })
