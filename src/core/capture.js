@@ -142,7 +142,7 @@ export async function captureDOM(element, options) {
   // path exactly as before.
   if (options.__styleShare === undefined) {
     try {
-      const plan = styleSharePlan(state.element)
+      const plan = styleSharePlan(state.element, options.__styleShareFocusPartition !== false)
       const noAnimations = typeof state.element.getAnimations !== 'function' ||
         state.element.getAnimations({ subtree: true }).length === 0
       options.__styleShare = plan.share && noAnimations
