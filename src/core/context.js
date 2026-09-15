@@ -185,6 +185,15 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R7-SA1/SA2 counterfactuals. The preparation passes may hand already-acquired
+    // live CSSStyleDeclaration objects to later capture phases through the capture-local
+    // styleCache. Either false restores that producer's historical fresh acquisition.
+    __contentVisibilityStyleSeed: options.__contentVisibilityStyleSeed,
+    __lineClampStyleSeed: options.__lineClampStyleSeed,
+    // Internal R7-SA4 counterfactual. Backdrop-filter discovery may consume the exact live
+    // declaration already owned by this capture; false restores its historical getStyle()
+    // acquisition/memo path.
+    __backdropStyleReuse: options.__backdropStyleReuse,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the

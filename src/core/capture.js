@@ -155,7 +155,11 @@ export async function captureDOM(element, options) {
     options.__styleShareSelectors = null
   }
 
-  const undoClamp = lineClampTree(state.element, preClipRect)
+  const undoClamp = lineClampTree(
+    state.element,
+    preClipRect,
+    options.__lineClampStyleSeed === false ? null : options.__session?.styleCache,
+  )
   try {
     // Keep this capture's own clone→source map — every later pass must use this
     // reference (sessions are per-capture; there is no shared session global).
@@ -229,7 +233,12 @@ export async function captureDOM(element, options) {
     // backdrop-filter can't be trusted to the svg rasterizer (#457): pre-compose it
     // from the already-inlined clone. Non-blocking — a failure just loses the effect.
     try {
-      emulateBackdropFilters(state.element, state.clone, state.nodeMap)
+      emulateBackdropFilters(
+        state.element,
+        state.clone,
+        state.nodeMap,
+        options.__backdropStyleReuse === false ? null : state.styleCache,
+      )
     } catch (e) {
       sessionWarn(options.__session, 'backdrop-filter-failed', 'backdrop-filter emulation failed', e)
       console.warn('[snapdom] backdrop-filter emulation failed:', e)

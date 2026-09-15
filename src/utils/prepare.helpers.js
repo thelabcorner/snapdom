@@ -114,9 +114,11 @@ export function stabilizeLayout(element) {
  * __tests__/utils.prepare.helpers.test.js.
  * @param {Element} root
  * @param {{left:number,top:number,right:number,bottom:number}|null} [clipRect]
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache] optional capture-local
+ *   declaration cache. Existing entries are reused; newly acquired declarations are stored.
  * @returns {() => void}
  */
-export function forceContentVisibility(root, clipRect = null) {
+export function forceContentVisibility(root, clipRect = null, styleCache = null) {
   const undos = []
   const force = (el) => {
     if (!isHTMLEl(el)) return
@@ -124,7 +126,8 @@ export function forceContentVisibility(root, clipRect = null) {
       undos.push(transientStyles(el, [], activeVisibility))
       return
     }
-    const cs = getComputedStyle(el)
+    const cs = styleCache?.get?.(el) || getComputedStyle(el)
+    styleCache?.set?.(el, cs)
     const computed = cs.contentVisibility || cs.getPropertyValue('content-visibility') || ''
     if (computed === 'auto') {
       undos.push(transientStyles(el, [['content-visibility', 'visible']], activeVisibility))

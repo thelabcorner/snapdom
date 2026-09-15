@@ -148,6 +148,26 @@ describe('textEllipsis (#431)', () => {
 })
 
 describe('lineClampTree (#386)', () => {
+  it('can hand its live computed declaration to later capture phases', () => {
+    const outer = document.createElement('div')
+    const inner = document.createElement('div')
+    inner.style.cssText = 'width:200px;font:16px/20px Arial;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgb(1,2,3)'
+    inner.textContent = 'Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt.'
+    outer.appendChild(inner)
+    document.body.appendChild(outer)
+    const styleCache = new WeakMap()
+
+    const undo = lineClampTree(outer, null, styleCache)
+    const cached = styleCache.get(inner)
+    expect(cached).toBeTruthy()
+    expect(inner.textContent).toContain('…')
+
+    inner.style.color = 'rgb(9, 8, 7)'
+    expect(cached.color).toBe('rgb(9, 8, 7)')
+    expect(cached.width).toBe(getComputedStyle(inner).width)
+    undo()
+  })
+
   it('clamps nested element with -webkit-line-clamp', () => {
     const outer = document.createElement('div')
     outer.style.width = '200px'

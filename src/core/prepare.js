@@ -202,7 +202,11 @@ export async function prepareClone(element, options = {}) {
   // Clip mode prunes the walk to the window instead of skipping it: a clip rect far from the
   // real viewport lands on UNRENDERED cv:auto placeholders (blank bands in the capture),
   // while content outside the window still gets culled at its placeholder box.
-  const undoContentVisibility = forceContentVisibility(element, clipRect)
+  const undoContentVisibility = forceContentVisibility(
+    element,
+    clipRect,
+    options.__contentVisibilityStyleSeed === false ? null : sessionCache.styleCache,
+  )
 
   if (clipRect) {
     // Freeze the window in element-local coords NOW — after cv forcing (which can relayout),
