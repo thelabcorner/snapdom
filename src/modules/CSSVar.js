@@ -71,11 +71,17 @@ function tplLookup(el) {
 export function resolveCSSVars(sourceEl, cloneEl) {
   if ((sourceEl?.nodeType !== 1) || (cloneEl?.nodeType !== 1)) return
 
-  // #408: descendants of <symbol>/<defs>/<pattern>/etc. render through <use>/url(#…),
-  // where the cascade lives. Materializing var() here freezes the fallback.
-  if (isInSvgTemplate(sourceEl)) return
+  // Preserve the historical cheapest path for SVG template content. Those trees can be large
+  // (<defs>/<symbol> icon sheets) and are precisely the place where scanning every attribute
+  // before discovering "template => never materialize" would turn this optimization into a
+  // regression. HTML dominates ordinary captures, so it gets the no-var precheck first; SVG
+  // pays the already-memoized template test first, exactly as before.
+  const isSvg = sourceEl.namespaceURI === 'http://www.w3.org/2000/svg'
+  if (isSvg && isInSvgTemplate(sourceEl)) return
 
-  // --- 0) Cheap pre-check: no 'var(' in the style attribute or any other attribute, nothing to do
+  // --- 0) Cheap pre-check: no 'var(' in the style attribute or any other attribute, nothing to do.
+  // Keep this BEFORE the SVG-template ancestry lookup: ordinary HTML nodes overwhelmingly have no
+  // inline/attribute var(), so walking/memoizing their parent chain cannot affect the answer.
   const styleAttr = sourceEl.getAttribute?.('style')
   let hasVar = !!(styleAttr && styleAttr.includes('var('))
 
@@ -87,6 +93,13 @@ export function resolveCSSVars(sourceEl, cloneEl) {
       if (a && typeof a.value === 'string' && !a.value.startsWith('data:') && a.value.includes('var(')) { hasVar = true; break }
     }
   }
+  if (!hasVar) return
+
+  // #408: descendants of <symbol>/<defs>/<pattern>/etc. render through <use>/url(#…),
+  // where the cascade lives. Materializing var() here freezes the fallback. Pay the ancestry
+  // check only when this non-SVG element actually contains a var() that could be materialized.
+  // (SVG elements already took the historical guard above.)
+  if (!isSvg && isInSvgTemplate(sourceEl)) return
 
   // Read cs only when needed, or when it is about to be compared against the baseline
   let cs = null

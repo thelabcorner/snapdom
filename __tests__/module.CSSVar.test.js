@@ -1,5 +1,5 @@
 // __tests__/module.CSSVar.test.js – resolveCSSVars var() materialization
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { resolveCSSVars, isInSvgTemplate } from '../src/modules/CSSVar.js'
 
 let host
@@ -41,9 +41,13 @@ describe('resolveCSSVars', () => {
     host.appendChild(svg)
 
     const clone = rect.cloneNode(true)
+    const getAttribute = vi.spyOn(rect, 'getAttribute')
     resolveCSSVars(rect, clone)
     // still the raw var() — not frozen to the dead template context
     expect(clone.style.fill).toContain('var(')
+    // The template proof is the cheapest and strongest answer for SVG. Do not scan attributes
+    // first: large <defs>/<symbol> sheets would turn the common HTML fast path into an SVG tax.
+    expect(getAttribute).not.toHaveBeenCalled()
   })
 
   it('resolves var() used in an inline style onto the clone', () => {
