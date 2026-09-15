@@ -19,7 +19,7 @@ import { createCaptureSession } from './session.js'
 import { sessionWarn } from '../utils/debug.js'
 import { lineClampTree } from '../modules/lineClamp.js'
 import { runHook, getGlobalPlugins, normalizePlugin } from './plugins.js'
-import { prepareStyleCapture, styleSharePlan } from '../modules/styles.js'
+import { needsTextTruncationPrepass, prepareStyleCapture, styleSharePlan } from '../modules/styles.js'
 import { preparePseudoEnvironment } from '../modules/pseudo.js'
 import { stageReaches, DEFAULT_STAGE } from './stages.js'
 import { compressCloneAssets, numberCompressedAssets, snapshotCompressedAssets } from '../modules/compress.js'
@@ -155,7 +155,14 @@ export async function captureDOM(element, options) {
     options.__styleShareSelectors = null
   }
 
-  const undoClamp = lineClampTree(state.element, preClipRect)
+  const needsClampPass = options.__lineClampPassGate === false || needsTextTruncationPrepass(state.element)
+  const undoClamp = needsClampPass
+    ? lineClampTree(
+        state.element,
+        preClipRect,
+        options.__lineClampStyleSeed === false ? null : options.__session?.styleCache,
+      )
+    : () => {}
   try {
     // Keep this capture's own clone→source map — every later pass must use this
     // reference (sessions are per-capture; there is no shared session global).
@@ -229,7 +236,12 @@ export async function captureDOM(element, options) {
     // backdrop-filter can't be trusted to the svg rasterizer (#457): pre-compose it
     // from the already-inlined clone. Non-blocking — a failure just loses the effect.
     try {
-      emulateBackdropFilters(state.element, state.clone, state.nodeMap)
+      emulateBackdropFilters(
+        state.element,
+        state.clone,
+        state.nodeMap,
+        state.options?.__backdropStyleReuse === false ? null : state.styleCache,
+      )
     } catch (e) {
       sessionWarn(options.__session, 'backdrop-filter-failed', 'backdrop-filter emulation failed', e)
       console.warn('[snapdom] backdrop-filter emulation failed:', e)

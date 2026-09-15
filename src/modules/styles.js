@@ -36,6 +36,31 @@ const MARGIN_PROPS = [
   'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
   'margin-block-start', 'margin-block-end', 'margin-inline-start', 'margin-inline-end',
 ]
+// Some engines omit these names from CSSStyleDeclaration iteration even when they matter, so
+// snapshotComputedStyleFull historically queried them explicitly. Keep the lists module-level:
+// high-entropy captures otherwise allocate two identical arrays per element before doing any
+// useful work, and TXT1 below uses the same lists for conservative universe admission.
+const EXTRA_TEXT_DECORATION_PROPS = [
+  'text-decoration-line',
+  'text-decoration-color',
+  'text-decoration-style',
+  'text-decoration-thickness',
+  'text-underline-offset',
+  'text-decoration-skip-ink',
+]
+const EXTRA_TEXT_STROKE_PROPS = [
+  '-webkit-text-stroke',
+  '-webkit-text-stroke-width',
+  '-webkit-text-stroke-color',
+  'paint-order',
+]
+const INLINE_TEXT_DECORATION_RE = /(?:^|;)\s*(?:text-decoration(?:-[a-z-]+)?|text-underline-offset)\s*:/i
+// Neutral HTML tags whose UA stylesheet has no tag/state-driven text decoration of its own.
+// Keep this deliberately small. Stateful/semantic tags (notably <a href>, <u>, <s>, controls)
+// retain the browser oracle even when their document contains no author decoration rule.
+const TEXT_DECORATION_SYNTH_TAGS = new Set([
+  'div', 'span', 'section', 'article', 'main', 'header', 'footer', 'nav', 'aside',
+])
 /** style signature -> class key. FIFO-bounded at insertion, see MAX_SNAPSHOT_KEY_CACHE. */
 const snapshotKeyCache = new Map()
 /** PERF-4: evict snapshotKeyCache when it grows beyond this size.
@@ -615,6 +640,57 @@ function scanFor(doc) {
     universeCache.set(doc, rec)
   }
   return rec
+}
+
+/**
+ * Can the live-tree text-truncation preparation pass be skipped for this capture root?
+ *
+ * lineClampTree() exists only for authored `line-clamp` / `-webkit-line-clamp` and
+ * `text-overflow:ellipsis`. Its old unconditional walk also became SA2's earliest style-cache
+ * seed, but that is an implementation side effect rather than a semantic reason to traverse a
+ * tree that cannot truncate. The document scan is already paid before capture; when it is
+ * complete and contains none of those declarations, inspect the light subtree once for the two
+ * channels the document scan cannot see: inline declarations and shadow-host `:host` rules.
+ *
+ * Any uncertainty returns true and preserves the historical pass. In particular: unreadable
+ * CSS, an active CSS/WAAPI animation, selector/reset uncertainty, any `all` rule, any open
+ * shadow root, or an inline target declaration. UA/presentational HTML defaults cannot enable
+ * these truncation properties.
+ *
+ * This is intentionally evaluated immediately before lineClampTree(), with no await between
+ * proof and historical observation point. It must not be reused for later preparation phases.
+ * @param {Element} root
+ * @returns {boolean} true when the historical truncation pass is required
+ */
+export function needsTextTruncationPrepass(root) {
+  if (!root?.querySelectorAll) return true
+  try {
+    const scan = scanFor(root.ownerDocument || document)
+    if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations ||
+        (scan.elementAllRules && scan.elementAllRules.length)) return true
+    const props = scan.elementDeclaredProps
+    if (!props) return true
+    if (props.has('line-clamp') || props.has('-webkit-line-clamp') || props.has('text-overflow')) return true
+
+    const inspect = (el) => {
+      // A shadow stylesheet can style its host through :host and is intentionally absent from
+      // the document rule scan. Do not attempt to duplicate those semantics here.
+      if (el.shadowRoot) return true
+      const style = el.style
+      if (!style?.length) return false
+      const cssText = style.cssText || ''
+      if (/(?:^|;)\s*all\s*:/i.test(cssText)) return true
+      return !!(style.getPropertyValue('line-clamp') ||
+        style.getPropertyValue('-webkit-line-clamp') ||
+        style.getPropertyValue('text-overflow'))
+    }
+
+    if (inspect(root)) return true
+    for (const el of root.querySelectorAll('*')) if (inspect(el)) return true
+    return false
+  } catch {
+    return true
+  }
 }
 
 const SHARE_PARTITION_PSEUDOS = new Set([
@@ -1597,30 +1673,55 @@ function snapshotComputedStyleFull(style, options = {}, el = null, universe = nu
   } else {
     for (let i = 0; i < style.length; i++) addProp(style[i])
   }
-    // Ensure text-decoration props: some engines do not list them in the iteration.
-  const EXTRA_TEXT_DECORATION_PROPS = [
-    'text-decoration-line',
-    'text-decoration-color',
-    'text-decoration-style',
-    'text-decoration-thickness',
-    'text-underline-offset',
-    'text-decoration-skip-ink'
-  ]
-  for (const prop of EXTRA_TEXT_DECORATION_PROPS) {
-    if (out[prop]) continue
+  // Ensure text-decoration props: some engines do not list them in the iteration. TXT1 proved
+  // they cannot simply be omitted: the snapshot intentionally materializes color-dependent
+  // defaults such as text-decoration-color. TXT2 keeps that representation but, for a narrow
+  // neutral-tag class whose complete universe cannot author the family, synthesizes the exact
+  // computed defaults from the already-captured `color` instead of crossing CSSOM six times.
+  let synthDecoration = options?.__snapshotDecorationSynthesis === true && !!universe && !!el &&
+    !!options?.element && TEXT_DECORATION_SYNTH_TAGS.has(el.localName)
+  const inlineCss = synthDecoration ? (el.style?.cssText || '') : ''
+  if (synthDecoration) {
     try {
-      const v = style.getPropertyValue(prop)
-      if (v) out[prop] = v
-    } catch {}
+      const scan = scanFor(el.ownerDocument || document)
+      // `all` can reset UA decoration or inherited stroke without naming either family. Do not
+      // add a per-element selector interpreter merely to recover this optimization: any authored
+      // all-rule makes the capture use the historical extras. Inline all is the same node-local
+      // uncertainty. Unreadable scans already arrive as universe=null, but keep this fail-closed
+      // if a future scanner representation changes.
+      if (scan.elementUniverseBlocked || scan.elementAllRules === null || scan.elementAllRules?.length ||
+          /(?:^|;)\s*all\s*:/i.test(inlineCss)) synthDecoration = false
+    } catch { synthDecoration = false }
   }
-  // #340: -webkit-text-stroke on Safari. Capture it even when the iteration omits it.
-  const TEXT_STROKE_PROPS = [
-    '-webkit-text-stroke',
-    '-webkit-text-stroke-width',
-    '-webkit-text-stroke-color',
-    'paint-order'
-  ]
-  for (const prop of TEXT_STROKE_PROPS) {
+  if (synthDecoration && (universe.has('text-decoration') || INLINE_TEXT_DECORATION_RE.test(inlineCss))) {
+    synthDecoration = false
+  }
+  if (synthDecoration) {
+    for (const prop of EXTRA_TEXT_DECORATION_PROPS) {
+      if (universe.has(prop)) { synthDecoration = false; break }
+    }
+  }
+  const color = synthDecoration ? out.color : ''
+  if (synthDecoration && color) {
+    const values = ['none', color, 'solid', 'auto', 'auto', 'auto']
+    for (let i = 0; i < EXTRA_TEXT_DECORATION_PROPS.length; i++) {
+      const prop = EXTRA_TEXT_DECORATION_PROPS[i]
+      if (out[prop] === undefined) out[prop] = values[i]
+    }
+  } else {
+    for (const prop of EXTRA_TEXT_DECORATION_PROPS) {
+      if (out[prop]) continue
+      try {
+        const v = style.getPropertyValue(prop)
+        if (v) out[prop] = v
+      } catch {}
+    }
+  }
+
+  // #340: -webkit-text-stroke on Safari. Keep the historical reads unconditionally for now:
+  // this family is inherited, so an external ancestor can feed a capture root and an explicit
+  // ancestor stroke can remain inherited even when a child changes `color`.
+  for (const prop of EXTRA_TEXT_STROKE_PROPS) {
     if (out[prop]) continue
     try {
       const v = style.getPropertyValue(prop)
@@ -1994,7 +2095,8 @@ function snapshotIsCurrent(rec, el) {
  * (2026-09-01, twins with %-valued props under different-width parents):
  *  - ALWAYS: the geometry props whose getComputedStyle value is the USED value regardless of
  *    how they were authored — width/height, the box offsets (top/right/bottom/left and the
- *    inset-* logical longhands), transform-origin/perspective-origin.
+ *    transform-origin/perspective-origin. Insets are split out below: fixed values are
+ *    invariant across identity twins, while relative/container/anchor values remain riders.
  *  - NEVER: the min and max sizing longhands — their resolved value is the COMPUTED value ('10%' stays '10%',
  *    'auto' stays 'auto' on chromium, firefox AND webkit), and computed values are identical
  *    between identity twins by construction (same matched rules, same inherited inputs).
@@ -2004,8 +2106,11 @@ function snapshotIsCurrent(rec, el) {
  *    track lists only on a grid container (elsewhere they are the specified value), and
  *    `transform` only when the identity has one (`none` cannot hide a % translate) — both
  *    decided from the identity's own read, so a table pays nothing for either. */
-const LAYOUT_ALWAYS_RE = /^(width|height|inline-size|block-size|top|right|bottom|left|transform-origin|perspective-origin)$|^inset-/
+const LAYOUT_ALWAYS_RE = /^(width|height|inline-size|block-size|transform-origin|perspective-origin)$/
+const LAYOUT_INSET_RE = /^(?:top|right|bottom|left|inset(?:-|$))/
 const UNSTABLE_INLINE_RE = /(margin|padding)[a-z-]*\s*:[^;]*(%|\bauto\b|calc\(|var\()/i
+const UNSTABLE_INSET_INLINE_RE = /(?:^|;)\s*(?:top|right|bottom|left|inset(?:-[a-z-]+)?)\s*:[^;]*(?:%|\bauto\b|calc\(|var\(|attr\(|anchor(?:-size)?\(|\benv\(|cq(?:w|h|i|b|min|max)\b|\binherit\b|\bunset\b|\brevert(?:-layer)?\b)/i
+const INLINE_POSITION_TRY_RE = /(?:^|;)\s*(?:position-area|inset-area|position-anchor|position-try(?:-[a-z-]+)?)\s*:/i
 const AUTO_MARGIN_INLINE_RE = /margin[a-z-]*\s*:[^;]*(\bauto\b|var\(|attr\(|\binherit\b|\brevert(?:-layer)?\b)/i
 const AUTO_MARGIN_INLINE_ALL_RE = /(?:^|;)\s*all\s*:\s*(?:inherit|revert(?:-layer)?)(?:\s*!important)?\s*(?:;|$)/i
 const UA_AUTO_MARGIN_TAGS = new Set(['DIALOG', 'HR'])
@@ -2156,7 +2261,8 @@ function identityFor(el, st, selectors = null) {
 /** The identity's re-read list and base signature, decided once on its first twin (`el`,
  *  whose style attribute is the identity's — the attribute is part of the key) and kept on
  *  the share record: the
- *  always-geometry props, plus the margin/padding families only when the document-level
+ *  always-geometry props, offsets only when stylesheet/inline evidence says their used value
+ *  can depend on geometry, plus the margin/padding families only when the document-level
  *  scan or that inline style gives them an unstable value, the grid track lists on a grid
  *  container, and `transform` when the identity has one. The base signature covers the props
  *  twins NEVER re-read plus the re-read prop NAMES: a twin's full signature is base + its own
@@ -2174,8 +2280,9 @@ function identityFor(el, st, selectors = null) {
  *  Pinned by __tests__/module.styles.identityShare.test.js.
  *  @param {{snap: object, rr: string[]|null, sig: string|null, h: boolean, b: boolean}} rec
  *  @param {Element} el the identity's first twin
+ *  @param {boolean} [insetValueGate=true] false restores historical unconditional inset riders
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
-function shareLists(rec, el) {
+function shareLists(rec, el, insetValueGate = true) {
   // Re-copied once here, riders included: the identity's own object was built by keyed
   // stores (dictionary mode in V8) and every twin spreads it — off a spread-made copy the
   // 500-row table's twins clone 6 ms faster, and only identities WITH twins pay the copy.
@@ -2190,11 +2297,19 @@ function shareLists(rec, el) {
   const inlineUnstable = attr && UNSTABLE_INLINE_RE.test(attr)
   const rrM = !!scan.marginUnstable || (inlineUnstable && /margin/i.test(attr))
   const rrP = !!scan.paddingUnstable || (inlineUnstable && /padding/i.test(attr))
+  // CSSOM exposes USED offsets for positioned elements. Even with no authored inset at all,
+  // absolute/fixed boxes can resolve auto sides from static position / the opposite side, so
+  // their offsets remain historical riders wholesale. Static boxes are the only admissible
+  // reuse class, and even there container/anchor-relative syntax can make the computed value
+  // differ between twins (e.g. top:10cqh while position:static).
+  const rrI = !insetValueGate || stored.position !== 'static' || !!scan.insetUnstable ||
+    (!!attr && (UNSTABLE_INSET_INLINE_RE.test(attr) || INLINE_POSITION_TRY_RE.test(attr)))
   const rrG = stored.display !== undefined && stored.display.includes('grid')
   const rrT = stored.transform !== undefined && stored.transform !== 'none'
   const rrList = []
   for (const k in stored) {
     if (LAYOUT_ALWAYS_RE.test(k) ||
+        (rrI && LAYOUT_INSET_RE.test(k)) ||
         (rrG && (k === 'grid-template-columns' || k === 'grid-template-rows')) ||
         (rrT && k === 'transform') ||
         (rrM && k.charCodeAt(0) === 109 && k.startsWith('margin-')) ||
@@ -2238,7 +2353,7 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const rec = snaps.get(key)
   if (rec) {
     const snap = { ...rec.snap }
-    const rr = rec.rr || shareLists(rec, source)
+    const rr = rec.rr || shareLists(rec, source, options?.__styleShareInsetValueGate !== false)
     for (let i = 0; i < rr.length; i++) {
       const v = style.getPropertyValue(rr[i])
       if (v) snap[rr[i]] = v
@@ -2325,7 +2440,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     // self-time on the 500-row table, profiled). The values feed `dyn`, which composes this
     // twin's snapshotKeyCache signature from the identity's base signature — styleSignature
     // re-hashed the whole snapshot per twin for another 11ms otherwise.
-    const rrList = shared.rr || shareLists(shared, el)
+    const rrList = shared.rr || shareLists(shared, el, options?.__styleShareInsetValueGate !== false)
     dyn = []
     for (let i = 0; i < rrList.length; i++) {
       const p = rrList[i]
@@ -2532,34 +2647,27 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
 
   const { session, persist } = ctx
 
-  if (!session.styleCache.has(source)) {
+  let pre = session.styleCache.get(source)
+  if (!pre) {
     // ROB-1: getComputedStyle() on detached nodes can return an empty or unstable
     // CSSStyleDeclaration in some environments. Wrap defensively so a stale/detached
     // element never throws and callers always receive a usable style object.
     let computed = null
     try { computed = getComputedStyle(source) } catch { /* detached / cross-origin */ }
-    session.styleCache.set(source, computed || getComputedStyle((source.ownerDocument || document).documentElement))
+    if (computed) {
+      pre = computed
+      session.styleCache.set(source, computed)
+    } else {
+      pre = getComputedStyle((source.ownerDocument || document).documentElement)
+    }
   }
-  const pre = session.styleCache.get(source)
+
+  try { ctx.options?.__recordScrollBaseline?.(source, pre) } catch { /* telemetry only */ }
 
   // Replace authored inline style with computed values so !important in stylesheets
   // correctly overrides inline styles in the clone (fixes #328)
   if (source.getAttribute?.('style')) {
     normalizeInlineStyleToComputed(source, clone, pre)
-  }
-
-  // A static snapshot must not animate. The generated style class already filters animation
-  // props (shouldIgnoreProp), but `animation` can still reach the SVG through the normalized
-  // inline style above or through `<style>` tags cloned inside the captured subtree; when the
-  // SVG is rasterized the animation replays from its 0% keyframe. An entry animation whose
-  // start frame hides the element (e.g. `from { opacity: 0 }`, or an off-screen `transform`)
-  // therefore blanks it out even though the live element already finished animating. Pin
-  // `animation` off with inline `!important` on the elements that actually have one; the
-  // current opacity/transform captured in the snapshot below then renders as the frozen,
-  // already-settled frame.
-  const animName = pre.getPropertyValue('animation-name')
-  if (clone && clone.style && animName && animName !== 'none') {
-    clone.style.setProperty('animation', 'none', 'important')
   }
 
   const tag = source.tagName?.toLowerCase() || 'div'
@@ -2569,6 +2677,12 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // SVG_PAINT_PROPS pass. Only the bg/mask flag probe runs (CSS masks DO apply to SVG
   // graphics elements) so needsBackgroundInline stays accurate.
   if (NO_DEFAULTS_TAGS.has(tag)) {
+    // These nodes deliberately bypass identity sharing, so preserve the historical exact
+    // per-node animation read. Cloned shadow/style rules can still restart an SVG animation.
+    const animName = pre.getPropertyValue('animation-name')
+    if (clone && clone.style && animName && animName !== 'none') {
+      clone.style.setProperty('animation', 'none', 'important')
+    }
     const stub = {}
     Object.defineProperty(stub, '__needsBgInline', { value: computeNeedsBgInline(pre), enumerable: false })
     const hosts = shadowHostsOf(source)
@@ -2603,7 +2717,32 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
       !source.shadowRoot && !source.assignedSlot
     if (eligible) shareInfo = { st, id }
   }
+
+  // A static snapshot must not animate. The generated style class filters animation props,
+  // but cloned authored styles can restart from their 0% keyframe. Historically every node
+  // read animation-name here. On a proven identity hit the value is a non-layout computed
+  // style property, so it is identical by the same selector/state proof that owns the shared
+  // snapshot. Store the first occurrence on the EXISTING identity record; high-entropy and
+  // unshareable nodes allocate nothing new and keep the historical live read.
+  let animName
+  let animShared = null
+  if (ctx.options?.__animationNameShare !== false && shareInfo) {
+    animShared = shareInfo.st.snaps.get(shareInfo.id) || null
+    if (animShared && animShared.animName !== undefined) animName = animShared.animName
+  }
+  if (animName === undefined) animName = pre.getPropertyValue('animation-name')
+  if (clone && clone.style && animName && animName !== 'none') {
+    clone.style.setProperty('animation', 'none', 'important')
+  }
+
   const snap = getSnapshot(source, pre, ctx.options, shareInfo)
+  if (ctx.options?.__animationNameShare !== false && shareInfo && !animShared) {
+    // getSnapshot creates the identity record on a cold first occurrence. A warm persistent
+    // snapshot hit may intentionally leave no share record; in that case there is nothing to
+    // mutate and this capture simply pays the historical animation-name read.
+    const created = shareInfo.st.snaps.get(shareInfo.id)
+    if (created && created.animName === undefined) created.animName = animName
+  }
   // Inline author declarations were normalized above from getComputedStyle too.
   // Override their zero margin (including logical shorthands) with the retained auto.
   if (source.getAttribute?.('style')) {
@@ -2624,7 +2763,12 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     clone.style.setProperty('-webkit-text-fill-color', snap.__bgClipTextFix, 'important')
   }
 
-  const gutterMask = addScrollbarGutter(source, pre, snap)
+  const gutterMask = addScrollbarGutter(
+    source,
+    pre,
+    snap,
+    ctx.options?.__gutterSnapshotReuse !== false,
+  )
   if (gutterMask) {
     // Encode the actual final values, not just the gutter width. Two twins can reach the same
     // gutter through different pre-gutter used widths, and only equal FINAL snapshots may share
@@ -2635,7 +2779,10 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     extendSnapshotSignature(snap, suffix)
   }
 
-  const flexItem = isFlexOrGridItem(source)
+  const flexItem = isFlexOrGridItem(
+    source,
+    ctx.options?.__parentStyleReuse === false ? null : session.styleCache,
+  )
 
   // #406: foreignObject may resolve min-width:auto differently than normal DOM
   // for flex/grid items. Explicitly set min-width:0 on flex/grid items that have
@@ -2701,18 +2848,41 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
  * @param {Element} source
  * @param {CSSStyleDeclaration} pre
  * @param {Record<string,string>} snap
+ * @param {boolean} [reuseSnapshot=true] read exact same-capture values when present; false
+ *   restores the historical live-CSSOM path for causal tests/benchmarks
  */
-export function addScrollbarGutter(source, pre, snap) {
-  const ox = pre.getPropertyValue('overflow-x')
-  const oy = pre.getPropertyValue('overflow-y')
+export function addScrollbarGutter(source, pre, snap, reuseSnapshot = true) {
+  // Exact same-capture CSE only. If a property was pruned/excluded, stay on the browser oracle.
+  // `in` intentionally sees prototype-backed snapshot representations used by other R7 scouts.
+  const ox = reuseSnapshot && 'overflow-x' in snap
+    ? snap['overflow-x']
+    : pre.getPropertyValue('overflow-x')
+  const oy = reuseSnapshot && 'overflow-y' in snap
+    ? snap['overflow-y']
+    : pre.getPropertyValue('overflow-y')
   if ((ox === 'visible' || !ox) && (oy === 'visible' || !oy)) return 0
-  if (pre.getPropertyValue('box-sizing') === 'border-box') return 0
+  const boxSizing = reuseSnapshot && 'box-sizing' in snap
+    ? snap['box-sizing']
+    : pre.getPropertyValue('box-sizing')
+  if (boxSizing === 'border-box') return 0
   if (typeof source.clientWidth !== 'number' || !source.offsetWidth) return 0
   const px = (v) => parseFloat(v) || 0
+  const bl = reuseSnapshot && 'border-left-width' in snap
+    ? snap['border-left-width']
+    : pre.getPropertyValue('border-left-width')
+  const br = reuseSnapshot && 'border-right-width' in snap
+    ? snap['border-right-width']
+    : pre.getPropertyValue('border-right-width')
+  const bt = reuseSnapshot && 'border-top-width' in snap
+    ? snap['border-top-width']
+    : pre.getPropertyValue('border-top-width')
+  const bb = reuseSnapshot && 'border-bottom-width' in snap
+    ? snap['border-bottom-width']
+    : pre.getPropertyValue('border-bottom-width')
   const vGutter = source.offsetWidth - source.clientWidth -
-    px(pre.getPropertyValue('border-left-width')) - px(pre.getPropertyValue('border-right-width'))
+    px(bl) - px(br)
   const hGutter = source.offsetHeight - source.clientHeight -
-    px(pre.getPropertyValue('border-top-width')) - px(pre.getPropertyValue('border-bottom-width'))
+    px(bt) - px(bb)
   let changed = 0
   const bump = (prop, gutter) => {
     // `snap` is cross-capture cached before this node-local correction runs. Derive the
@@ -2764,12 +2934,11 @@ function hasBox(cs) {
  * Flex/grid item (reads the parent's display, one getComputedStyle).
  * @param {Element} el
  */
-function isFlexOrGridItem(el) {
+function isFlexOrGridItem(el, styleCache = null) {
   const p = el.parentElement
   if (!p) return false
-  // getStyle memoizes in cache.computedStyle; raw getComputedStyle forced a fresh resolution
-  // per node on every capture (even on snapshot-cache hits).
-  const pd = getStyle(p).display || ''
+  const ps = styleCache?.get?.(p) || getStyle(p)
+  const pd = ps.display || ''
   return pd.includes('flex') || pd.includes('grid')
 }
 

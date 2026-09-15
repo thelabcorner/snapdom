@@ -201,6 +201,92 @@ describe('identity share — layout re-read narrowing', () => {
     await byteIdentical(twinFixture('', 'padding-left:12%'))
   })
 
+  it('author %-offsets remain per-node used values', async () => {
+    await byteIdentical(twinFixture('position:relative;top:10%'))
+  })
+
+  it('container-relative logical offsets remain per-node used values', async () => {
+    await byteIdentical(twinFixture('position:relative;inset-inline-start:10cqw'))
+  })
+
+  it('INLINE relative offsets force the historical rider path', async () => {
+    await byteIdentical(twinFixture('', 'position:relative;left:12%'))
+  })
+
+  it('fixed offsets on static twins skip per-twin CSSOM rereads and remain byte-identical', async () => {
+    const el = twinFixture('top:14px;right:3px;bottom:auto;left:2rem')
+    await settle()
+    const desc = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'getPropertyValue')
+    const original = CSSStyleDeclaration.prototype.getPropertyValue
+    const run = async (gate) => {
+      let reads = 0
+      Object.defineProperty(CSSStyleDeclaration.prototype, 'getPropertyValue', {
+        ...desc,
+        value(prop) {
+          if (prop === 'top' || prop === 'right' || prop === 'bottom' || prop === 'left') reads++
+          return original.apply(this, arguments)
+        },
+      })
+      try {
+        await dirty(el)
+        const raw = await snapdom.toRaw(el, {
+          burst: false,
+          cache: 'disabled',
+          __styleShare: true,
+          __styleShareInsetValueGate: gate,
+        })
+        return { raw, reads }
+      } finally {
+        Object.defineProperty(CSSStyleDeclaration.prototype, 'getPropertyValue', desc)
+      }
+    }
+    const historical = await run(false)
+    const gated = await run(true)
+    expect(gated.raw).toBe(historical.raw)
+    expect(gated.reads).toBeLessThan(historical.reads)
+  })
+
+  it('positioned twins keep the historical offset riders even with no authored inset', async () => {
+    const el = mount(
+      `<div class="off-grid">
+        <div class="off-host"><div class="off-twin">x</div></div>
+        <div class="off-host"><div class="off-twin">x</div></div>
+      </div>`,
+      `.off-grid{display:grid;grid-template-columns:160px 320px}
+       .off-host{position:relative;height:40px}
+       .off-twin{position:absolute;width:20px;height:20px;background:#c00}`,
+    )
+    await settle()
+    const desc = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'getPropertyValue')
+    const original = CSSStyleDeclaration.prototype.getPropertyValue
+    const run = async (gate) => {
+      let reads = 0
+      Object.defineProperty(CSSStyleDeclaration.prototype, 'getPropertyValue', {
+        ...desc,
+        value(prop) {
+          if (prop === 'top' || prop === 'right' || prop === 'bottom' || prop === 'left') reads++
+          return original.apply(this, arguments)
+        },
+      })
+      try {
+        await dirty(el)
+        const raw = await snapdom.toRaw(el, {
+          burst: false,
+          cache: 'disabled',
+          __styleShare: true,
+          __styleShareInsetValueGate: gate,
+        })
+        return { raw, reads }
+      } finally {
+        Object.defineProperty(CSSStyleDeclaration.prototype, 'getPropertyValue', desc)
+      }
+    }
+    const historical = await run(false)
+    const gated = await run(true)
+    expect(gated.raw).toBe(historical.raw)
+    expect(gated.reads).toBe(historical.reads)
+  })
+
   it('min/max sizing props never re-read and never diverge', async () => {
     await byteIdentical(twinFixture('min-width:50%;max-width:90%'))
   })

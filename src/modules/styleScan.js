@@ -95,6 +95,12 @@ const MAX_SCAN_RULES = 20000
  *  hit path to keep re-reading that family per node. Fixed lengths (px/em/rem) compute
  *  identically for twins by construction — same matched rules, same inherited inputs. */
 const UNSTABLE_LAYOUT_VALUE_RE = /%|\bauto\b|calc\(|var\(/i
+// Box offsets are cheaper to classify than width/height: fixed computed lengths are invariant
+// between already-proven identity twins, while percentages/container units/anchor positioning
+// can resolve against a different containing block. Keep this deliberately broader than the
+// margin/padding classifier; a false positive only preserves the historical per-twin read.
+const UNSTABLE_INSET_VALUE_RE = /%|\bauto\b|calc\(|var\(|attr\(|anchor(?:-size)?\(|\benv\(|cq(?:w|h|i|b|min|max)\b|\binherit\b|\bunset\b|\brevert(?:-layer)?\b/i
+const INSET_PROP_RE = /^(?:top|right|bottom|left|inset(?:-|$))/
 // Values that can make a non-inherited margin compute to the `auto` keyword that
 // getComputedStyle() later exposes as used 0px. var()/attr()/inherit/revert stay conservative:
 // their final value can come from state outside this declaration's literal text.
@@ -351,6 +357,14 @@ function scanRules(rules, universe, pseudoSels, state) {
             (prop === 'content' && /\bcounters?\s*\(/i.test(readValue()))) {
           state.sharePartitionBlocked = true
         }
+        if (!state.insetUnstable && INSET_PROP_RE.test(prop) && UNSTABLE_INSET_VALUE_RE.test(readValue())) {
+          state.insetUnstable = true
+        }
+        // Position-area / position-try can resolve otherwise-auto insets from available space,
+        // without an authored top/right/bottom/left value to trip the value classifier above.
+        if (!state.insetUnstable &&
+            (prop === 'position-area' || prop === 'inset-area' || prop === 'position-anchor' ||
+             prop.startsWith('position-try'))) state.insetUnstable = true
         if (prop.length > 5 && (prop[0] === 'm' || prop[0] === 'p')) {
           const fam = prop.startsWith('margin') ? 'marginUnstable'
             : prop.startsWith('padding') ? 'paddingUnstable' : null
@@ -799,15 +813,16 @@ function joinGate(probe, parts) {
   try { probe.matches(sel); return sel } catch { return null }
 }
 
-/** Joins collected per-kind selectors into one matches()-ready string, validating the
- *  combined result once (an unparsable selector → null → callers probe every node).
- *  `q` is always included for before/after: UA open/close-quote pseudos have no author rule. */
+/** Joins collected AUTHOR selectors per pseudo kind into one matches()-ready string,
+ * validating the combined result once (an unparsable selector → null → callers probe every
+ * node). UA-generated <q>::before/::after quotes are intentionally NOT encoded into these
+ * selector strings: pseudo/fonts handle that fixed semantic with a localName === 'q' check,
+ * avoiding two browser matches() calls per ordinary element on quote-capable captures. */
 function composePseudoGates(doc, pseudoSels) {
   const probe = doc.createElement('div')
   const gates = {}
   for (const kind in pseudoSels) {
     const parts = pseudoSels[kind]
-    if (kind === 'before' || kind === 'after') parts.push('q')
     gates[kind] = joinGate(probe, parts)
   }
   return gates
@@ -841,6 +856,8 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   depends on container size rather than element structure alone.
  * - `marginUnstable` / `paddingUnstable`: a %, auto, calc() or var() value in that family
  *   anywhere, so twins re-read it.
+ * - `insetUnstable`: some authored physical/logical inset can resolve differently between
+ *   identity twins (relative/container/anchor value or position-try/position-area channel).
  * - `marginMayBeAuto`: an author margin value can compute to `auto`; false lets the snapshot
  *   path skip Typed-OM keyword recovery for ordinary document-tree elements.
  * - `importantProps`: every property some rule declares `!important`.
@@ -854,7 +871,7 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -862,7 +879,7 @@ export function scanAuthorStyles(doc) {
   const unreliable = {
     universe: null, pseudoUniverse: null, usesHas: true, shareGate: null, sharePartition: null,
     styleIdentityDataAttrs: null,
-    marginUnstable: true, marginMayBeAuto: true, paddingUnstable: true, importantProps: null,
+    marginUnstable: true, marginMayBeAuto: true, paddingUnstable: true, insetUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true,
@@ -882,6 +899,7 @@ export function scanAuthorStyles(doc) {
       marginUnstable: false,
       marginMayBeAuto: false,
       paddingUnstable: false,
+      insetUnstable: false,
       importantProps: new Set(),
       pseudoProps: new Set(),
       elementRules: [], elementKeyedRuleCount: 0, elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
@@ -930,6 +948,7 @@ export function scanAuthorStyles(doc) {
       marginUnstable: state.marginUnstable,
       marginMayBeAuto: state.marginMayBeAuto,
       paddingUnstable: state.paddingUnstable,
+      insetUnstable: state.insetUnstable,
       importantProps: state.importantProps,
       elementRules: state.elementRules,
       elementKeyedRuleCount: state.elementKeyedRuleCount,

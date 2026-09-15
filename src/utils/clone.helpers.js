@@ -210,14 +210,15 @@ export function injectScopedStyle(hostClone, cssText, scopeId) {
  * @param {HTMLImageElement} original - Image in the live DOM.
  * @param {HTMLImageElement} cloned - Just-created cloned <img>.
  * @param {{resolvePicturePlaceholders?: boolean}} [options]
+ * @param {CSSStyleDeclaration|null} [preStyle] exact capture-local declaration when available
  */
-export function freezeImgSrcset(original, cloned, options = {}) {
+export function freezeImgSrcset(original, cloned, options = {}, preStyle = null) {
   try {
     // Element-level `content: url(...)` replaces the <img>'s rendered image and out-ranks
     // src/srcset in the browser's own resolution. The style snapshot neutralizes non-data
     // content URLs, so freeze the replacement image as the clone's src here.
     let contentUrl = null
-    const rawContent = getStyle(original).content
+    const rawContent = (preStyle?.length ? preStyle : getStyle(original)).content
     if (rawContent && rawContent.includes('url(')) {
       const m = rawContent.match(/url\(["']?([^"')]+)["']?\)/)
       if (m) contentUrl = m[1]

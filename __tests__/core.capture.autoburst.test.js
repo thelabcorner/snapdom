@@ -62,6 +62,91 @@ describe('auto-burst', () => {
       .getImageData(10, 10, 1, 1).data
     expect(px[1]).toBeGreaterThan(200) // green — not the stale red frame
   })
+
+  it('reclassifies an unsafe light-DOM source added after a memo in the same task', async () => {
+    const host = makeCard('starts static')
+    const first = await snapdom(host)
+    expect(await snapdom(host)).toBe(first)
+
+    // No task/microtask yield: captureWithBurst must synchronously drain this childList record
+    // before a memo decision, then run the complete safety classifier over the new structure.
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 8
+    host.appendChild(canvas)
+    const changed = await snapdom(host)
+    expect(changed).not.toBe(first)
+
+    // State was disposed, not merely dirtied for one frame: canvas pixels are record-less, so
+    // subsequent calls must remain on the full path too.
+    const reads = vi.spyOn(window, 'getComputedStyle')
+    await snapdom(host)
+    expect(reads).toHaveBeenCalled()
+    reads.mockRestore()
+  })
+
+  it('reclassifies an unsafe source inside a shadow root attached after the memo', async () => {
+    const host = makeCard('late shadow')
+    const comp = document.createElement('span')
+    host.appendChild(comp)
+    const first = await snapdom(host)
+    expect(await snapdom(host)).toBe(first)
+
+    // attachShadow() itself has no MutationRecord. The retained fast path must still perform
+    // its structural census, notice the new root, and classify its previously invisible tree.
+    comp.attachShadow({ mode: 'open' }).innerHTML = '<canvas width="8" height="8"></canvas>'
+    const changed = await snapdom(host)
+    expect(changed).not.toBe(first)
+    const reads = vi.spyOn(window, 'getComputedStyle')
+    await snapdom(host)
+    expect(reads).toHaveBeenCalled()
+    reads.mockRestore()
+  })
+
+  it('finds a nested shadow root attached inside an already-observed shadow tree', async () => {
+    const host = makeCard('nested late shadow')
+    const outer = document.createElement('span')
+    host.appendChild(outer)
+    const outerRoot = outer.attachShadow({ mode: 'open' })
+    const inner = document.createElement('span')
+    outerRoot.appendChild(inner)
+
+    const first = await snapdom(host)
+    expect(await snapdom(host)).toBe(first)
+
+    // The outer root was already known and observed. Attaching a second root to an EXISTING
+    // element inside it emits no MutationRecord, so BSAFE2's retained element census must be
+    // deep enough to notice this without relying on a fresh querySelectorAll('*').
+    inner.attachShadow({ mode: 'open' }).innerHTML = '<canvas width="8" height="8"></canvas>'
+    const changed = await snapdom(host)
+    expect(changed).not.toBe(first)
+    const reads = vi.spyOn(window, 'getComputedStyle')
+    await snapdom(host)
+    expect(reads).toHaveBeenCalled()
+    reads.mockRestore()
+  })
+
+  it('reclassifies a same-task style mutation that introduces an animated image', async () => {
+    const host = makeCard('static source')
+    const target = document.createElement('span')
+    target.style.display = 'inline-block'
+    target.style.width = target.style.height = '8px'
+    host.appendChild(target)
+
+    const first = await snapdom(host)
+    expect(await snapdom(host)).toBe(first)
+
+    // Attribute mutation is observer-visible, but its CONSEQUENCE (frame-driven GIF) is not.
+    // The dirty path must therefore run the complete historical classifier before a memo can
+    // be served or replaced, even when MutationObserver delivery has not reached a new task.
+    target.style.backgroundImage =
+      'url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")'
+    const changed = await snapdom(host)
+    expect(changed).not.toBe(first)
+    const reads = vi.spyOn(window, 'getComputedStyle')
+    await snapdom(host)
+    expect(reads).toHaveBeenCalled()
+    reads.mockRestore()
+  })
 })
 
 describe('image loads invalidate the memo (no DOM mutation involved)', () => {

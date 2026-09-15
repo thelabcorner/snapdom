@@ -185,6 +185,64 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    __contentVisibilityStyleSeed: options.__contentVisibilityStyleSeed,
+    __lineClampStyleSeed: options.__lineClampStyleSeed,
+    // Internal R7-LCG1 counterfactual. Production skips the live truncation walk only when the
+    // complete document scan plus an immediate subtree inline/shadow census proves that neither
+    // line-clamp nor text-overflow can apply. False restores the unconditional historical pass.
+    __lineClampPassGate: options.__lineClampPassGate,
+    __parentStyleReuse: options.__parentStyleReuse,
+    __backdropStyleReuse: options.__backdropStyleReuse,
+    __pseudoHostStyleReuse: options.__pseudoHostStyleReuse,
+    // Internal R7-PQU1 counterfactual: production admits UA <q> before/after pseudos with a
+    // local tag-name check and leaves browser matches() to author selectors only. False
+    // reconstructs the historical `authorGate,q` selector for same-build causal probes.
+    __pseudoUAQuoteGate: options.__pseudoUAQuoteGate,
+    // Internal R7-ANIMR1 counterfactual. Share-safe structural twins reuse the first identity
+    // occurrence's computed animation-name rider; false restores one live read per element.
+    __animationNameShare: options.__animationNameShare,
+    // Internal R7-TXT2 research arm. On a conservative neutral-tag class, synthesize the six
+    // default text-decoration fallback values from the already-captured color instead of six
+    // named CSSOM reads. Default remains historical until exact parity is fully certified.
+    __snapshotDecorationSynthesis: options.__snapshotDecorationSynthesis,
+    // Internal R7-OFF1 counterfactual. Production re-reads shared-snapshot offsets only when
+    // stylesheet/inline evidence can make their used value geometry-dependent. False restores
+    // the historical unconditional top/right/bottom/left/inset-* rider set.
+    __styleShareInsetValueGate: options.__styleShareInsetValueGate,
+    // Internal R7-GR1 counterfactual. Reuse exact gutter inputs already present in this node's
+    // style snapshot; false restores the historical duplicate live CSSOM reads.
+    __gutterSnapshotReuse: options.__gutterSnapshotReuse,
+    // Internal R7-BGS1 counterfactual. The late background pass first probes source longhands;
+    // if none can carry an image it skips the otherwise-inert URL shorthand/alias loop. False
+    // restores the historical unconditional URL_PROPS walk.
+    __backgroundUrlSentinel: options.__backgroundUrlSentinel,
+    // Internal R7-BGS2 counterfactual. Production narrows BGS1's late source sentinel to the
+    // source properties this engine can actually expose (plus compatibility aliases proven by
+    // the engine family). False restores BGS1's complete seven-source probe set.
+    __backgroundSourceBasis: options.__backgroundSourceBasis,
+    __svgDefsStyleReuse: options.__svgDefsStyleReuse,
+    __imageStyleReuse: options.__imageStyleReuse,
+    __svgPaintStyleReuse: options.__svgPaintStyleReuse,
+    // Internal R7-BRST1 counterfactual. Production derives the burst scroll-watch set from
+    // exact overflow semantics already observed during capture, avoiding whole-tree
+    // scrollWidth/clientWidth/scrollHeight/clientHeight discovery. False restores the
+    // historical geometry census for deterministic A/B probes.
+    __burstSemanticScrollTracking: options.__burstSemanticScrollTracking,
+    // Internal R7-BRST2 counterfactual for clone scroll-compensation admission.
+    __wrapScrolledSemanticGate: options.__wrapScrolledSemanticGate,
+    // Internal R7-BRST3 counterfactual: first-capture scroll baseline comes from the exact
+    // source observations made while cloning instead of a broad pre-capture offset scan.
+    __burstCaptureScrollBaseline: options.__burstCaptureScrollBaseline,
+    // Internal R7-BSAFE1 counterfactual. Production lets an already-established burst state
+    // enter the transactional validator without re-running the expensive per-node frame-source
+    // classifier up front. The validator still performs one structural shadow-root census on
+    // every hit, and re-runs the complete historical classifier after any observed mutation or
+    // newly attached open shadow root. False restores the historical API-entry full scan.
+    __burstRetainedSafetyFastPath: options.__burstRetainedSafetyFastPath,
+    // Internal R7-BSAFE2 counterfactual. A clean established memo may inspect the retained
+    // element census for newly attached open shadow roots instead of issuing a fresh whole-tree
+    // selector query. Dirty state or a newly found root falls back to the full BSAFE1 census.
+    __burstRetainedShadowProbe: options.__burstRetainedShadowProbe,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
