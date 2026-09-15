@@ -54,6 +54,12 @@ export async function prepareClone(element, options = {}) {
     nodeMap: session.nodeMap,
     options
   }
+  // Burst's full-capture commit can reuse scroll observations this pass necessarily makes while
+  // compensating scrolled clones. Allocate only when a caller is actually retaining artifacts;
+  // ordinary captures and the explicit historical counterfactual pay nothing.
+  const retainScrollObservations = typeof options.__retain === 'function' &&
+    options.__burstRetainedScrollObservations !== false
+  if (retainScrollObservations) session.__scrollObservations = []
 
   let clipWindow = null
   let clipRect = null
@@ -326,7 +332,27 @@ export async function prepareClone(element, options = {}) {
     // scroll — un-scrolling the root here would compensate twice (blank output when
     // capturing a scrolled documentElement).
     if (sessionCache.clip && originalNode === element) continue
-    wrapScrolledClone(cloneNode, originalNode)
+    // These are the exact two reads wrapScrolledClone historically performed. Read them here
+    // once so a retained burst can reuse the values without adding a second read, object
+    // allocation, or feature branch to the ordinary full-capture hot path.
+    const scrollX = originalNode?.scrollLeft || 0
+    const scrollY = originalNode?.scrollTop || 0
+    wrapScrolledCloneAt(cloneNode, originalNode, scrollX, scrollY)
+    // nodeMap also contains text/comment nodes. The historical scroll census only considers
+    // Elements, so never let a missing style object turn non-elements into conservative watch
+    // entries. Unknown element style fails closed by retaining the element.
+    if (retainScrollObservations && originalNode?.nodeType === 1) {
+      const computed = sessionCache.styleCache.get(originalNode)
+      let ox = '', oy = ''
+      try {
+        ox = computed?.overflowX || computed?.getPropertyValue?.('overflow-x') || ''
+        oy = computed?.overflowY || computed?.getPropertyValue?.('overflow-y') || ''
+      } catch { /* unknown style => retain conservatively */ }
+      const x = scrollX, y = scrollY
+      const provenNonScrollable = !!computed && !x && !y &&
+        (ox === 'visible' || ox === 'clip') && (oy === 'visible' || oy === 'clip')
+      if (!provenNonScrollable) session.__scrollObservations.push([originalNode, x, y])
+    }
   }
   // The root clone is the foreignObject's content now, so whatever placed it in the page
   // (margin, inset offsets, float) is zeroed and its transform keeps scale/skew only. The
@@ -455,8 +481,15 @@ export function applyStyleClass(node, key, keyToClass) {
  * @param {Element} originalNode
  */
 export function wrapScrolledClone(cloneNode, originalNode) {
-  const scrollX = originalNode.scrollLeft
-  const scrollY = originalNode.scrollTop
+  return wrapScrolledCloneAt(
+    cloneNode,
+    originalNode,
+    originalNode?.scrollLeft || 0,
+    originalNode?.scrollTop || 0,
+  )
+}
+
+function wrapScrolledCloneAt(cloneNode, originalNode, scrollX, scrollY) {
   const hasScroll = scrollX || scrollY
   // Realm-safe HTML check: iframe-realm clones are not instances of this window's
   // HTMLElement, but their scroll still needs compensating.

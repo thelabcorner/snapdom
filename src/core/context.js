@@ -225,6 +225,11 @@ export function createContext(options = {}) {
     // src/core/burst.js). true/false remain INTERNAL-ONLY escapes (tests/benchmarks need
     // deterministic full-pipeline runs), not public API.
     burst: options.burst,
+    // Internal R6 counterfactual. A full burst capture already reads every cloned source
+    // element's scrollLeft/scrollTop while compensating scrolled clones. Reuse those offsets
+    // plus the capture's cached overflow style to rebuild the post-capture scroll watch list,
+    // instead of repeating a whole-subtree geometry census. false pins the historical path.
+    __burstRetainedScrollObservations: options.__burstRetainedScrollObservations,
 
     // EXPERIMENTAL: 'html-in-canvas' opts into the WICG canvas-place-element engine when the browser
     // supports it (see src/engines/htmlInCanvas.js); anything else uses the svg pipeline.

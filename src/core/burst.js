@@ -497,6 +497,42 @@ function collectScrollNodes(element, state) {
   state.scrollNodes = out
 }
 
+function scrollStateOf(element, state) {
+  const view = (element.ownerDocument || document).defaultView
+  const scroll = [view?.scrollX || 0, view?.scrollY || 0]
+  for (const el of state.scrollNodes) scroll.push(el.scrollLeft || 0, el.scrollTop || 0)
+  return scroll
+}
+
+/** Rebuild the post-full-capture scroll watch list from observations the clone-preparation pass
+ * already made. The source root's light-DOM ancestor chain remains unconditional because an
+ * outside containing scroller changes what the captured root paints. Missing/malformed retained
+ * data returns false so the caller can fail open to the historical geometry census.
+ * @returns {boolean} true when observations were adopted */
+function adoptRetainedScrollNodes(element, state, observations) {
+  if (!Array.isArray(observations)) return false
+  const out = []
+  const seen = new Set()
+  let stable = true
+  const add = (el) => {
+    if (!el || el.nodeType !== 1 || seen.has(el)) return
+    seen.add(el)
+    out.push(el)
+  }
+  for (let el = element; el; el = el.parentElement) add(el)
+  for (let i = 0; i < observations.length; i++) {
+    const item = observations[i]
+    if (!Array.isArray(item) || item.length < 3 || item[0]?.nodeType !== 1) return false
+    const [el, x, y] = item
+    add(el)
+    try {
+      if ((el.scrollLeft || 0) !== x || (el.scrollTop || 0) !== y) stable = false
+    } catch { stable = false }
+  }
+  state.scrollNodes = out
+  return { stable }
+}
+
 /** State that can change what paints while producing no MutationRecord. It is sampled before
  *  every possible memo serve, so same-task property writes and browser preference changes do
  *  not depend on asynchronous event delivery. Sample the tracked controls/images/scrollers;
@@ -520,8 +556,7 @@ function renderStateOf(element, state) {
   const fullscreen = doc.fullscreenElement
   if (active?.contains(element) || element.contains(active)) style.push(signatureRef(active))
   if (fullscreen?.contains(element) || element.contains(fullscreen)) style.push(signatureRef(fullscreen))
-  const scroll = [view?.scrollX || 0, view?.scrollY || 0]
-  for (const el of state.scrollNodes) scroll.push(el.scrollLeft || 0, el.scrollTop || 0)
+  const scroll = scrollStateOf(element, state)
   const controls = []
   for (const el of state.controls) {
     const tag = String(el.localName || '').toLowerCase()
@@ -954,11 +989,29 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
       if (!isOneOff && !state.disposed) {
         state.dirty = false
         state.dirtyRoots = new Set()
+        let preAdoptionScroll = null
+        let retainedScrollStable = true
         if (pendingRetained) {
           state.retained = pendingRetained
           state.retainedFrameDriven = retainedHasFrameDriven(pendingRetained)
           collectControls(element, state)
-          collectScrollNodes(element, state)
+          let adopted = false
+          if (context.__burstRetainedScrollObservations !== false &&
+              Array.isArray(pendingRetained.scrollObservations)) {
+            // The live state at capture entry was sampled with the pre-existing watch list.
+            // Compare that SAME representation at commit before replacing membership, otherwise
+            // a semantically harmless removal of zero-offset overflow:visible nodes looks torn.
+            preAdoptionScroll = scrollStateOf(element, state).join('|')
+            const result = adoptRetainedScrollNodes(element, state, pendingRetained.scrollObservations)
+            if (result) {
+              adopted = true
+              retainedScrollStable = result.stable
+            }
+          }
+          if (!adopted) {
+            preAdoptionScroll = null
+            collectScrollNodes(element, state)
+          }
         } else if (usedDiff) {
           // Diff mutates the retained clone/maps in place. Inspect only rebuilt roots: this
           // closes static→animated blob/extensionless changes without a whole-clone rescan.
@@ -970,8 +1023,12 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
         committedRenderState.animation = animationSignature(animationsInScopes(element, state))
         const stableKeys = ['style', 'scroll', 'controls', 'images']
         if (!animationRunning) stableKeys.push('animation')
-        const stableRenderState = stableKeys
-          .every((key) => sameRenderState(liveRenderState, committedRenderState, key))
+        const stableRenderState = retainedScrollStable && stableKeys.every((key) => {
+          if (key === 'scroll' && preAdoptionScroll) {
+            return sameRenderState(liveRenderState, { scroll: preAdoptionScroll }, 'scroll')
+          }
+          return sameRenderState(liveRenderState, committedRenderState, key)
+        })
         state.renderState = committedRenderState
         state.styleEpoch = getStyleEpoch()
         state.styleStamp = getStyleStamp(element)
