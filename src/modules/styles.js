@@ -1485,11 +1485,11 @@ const SHARE_SKIP_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGR
 
 /** The capture's share state, made on first use: identity ids per node, the intern table,
  *  one snapshot record per identity. Lives on the session, so it dies with the capture. */
-function shareStateOf(session, selectors = null) {
+function shareStateOf(session, selectors = null, dataAttrs = null) {
   let st = session.__styleShare
-  if (!st || st.selectors !== selectors) {
+  if (!st || st.selectors !== selectors || st.dataAttrs !== dataAttrs) {
     st = session.__styleShare = {
-      ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors,
+      ids: new WeakMap(), intern: new Map(), snaps: new Map(), rootSeen: false, selectors, dataAttrs,
     }
   }
   return st
@@ -1518,8 +1518,25 @@ function shareSelectorFingerprint(el, selectors) {
   return out
 }
 
-/** Interned identity id: parent's id + own tag + every attribute + optional selector vector. */
-function identityFor(el, st, selectors = null) {
+const HTML_NS = 'http://www.w3.org/1999/xhtml'
+const R4_PROTECTED_DATA_ATTRS = new Set(['data-capture'])
+
+/** Whether a data-* attribute must stay in the style-sharing identity. Null dependency data
+ * means the stylesheet proof was incomplete, so every attribute is retained. */
+function keepStyleIdentityAttr(el, attr, dataAttrs, inlineAttrDependent) {
+  const name = attr.name
+  const lower = name.toLowerCase()
+  if (!dataAttrs || el.namespaceURI !== HTML_NS || !lower.startsWith('data-')) return true
+  if (inlineAttrDependent) return true
+  if (R4_PROTECTED_DATA_ATTRS.has(lower) || lower.startsWith('data-snapdom') || lower.startsWith('data-sd')) return true
+  return dataAttrs.has(lower)
+}
+
+/** Interned identity id: parent's id + own tag + style-observable attributes + optional
+ * selector vector. R4 omits only non-internal data-* metadata that the shared stylesheet
+ * dependency scan proved CSS cannot observe. The source/clone attributes themselves are
+ * never changed. */
+function identityFor(el, st, selectors = null, dataAttrs = null) {
   let id = st.ids.get(el)
   if (id !== undefined) return id
   const parent = el.parentElement
@@ -1547,12 +1564,21 @@ function identityFor(el, st, selectors = null) {
   }
   let attrs = ''
   const list = el.attributes
+  const inlineAttrDependent = !!(dataAttrs && /attr\s*\(/i.test(el.getAttribute?.('style') || ''))
   if (list && list.length) {
     if (list.length === 1) {
-      attrs = list[0].name + '=' + list[0].value
+      const attr = list[0]
+      if (keepStyleIdentityAttr(el, attr, dataAttrs, inlineAttrDependent)) {
+        attrs = attr.name + '=' + attr.value
+      }
     } else {
       const parts = []
-      for (let i = 0; i < list.length; i++) parts.push(list[i].name + '=' + list[i].value)
+      for (let i = 0; i < list.length; i++) {
+        const attr = list[i]
+        if (keepStyleIdentityAttr(el, attr, dataAttrs, inlineAttrDependent)) {
+          parts.push(attr.name + '=' + attr.value)
+        }
+      }
       parts.sort()
       attrs = parts.join('\u0001')
     }
@@ -1954,9 +1980,12 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   let shareInfo = null
   if (ctx.options && ctx.options.__styleShare && session.styleMap) {
     const selectors = ctx.options.__styleShareSelectors || null
-    const st = shareStateOf(session, selectors)
-    const id = identityFor(source, st, selectors)
     const doc = source.ownerDocument || document
+    // R4: consume the same rule scan used by R2/R3. null means unreadable/ambiguous CSS or an
+    // explicit same-DOM test override, and therefore preserves the historical full identity.
+    const dataAttrs = ctx.options.__styleShareDataAttrs === false ? null : scanFor(doc).observedDataAttrs
+    const st = shareStateOf(session, selectors, dataAttrs)
+    const id = identityFor(source, st, selectors, dataAttrs)
     const active = doc.activeElement
     // A shadow host and a slotted node are styled by a root sheet the scan never read:
     // `:host(:not(:first-child))` split three identical #488 groups and the twins painted

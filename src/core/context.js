@@ -156,6 +156,9 @@ export function createContext(options = {}) {
     cache: cachePolicy,
     // Internal: identity-share override (undefined = decide per capture in captureDOM).
     __styleShare: options.__styleShare,
+    // Internal same-DOM R4 control. false retains every data-* attribute in the style-share
+    // identity while leaving sharing itself enabled.
+    __styleShareDataAttrs: options.__styleShareDataAttrs,
     // Internal test/benchmark control: false keeps the historical document-level property
     // universe while leaving the DOM, CSS and every other capture option unchanged.
     __elementUniverse: options.__elementUniverse,

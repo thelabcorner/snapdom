@@ -151,4 +151,48 @@ describe('per-element dependency index', () => {
     expect(scan.elementRuleIndex.get('tarticle')?.some((r) => r.sel === 'article')).toBe(true)
     expect(scan.elementRuleIndex.get(null)?.some((r) => r.sel === ':where(.zz-any)')).toBe(true)
   })
+
+  it('collects data-* dependencies from selectors and attr() without a second scan', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    style.textContent = `
+      .card[data-state="hot"] { color:red; }
+      .parent:has([data-child]) .label { font-weight:700; }
+      .label::before { content:attr(data-label); }
+    `
+    document.head.appendChild(style)
+    const scan = scanAuthorStyles(document)
+
+    expect(scan.observedDataAttrs).not.toBeNull()
+    expect(scan.observedDataAttrs.has('data-state')).toBe(true)
+    expect(scan.observedDataAttrs.has('data-child')).toBe(true)
+    expect(scan.observedDataAttrs.has('data-label')).toBe(true)
+    expect(scan.observedDataAttrs.has('data-unrelated')).toBe(false)
+  })
+
+  it('never misses an escaped data attribute selector', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    // CSS may preserve the escape or canonicalize it to `data-secret`; either result is safe:
+    // null disables R4 globally, while a canonicalized dependency retains this attribute.
+    style.textContent = '.card[\\64 ata-secret] { color:red; }'
+    document.head.appendChild(style)
+    const scan = scanAuthorStyles(document)
+    expect(scan.observedDataAttrs === null || scan.observedDataAttrs.has('data-secret')).toBe(true)
+  })
+
+  it('conservatively sees data dependencies carried by an at-rule prelude', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    style.textContent = `
+      @supports selector([data-scope]) {
+        .zz-scope { color:red; }
+      }
+    `
+    document.head.appendChild(style)
+    const scan = scanAuthorStyles(document)
+    // This is intentionally conservative: @supports does not inspect this particular DOM,
+    // but retaining data-scope is cheaper than having an at-rule grammar blind spot.
+    expect(scan.observedDataAttrs === null || scan.observedDataAttrs.has('data-scope')).toBe(true)
+  })
 })

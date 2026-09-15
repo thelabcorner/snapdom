@@ -108,6 +108,72 @@ const PSEUDO_KINDS = {
 }
 const PSEUDO_STRIP = /::?(?:before|after|first-letter|first-line|marker)\b/g
 
+/**
+ * Record data-* attributes that selector matching can observe. R4 uses this to remove only
+ * provably irrelevant metadata from the STYLE-SHARE identity; the DOM/output is untouched.
+ *
+ * Escapes inside attribute selectors fail closed. Decoding CSS escapes correctly is subtle
+ * (`[\\64 ata-x]` is a perfectly valid spelling of `[data-x]`), and an unnecessary retained
+ * attribute costs far less than sharing two elements CSS can distinguish.
+ */
+function collectDataAttrSelectorDeps(text, out) {
+  if (!text || text.indexOf('[') < 0) return true
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '[') continue
+    const start = ++i
+    let quote = null
+    let end = -1
+    for (; i < text.length; i++) {
+      const c = text[i]
+      if (c === '\\') return false
+      if (quote) {
+        if (c === quote) quote = null
+        continue
+      }
+      if (c === '"' || c === "'") { quote = c; continue }
+      if (c === ']') { end = i; break }
+    }
+    if (end < 0 || quote) return false
+    const body = text.slice(start, end).trim()
+    if (!body) return false
+    // Everything before the comparison operator is the attribute name (possibly namespaced).
+    // `[foo|data-x]` / `[*|data-x]` are conservatively treated as observing data-x too.
+    const eq = body.indexOf('=')
+    let name = (eq < 0 ? body : body.slice(0, eq)).trim()
+    if (eq >= 0) name = name.replace(/[~|^$*]\s*$/, '').trim()
+    const pipe = name.lastIndexOf('|')
+    if (pipe >= 0) name = name.slice(pipe + 1).trim()
+    const lower = name.toLowerCase()
+    if (lower.startsWith('data-')) {
+      if (!/^data-[a-z0-9_-]+$/i.test(name)) return false
+      out.add(lower)
+    }
+  }
+  return true
+}
+
+/** Record attr(data-*) value dependencies. This scans serialized declaration text, so it is
+ * deliberately allowed to over-retain (for example attr() inside a quoted string); false
+ * negatives are the only dangerous outcome. */
+function collectDataAttrValueDeps(text, out) {
+  if (!text || !/attr\s*\(/i.test(text)) return true
+  const starts = text.match(/attr\s*\(/ig) || []
+  const re = /attr\s*\(\s*([^,\s)]+)/ig
+  let count = 0
+  let m
+  while ((m = re.exec(text))) {
+    count++
+    const raw = m[1]
+    if (raw.includes('\\')) return false
+    const lower = raw.toLowerCase()
+    if (lower.startsWith('data-')) {
+      if (!/^data-[a-z0-9_-]+$/i.test(raw)) return false
+      out.add(lower)
+    }
+  }
+  return count === starts.length
+}
+
 /** Strips pseudo-element tokens from a selector list so it can feed `el.matches()`.
  *  A part that was ONLY the pseudo (`::before {}`) becomes `*` (pseudo-elements are not
  *  allowed inside :is()/:where(), so top-level empty parts are the only ones possible). */
@@ -135,6 +201,10 @@ function scanRules(rules, universe, pseudoSels, state) {
     const style = rule.style
     let hasAll = false
     if (style) {
+      if (!state.dataAttrIdentityBlocked &&
+          !collectDataAttrValueDeps(style.cssText || '', state.observedDataAttrs)) {
+        state.dataAttrIdentityBlocked = true
+      }
       // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
       // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
       // per selector below so an unrelated reset rule does not disable narrowing globally.
@@ -175,6 +245,22 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (sel && sel.includes('&')) {
       for (let p = rule.parentRule; p && sel.includes('&'); p = p.parentRule) {
         if (p.selectorText) sel = sel.replace(/&/g, `:is(${p.selectorText})`)
+      }
+    }
+    if (sel) {
+      if (!state.dataAttrIdentityBlocked &&
+          !collectDataAttrSelectorDeps(sel, state.observedDataAttrs)) {
+        state.dataAttrIdentityBlocked = true
+      }
+    } else if (typeof rule.cssText === 'string') {
+      // @scope and future grouping rules can carry selectors/dependencies in their prelude
+      // without exposing selectorText. Looking only at the header is conservative and cheap.
+      const brace = rule.cssText.indexOf('{')
+      const head = brace < 0 ? rule.cssText : rule.cssText.slice(0, brace)
+      if (!state.dataAttrIdentityBlocked &&
+          (!collectDataAttrSelectorDeps(head, state.observedDataAttrs) ||
+           !collectDataAttrValueDeps(head, state.observedDataAttrs))) {
+        state.dataAttrIdentityBlocked = true
       }
     }
     // Retain one selector -> declared-properties index for the per-element universe.
@@ -373,9 +459,11 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   unreliable scan; `elementAllRuleIndex` carries selector-scoped `all` resets,
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
  *   `hasAnimations` covers live CSS/WAAPI animation state.
+ * - `observedDataAttrs`: data-* names CSS can observe through selectors or attr(). Null means
+ *   the syntax could not be proven safe, so metadata elision must stay off.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRuleIndex: Map<string|null,Array<{sel:string,props:string[]}>>|null, elementAllRuleIndex: Map<string|null,Array<{sel:string}>>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRuleIndex: Map<string|null,Array<{sel:string,props:string[]}>>|null, elementAllRuleIndex: Map<string|null,Array<{sel:string}>>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean, observedDataAttrs: Set<string>|null}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -385,7 +473,7 @@ export function scanAuthorStyles(doc) {
     marginUnstable: true, paddingUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRuleIndex: null, elementAllRuleIndex: null, elementAlwaysProps: null,
-    elementUniverseBlocked: true, hasAnimations: true,
+    elementUniverseBlocked: true, hasAnimations: true, observedDataAttrs: null,
   }
   try {
     const universe = new Set(ALWAYS_PROPS)
@@ -403,6 +491,7 @@ export function scanAuthorStyles(doc) {
       pseudoProps: new Set(),
       elementRuleIndex: new Map(), elementAllRuleIndex: new Map(), elementAlwaysProps: new Set(),
       elementUniverseBlocked: false, hasAnimations: false,
+      observedDataAttrs: new Set(), dataAttrIdentityBlocked: false,
     }
     for (const sheet of doc.styleSheets) {
       if (!scanSheet(sheet, universe, pseudoSels, state)) return unreliable
@@ -451,6 +540,7 @@ export function scanAuthorStyles(doc) {
       elementAlwaysProps: state.elementAlwaysProps,
       elementUniverseBlocked: state.elementUniverseBlocked,
       hasAnimations: state.hasAnimations,
+      observedDataAttrs: state.dataAttrIdentityBlocked ? null : state.observedDataAttrs,
     }
   } catch {
     return unreliable
