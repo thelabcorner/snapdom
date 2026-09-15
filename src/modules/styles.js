@@ -1909,6 +1909,14 @@ function usedWidthDiffersFromAvailable(el, cs) {
 }
 
 const __snapshotSig = new WeakMap()
+// Pseudo key reuse is useful only after the per-capture identity share actually hits. Mark those
+// transient snapshots so unique/high-entropy pseudos pay no signature/Map tax whatsoever. Weak
+// membership also avoids attaching observable metadata to the snapshot representation.
+const __sharedPseudoSnapshots = new WeakSet()
+// A cache that cannot hit is strictly extra work. After a conservative run of consecutive
+// pseudo-key misses, fail closed to the historical key builder for the rest of the capture.
+// Any false disable only forfeits optimization; it cannot alter output semantics.
+const PSEUDO_KEY_MISS_STREAK_LIMIT = 16
 /** The snapshot's key into snapshotKeyCache, memoized per snapshot object. */
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
@@ -1949,9 +1957,54 @@ function styleSignature(snap) {
  * an injective mutation suffix. First-seen/full snapshots have no signature yet and therefore
  * need no repair — styleSignature() will observe their final values normally.
  */
-function extendSnapshotSignature(snap, suffix) {
+export function extendSnapshotSignature(snap, suffix) {
   const sig = __snapshotSig.get(snap)
   if (sig !== undefined) __snapshotSig.set(snap, sig + '\u0006' + suffix)
+}
+
+/** Build/cache the generated <span> style key for a materialized pseudo snapshot.
+ *
+ * `::before`/`::after` twins commonly have only one or two semantic styles but historically
+ * run getStyleKey() for every pseudo. The cache is deliberately CAPTURE-LOCAL: pseudo identity
+ * sharing itself is capture-local, and a persistent pseudo cache would retain long signature
+ * strings and compete with the element style-key cache for no cross-capture benefit.
+ *
+ * First/unique pseudos bypass this helper's cache entirely. Only snapshots produced by a real
+ * pseudo identity hit are marked by pseudoSnapshotFor(), so a high-entropy pseudo page pays the
+ * exact historical path. A hit snapshot carries either the ordinary full semantic signature or
+ * R7-P's compact static+dynamic signature.
+ * @param {Record<string,string>} snap
+ * @param {boolean} sizedByContent
+ * @param {boolean} isFlexItem
+ * @param {Object} session capture-local session cache
+ * @param {boolean} [useCache=true]
+ */
+export function pseudoStyleKeyForSnapshot(snap, sizedByContent, isFlexItem, session, useCache = true) {
+  if (!useCache || !__sharedPseudoSnapshots.has(snap)) {
+    return getStyleKey(snap, 'span', sizedByContent, isFlexItem)
+  }
+  if (session.__pseudoStyleKeyCacheDisabled) {
+    return getStyleKey(snap, 'span', sizedByContent, isFlexItem)
+  }
+  const sig = 'pseudo\u0007' + styleSignature(snap) +
+    '\u0007' + (sizedByContent ? 'c' : '-') + (isFlexItem ? 'f' : '-')
+  const keyCache = session.__pseudoStyleKeyCache || (session.__pseudoStyleKeyCache = new Map())
+  let key = keyCache.get(sig)
+  if (key !== undefined) {
+    session.__pseudoStyleKeyMissStreak = 0
+    return key
+  }
+  key = getStyleKey(snap, 'span', sizedByContent, isFlexItem)
+  const misses = (session.__pseudoStyleKeyMissStreak || 0) + 1
+  if (misses >= PSEUDO_KEY_MISS_STREAK_LIMIT) {
+    session.__pseudoStyleKeyCacheDisabled = true
+    session.__pseudoStyleKeyMissStreak = 0
+    keyCache.clear()
+  } else {
+    session.__pseudoStyleKeyMissStreak = misses
+    keyCache.set(sig, key)
+  }
+  return key
 }
 /** A cached snapshot is current while nothing document-wide happened (env epoch) and nothing
  *  a selector could follow to this node did (its stamp). */
@@ -2153,7 +2206,25 @@ function identityFor(el, st, selectors = null) {
   return id
 }
 
-/** The identity's re-read list and base signature, decided once on its first twin (`el`,
+/** Lazily materialize the identity's base signature from the already-decided re-read list.
+ * Element snapshots need this immediately; pseudo snapshots deliberately defer it until a
+ * THIRD occurrence proves the generated-key cache can actually hit. That keeps pair-only
+ * pseudo identities off the signature path entirely while preserving exact compact signatures
+ * once reuse is real.
+ * @param {{snap: object, rr: string[]|null, sig: string|null}} rec
+ * @returns {string}
+ */
+function shareSignature(rec) {
+  if (rec.sig !== null) return rec.sig
+  const rrList = rec.rr || []
+  const rrSet = new Set(rrList)
+  const staticParts = []
+  for (const k in rec.snap) { if (!rrSet.has(k)) staticParts.push(k, rec.snap[k]) }
+  rec.sig = staticParts.join('\u0001') + '\u0002' + rrList.join('\u0001')
+  return rec.sig
+}
+
+/** The identity's re-read list and optional base signature, decided once on its first twin (`el`,
  *  whose style attribute is the identity's — the attribute is part of the key) and kept on
  *  the share record: the
  *  always-geometry props, plus the margin/padding families only when the document-level
@@ -2174,16 +2245,23 @@ function identityFor(el, st, selectors = null) {
  *  Pinned by __tests__/module.styles.identityShare.test.js.
  *  @param {{snap: object, rr: string[]|null, sig: string|null, h: boolean, b: boolean}} rec
  *  @param {Element} el the identity's first twin
+ *  @param {boolean} [copyForSpread=true] materialize the historical spread-optimized base.
+ *    Copy-on-write pseudo overlays never spread that base, so the copy would be pure setup cost.
+ *  @param {boolean} [buildSignature=true] eagerly build the compact base signature. Element
+ *    snapshots need it on the first hit; pseudo key caching can defer it until a third occurrence.
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
-function shareLists(rec, el) {
-  // Re-copied once here, riders included: the identity's own object was built by keyed
-  // stores (dictionary mode in V8) and every twin spreads it — off a spread-made copy the
-  // 500-row table's twins clone 6 ms faster, and only identities WITH twins pay the copy.
+function shareLists(rec, el, copyForSpread = true, buildSignature = true) {
+  // Historical element path: the identity's own object was built by keyed stores (dictionary
+  // mode in V8), and twins that spread it clone faster from a spread-made copy. Pseudo overlays
+  // never spread the base, so paying that copy merely to build rr/signature is wasted work.
   const src = rec.snap
-  const stored = rec.snap = { ...src }
-  Object.defineProperty(stored, '__needsBgInline', { value: src.__needsBgInline, enumerable: false })
-  if (src.__bgClipTextFix !== undefined) {
-    Object.defineProperty(stored, '__bgClipTextFix', { value: src.__bgClipTextFix, enumerable: false })
+  let stored = src
+  if (copyForSpread) {
+    stored = rec.snap = { ...src }
+    Object.defineProperty(stored, '__needsBgInline', { value: src.__needsBgInline, enumerable: false })
+    if (src.__bgClipTextFix !== undefined) {
+      Object.defineProperty(stored, '__bgClipTextFix', { value: src.__bgClipTextFix, enumerable: false })
+    }
   }
   const scan = scanFor(el.ownerDocument || document)
   const attr = (el.getAttribute && el.getAttribute('style')) || ''
@@ -2202,11 +2280,8 @@ function shareLists(rec, el) {
   }
   if (rec.h && !('height' in stored)) rrList.push('height')
   if (rec.b && !('block-size' in stored)) rrList.push('block-size')
-  const rrSet = new Set(rrList)
-  const staticParts = []
-  for (const k in stored) { if (!rrSet.has(k)) staticParts.push(k, stored[k]) }
   rec.rr = rrList
-  rec.sig = staticParts.join('\u0001') + '\u0002' + rrList.join('\u0001')
+  if (buildSignature) shareSignature(rec)
   return rrList
 }
 
@@ -2237,13 +2312,30 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const snaps = st.pseudo || (st.pseudo = new Map())
   const rec = snaps.get(key)
   if (rec) {
-    const snap = { ...rec.snap }
-    const rr = rec.rr || shareLists(rec, source)
+    const useOverlay = options?.__styleSharePseudoOverlay !== false
+    const useKeyCache = options?.__styleSharePseudoKeyCache !== false
+    // rec.rr is the free reuse-count oracle: it is null until occurrence #2 builds the plan.
+    // Therefore only occurrence #3+ can possibly amortize a generated-key cache entry. Pair-only
+    // identities keep the overlay win on occurrence #2 but pay ZERO signature/map bookkeeping.
+    const cacheEligible = useKeyCache && !session?.__pseudoStyleKeyCacheDisabled && rec.rr !== null
+    const rr = rec.rr || shareLists(rec, source, !useOverlay, false)
+    const snap = useOverlay ? Object.create(rec.snap) : { ...rec.snap }
+    if (cacheEligible) __sharedPseudoSnapshots.add(snap)
+    // Compact signatures exist solely for the R7-P key-cache leg. Keeping them out of the
+    // overlay-only and pair-only paths makes those experiments measure representation/allocation
+    // only. The static half is likewise deferred until the first actually cacheable (#3) twin.
+    const dyn = useOverlay && cacheEligible ? [] : null
     for (let i = 0; i < rr.length; i++) {
       const v = style.getPropertyValue(rr[i])
       if (v) snap[rr[i]] = v
+      // Deleting an overlay slot would reveal the base's value. Empty is the tombstone: every
+      // pseudo style consumer already treats it as absent, while for...in suppresses the same
+      // inherited property with the own slot.
+      else if (useOverlay) snap[rr[i]] = ''
       else delete snap[rr[i]]
+      if (dyn) dyn.push(v)
     }
+    if (dyn) __snapshotSig.set(snap, shareSignature(rec) + '\u0002' + dyn.join('\u0001'))
     return snap
   }
   const snap = snapshotComputedStyle(style, pseudoUniverseFor(source))
