@@ -2369,23 +2369,33 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   // carrying it lets the frozen parent/child dimensions reproduce that alignment.
   // Keep ordinary nonzero used margins unchanged, and respect excluded properties.
   let restoredAutoMargin = false
-  let probeAutoMargin = true
-  if (options?.__autoMarginProbeGate !== false) {
-    const doc = el.ownerDocument || document
-    const root = el.getRootNode?.()
-    const outsideDocumentScan = root !== doc || !!el.shadowRoot || !!el.assignedSlot
-    if (!outsideDocumentScan) {
-      const scan = scanFor(doc)
-      const inline = el.getAttribute?.('style') || ''
-      probeAutoMargin = !!scan.marginMayBeAuto || !!scan.hasAnimations ||
-        UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
-        AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)
-    }
-  }
-  if (probeAutoMargin && typeof el.computedStyleMap === 'function') {
+  if (typeof el.computedStyleMap === 'function') {
     let typed
+    const gateAutoMargin = options?.__autoMarginProbeGate !== false
+    let gateResolved = !gateAutoMargin
+    let probeAutoMargin = true
     for (const prop of MARGIN_PROPS) {
       if (snap[prop] !== '0px') continue
+      // Resolve the semantic admission proof lazily at the first margin Typed OM could
+      // actually change. This keeps the historical false-counterfactual on its original
+      // single loop, avoids any classifier work for R3 snapshots with no eligible margin,
+      // and avoids a second eight-property pre-pass on the twin-heavy fast path.
+      if (!gateResolved) {
+        gateResolved = true
+        const doc = el.ownerDocument || document
+        const root = el.getRootNode?.()
+        const outsideDocumentScan = root !== doc || !!el.shadowRoot || !!el.assignedSlot
+        if (!outsideDocumentScan) {
+          const scan = scanFor(doc)
+          const inline = el.getAttribute?.('style') || ''
+          probeAutoMargin = !!scan.marginMayBeAuto || !!scan.hasAnimations ||
+            UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
+            AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)
+        }
+      }
+      // The proof is element-wide: if no source can produce an auto margin, no remaining
+      // zero-margin property can benefit from a Typed-OM lookup either.
+      if (!probeAutoMargin) break
       try {
         typed ||= el.computedStyleMap()
         if (typed.get(prop)?.toString() === 'auto') {
