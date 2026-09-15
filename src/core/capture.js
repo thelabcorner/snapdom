@@ -339,6 +339,7 @@ export async function captureDOM(element, options) {
     try {
       options.__retain({
         clone, nodeMap, styleCache, styleMap: options.__session.styleMap,
+        scrollObservations: options.__session.__scrollObservations || null,
         classPrefixCSS, fontsCSS, clipWindow, outerTransforms, outerShadows, rootTransform2D,
         __compressedAssets: options.__compressedAssets,
         __compressionDensity: options.__compressionDensity,

@@ -497,6 +497,30 @@ function collectScrollNodes(element, state) {
   state.scrollNodes = out
 }
 
+/** Rebuild the post-full-capture scroll watch list from observations the clone-preparation pass
+ * already made. `wrapScrolledClone()` necessarily reads scrollLeft/scrollTop for every captured
+ * source node, and inlineAllStyles has already populated the computed-style cache used to decide
+ * which zero-offset boxes can become programmatically scrolled. Reusing that information avoids
+ * a second subtree query plus four layout-sensitive geometry getters per element.
+ *
+ * Ancestors remain unconditional: scrolling any containing scroller changes what the capture root
+ * paints even though it lives outside the retained nodeMap. A malformed/missing observation list
+ * returns false so callers fail open to the historical full census. */
+function adoptRetainedScrollNodes(element, state, observations) {
+  if (!Array.isArray(observations)) return false
+  const out = []
+  const seen = new Set()
+  const add = (el) => {
+    if (!el || seen.has(el)) return
+    seen.add(el)
+    out.push(el)
+  }
+  for (let el = element; el; el = el.parentElement) add(el)
+  for (let i = 0; i < observations.length; i++) add(observations[i]?.[0])
+  state.scrollNodes = out
+  return true
+}
+
 /** State that can change what paints while producing no MutationRecord. It is sampled before
  *  every possible memo serve, so same-task property writes and browser preference changes do
  *  not depend on asynchronous event delivery. Sample the tracked controls/images/scrollers;
@@ -958,7 +982,10 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
           state.retained = pendingRetained
           state.retainedFrameDriven = retainedHasFrameDriven(pendingRetained)
           collectControls(element, state)
-          collectScrollNodes(element, state)
+          if (context.__burstRetainedScrollObservations === false ||
+              !adoptRetainedScrollNodes(element, state, pendingRetained.scrollObservations)) {
+            collectScrollNodes(element, state)
+          }
         } else if (usedDiff) {
           // Diff mutates the retained clone/maps in place. Inspect only rebuilt roots: this
           // closes static→animated blob/extensionless changes without a whole-clone rescan.

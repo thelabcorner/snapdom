@@ -54,6 +54,11 @@ export async function prepareClone(element, options = {}) {
     nodeMap: session.nodeMap,
     options
   }
+  // Burst's retained-state commit can reuse the scroll offsets this pass must read anyway.
+  // Allocate nothing for ordinary/non-retained captures or for the explicit counterfactual.
+  const retainScrollObservations = typeof options.__retain === 'function' &&
+    options.__burstRetainedScrollObservations !== false
+  if (retainScrollObservations) session.__scrollObservations = []
 
   let clipWindow = null
   let clipRect = null
@@ -326,7 +331,18 @@ export async function prepareClone(element, options = {}) {
     // scroll — un-scrolling the root here would compensate twice (blank output when
     // capturing a scrolled documentElement).
     if (sessionCache.clip && originalNode === element) continue
-    wrapScrolledClone(cloneNode, originalNode)
+    const observed = wrapScrolledClone(cloneNode, originalNode)
+    if (retainScrollObservations && observed) {
+      const computed = sessionCache.styleCache.get(originalNode)
+      let ox = '', oy = ''
+      try {
+        ox = computed?.overflowX || computed?.getPropertyValue?.('overflow-x') || ''
+        oy = computed?.overflowY || computed?.getPropertyValue?.('overflow-y') || ''
+      } catch { /* unknown style => retain conservatively below */ }
+      const mayScroll = !computed || observed.x || observed.y ||
+        (ox !== 'visible' && ox !== 'clip') || (oy !== 'visible' && oy !== 'clip')
+      if (mayScroll) session.__scrollObservations.push([originalNode, observed.x, observed.y])
+    }
   }
   // The root clone is the foreignObject's content now, so whatever placed it in the page
   // (margin, inset offsets, float) is zeroed and its transform keeps scale/skew only. The
@@ -460,7 +476,9 @@ export function wrapScrolledClone(cloneNode, originalNode) {
   const hasScroll = scrollX || scrollY
   // Realm-safe HTML check: iframe-realm clones are not instances of this window's
   // HTMLElement, but their scroll still needs compensating.
-  if (!hasScroll || cloneNode?.nodeType !== 1 || cloneNode.namespaceURI !== 'http://www.w3.org/1999/xhtml') return
+  if (!hasScroll || cloneNode?.nodeType !== 1 || cloneNode.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
+    return { x: scrollX || 0, y: scrollY || 0 }
+  }
   cloneNode.style.overflow = 'hidden'
   cloneNode.style.scrollbarWidth = 'none'
   cloneNode.style.msOverflowStyle = 'none'
@@ -497,4 +515,5 @@ export function wrapScrolledClone(cloneNode, originalNode) {
     inner.appendChild(cloneNode.firstChild)
   }
   cloneNode.appendChild(inner)
+  return { x: scrollX || 0, y: scrollY || 0 }
 }
