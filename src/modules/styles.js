@@ -2624,7 +2624,12 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     clone.style.setProperty('-webkit-text-fill-color', snap.__bgClipTextFix, 'important')
   }
 
-  const gutterMask = addScrollbarGutter(source, pre, snap)
+  const gutterMask = addScrollbarGutter(
+    source,
+    pre,
+    snap,
+    ctx.options?.__gutterSnapshotReuse !== false,
+  )
   if (gutterMask) {
     // Encode the actual final values, not just the gutter width. Two twins can reach the same
     // gutter through different pre-gutter used widths, and only equal FINAL snapshots may share
@@ -2701,18 +2706,43 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
  * @param {Element} source
  * @param {CSSStyleDeclaration} pre
  * @param {Record<string,string>} snap
+ * @param {boolean} [reuseSnapshot=true] read an exact captured value when available; false is
+ *   the historical live-CSSOM counterfactual used only by tests/benchmarks
  */
-export function addScrollbarGutter(source, pre, snap) {
-  const ox = pre.getPropertyValue('overflow-x')
-  const oy = pre.getPropertyValue('overflow-y')
+export function addScrollbarGutter(source, pre, snap, reuseSnapshot = true) {
+  // These are same-capture common subexpressions, not inferred defaults. The snapshot values
+  // were read from this exact computed style and none of these properties are sanitized later.
+  // A pruned/excluded/UA-only property simply misses `in snap` and takes the historical browser
+  // oracle. `in` intentionally sees R7 prototype-backed snapshots too.
+  const ox = reuseSnapshot && 'overflow-x' in snap
+    ? snap['overflow-x']
+    : pre.getPropertyValue('overflow-x')
+  const oy = reuseSnapshot && 'overflow-y' in snap
+    ? snap['overflow-y']
+    : pre.getPropertyValue('overflow-y')
   if ((ox === 'visible' || !ox) && (oy === 'visible' || !oy)) return 0
-  if (pre.getPropertyValue('box-sizing') === 'border-box') return 0
+  const boxSizing = reuseSnapshot && 'box-sizing' in snap
+    ? snap['box-sizing']
+    : pre.getPropertyValue('box-sizing')
+  if (boxSizing === 'border-box') return 0
   if (typeof source.clientWidth !== 'number' || !source.offsetWidth) return 0
   const px = (v) => parseFloat(v) || 0
+  const bl = reuseSnapshot && 'border-left-width' in snap
+    ? snap['border-left-width']
+    : pre.getPropertyValue('border-left-width')
+  const br = reuseSnapshot && 'border-right-width' in snap
+    ? snap['border-right-width']
+    : pre.getPropertyValue('border-right-width')
+  const bt = reuseSnapshot && 'border-top-width' in snap
+    ? snap['border-top-width']
+    : pre.getPropertyValue('border-top-width')
+  const bb = reuseSnapshot && 'border-bottom-width' in snap
+    ? snap['border-bottom-width']
+    : pre.getPropertyValue('border-bottom-width')
   const vGutter = source.offsetWidth - source.clientWidth -
-    px(pre.getPropertyValue('border-left-width')) - px(pre.getPropertyValue('border-right-width'))
+    px(bl) - px(br)
   const hGutter = source.offsetHeight - source.clientHeight -
-    px(pre.getPropertyValue('border-top-width')) - px(pre.getPropertyValue('border-bottom-width'))
+    px(bt) - px(bb)
   let changed = 0
   const bump = (prop, gutter) => {
     // `snap` is cross-capture cached before this node-local correction runs. Derive the

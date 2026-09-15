@@ -65,6 +65,36 @@ describe('#498 classic scrollbar gutter on content-box scroll containers', () =>
     'border-left-width': '1px', 'border-right-width': '1px',
   }
 
+  it('reuses exact snapshot gutter inputs and fails back to live CSSOM when one is absent', () => {
+    const source = { offsetWidth: 308, clientWidth: 306, offsetHeight: 200, clientHeight: 184 }
+    const snap = {
+      width: '306px', height: '184px',
+      'overflow-x': 'auto', 'overflow-y': 'auto', 'box-sizing': 'content-box',
+      'border-top-width': '1px', 'border-bottom-width': '1px',
+      'border-left-width': '1px', 'border-right-width': '1px',
+    }
+    const calls = []
+    const counted = { getPropertyValue: (p) => { calls.push(p); return { ...base, width: '306px', height: '184px' }[p] ?? '' } }
+    addScrollbarGutter(source, counted, { ...snap })
+    // The horizontal gutter changes height, whose LIVE baseline must still be read to keep the
+    // cross-capture idempotence contract. Every immutable gutter input comes from the snapshot.
+    expect(calls).toEqual(['height'])
+
+    calls.length = 0
+    const missingOverflow = { ...snap }
+    delete missingOverflow['overflow-x']
+    addScrollbarGutter(source, counted, missingOverflow)
+    expect(calls).toContain('overflow-x')
+
+    calls.length = 0
+    addScrollbarGutter(source, counted, { ...snap }, false)
+    expect(calls).toEqual([
+      'overflow-x', 'overflow-y', 'box-sizing',
+      'border-left-width', 'border-right-width', 'border-top-width', 'border-bottom-width',
+      'height',
+    ])
+  })
+
   it('adds the horizontal scrollbar height back to a frozen height', () => {
     // Live numbers from the report's #demo2 > div in Chrome with classic scrollbars.
     const source = { offsetWidth: 308, clientWidth: 306, offsetHeight: 200, clientHeight: 184 }
