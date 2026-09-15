@@ -2006,6 +2006,18 @@ function snapshotIsCurrent(rec, el) {
  *    decided from the identity's own read, so a table pays nothing for either. */
 const LAYOUT_ALWAYS_RE = /^(width|height|inline-size|block-size|top|right|bottom|left|transform-origin|perspective-origin)$|^inset-/
 const UNSTABLE_INLINE_RE = /(margin|padding)[a-z-]*\s*:[^;]*(%|\bauto\b|calc\(|var\()/i
+const AUTO_MARGIN_INLINE_RE = /margin[a-z-]*\s*:[^;]*(\bauto\b|var\(|attr\(|\binherit\b|\brevert(?:-layer)?\b)/i
+const AUTO_MARGIN_INLINE_ALL_RE = /(?:^|;)\s*all\s*:\s*(?:inherit|revert(?:-layer)?)(?:\s*!important)?\s*(?:;|$)/i
+const UA_AUTO_MARGIN_TAGS = new Set(['DIALOG', 'HR'])
+
+// Legacy HTML presentational hints live outside author stylesheets and inline CSS, so styleScan
+// cannot prove them absent. `<table align="center">` maps to auto inline margins in Chromium and
+// WebKit (and engines are free to implement the hint similarly elsewhere). Treat any table align
+// hint conservatively: this path is rare, and a false positive only pays the historical Typed-OM
+// probe while a false negative can freeze a used pixel margin and lose centering after clone work.
+function hasPresentationalAutoMargin(el) {
+  return el?.tagName === 'TABLE' && !!el.hasAttribute?.('align')
+}
 const SHARE_SKIP_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGROUP', 'PROGRESS', 'METER', 'BUTTON', 'DATALIST'])
 
 /** The capture's share state, made on first use: identity ids per node, the intern table,
@@ -2357,7 +2369,20 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   // carrying it lets the frozen parent/child dimensions reproduce that alignment.
   // Keep ordinary nonzero used margins unchanged, and respect excluded properties.
   let restoredAutoMargin = false
-  if (typeof el.computedStyleMap === 'function') {
+  let probeAutoMargin = true
+  if (options?.__autoMarginProbeGate !== false) {
+    const doc = el.ownerDocument || document
+    const root = el.getRootNode?.()
+    const outsideDocumentScan = root !== doc || !!el.shadowRoot || !!el.assignedSlot
+    if (!outsideDocumentScan) {
+      const scan = scanFor(doc)
+      const inline = el.getAttribute?.('style') || ''
+      probeAutoMargin = !!scan.marginMayBeAuto || !!scan.hasAnimations ||
+        UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
+        AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)
+    }
+  }
+  if (probeAutoMargin && typeof el.computedStyleMap === 'function') {
     let typed
     for (const prop of MARGIN_PROPS) {
       if (snap[prop] !== '0px') continue

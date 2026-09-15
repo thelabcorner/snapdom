@@ -40,6 +40,41 @@ describe('computePropertyUniverse', () => {
       anim.cancel()
     }
   })
+
+  it('separates auto-capable margins from percentage/calc layout instability', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    document.head.appendChild(style)
+
+    style.textContent = '.zz-m { margin-left: 10%; margin-right: calc(2px + 1%); }'
+    let scan = scanAuthorStyles(document)
+    expect(scan.marginUnstable).toBe(true)
+    expect(scan.marginMayBeAuto).toBe(false)
+
+    style.textContent = '.zz-m { margin-left: auto; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { --m: auto; margin-left: var(--m); }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { margin-left: inherit; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: inherit; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: revert; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: initial; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(false)
+  })
 })
 
 describe('pseudo selector gates', () => {

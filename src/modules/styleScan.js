@@ -95,6 +95,11 @@ const MAX_SCAN_RULES = 20000
  *  hit path to keep re-reading that family per node. Fixed lengths (px/em/rem) compute
  *  identically for twins by construction — same matched rules, same inherited inputs. */
 const UNSTABLE_LAYOUT_VALUE_RE = /%|\bauto\b|calc\(|var\(/i
+// Values that can make a non-inherited margin compute to the `auto` keyword that
+// getComputedStyle() later exposes as used 0px. var()/attr()/inherit/revert stay conservative:
+// their final value can come from state outside this declaration's literal text.
+const MARGIN_MAY_BE_AUTO_RE = /\bauto\b|var\(|attr\(|\binherit\b|\brevert(?:-layer)?\b/i
+const ALL_MAY_INHERIT_AUTO_RE = /(?:^|;)\s*all\s*:\s*(?:inherit|revert(?:-layer)?)(?:\s*!important)?\s*(?:;|$)/i
 
 /** The pseudo-elements the per-node probe in pseudo.js resolves. The same rule walk that
  *  builds the property universe collects, per kind, the selectors able to generate that
@@ -327,6 +332,9 @@ function scanRules(rules, universe, pseudoSels, state) {
       } catch {
         state.elementUniverseBlocked = true
       }
+      if (!state.marginMayBeAuto && ALL_MAY_INHERIT_AUTO_RE.test(cssText)) {
+        state.marginMayBeAuto = true
+      }
       const pseudoRule = !!rule.selectorText && PSEUDO_ELEMENT_SEL_RE.test(rule.selectorText)
       for (let j = 0; j < style.length; j++) {
         const prop = style[j]
@@ -346,8 +354,12 @@ function scanRules(rules, universe, pseudoSels, state) {
         if (prop.length > 5 && (prop[0] === 'm' || prop[0] === 'p')) {
           const fam = prop.startsWith('margin') ? 'marginUnstable'
             : prop.startsWith('padding') ? 'paddingUnstable' : null
-          if (fam && !state[fam] && UNSTABLE_LAYOUT_VALUE_RE.test(readValue())) {
-            state[fam] = true
+          if (fam) {
+            const value = readValue()
+            if (!state[fam] && UNSTABLE_LAYOUT_VALUE_RE.test(value)) state[fam] = true
+            if (fam === 'marginUnstable' && !state.marginMayBeAuto && MARGIN_MAY_BE_AUTO_RE.test(value)) {
+              state.marginMayBeAuto = true
+            }
           }
         }
       }
@@ -829,6 +841,8 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   depends on container size rather than element structure alone.
  * - `marginUnstable` / `paddingUnstable`: a %, auto, calc() or var() value in that family
  *   anywhere, so twins re-read it.
+ * - `marginMayBeAuto`: an author margin value can compute to `auto`; false lets the snapshot
+ *   path skip Typed-OM keyword recovery for ordinary document-tree elements.
  * - `importantProps`: every property some rule declares `!important`.
  * - `styleIdentityDataAttrs`: data-* names observable by selectors/attr(), or null when the
  *   scan cannot prove observability completely. Used only to relax style-sharing identity.
@@ -840,7 +854,7 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -848,7 +862,7 @@ export function scanAuthorStyles(doc) {
   const unreliable = {
     universe: null, pseudoUniverse: null, usesHas: true, shareGate: null, sharePartition: null,
     styleIdentityDataAttrs: null,
-    marginUnstable: true, paddingUnstable: true, importantProps: null,
+    marginUnstable: true, marginMayBeAuto: true, paddingUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true,
@@ -866,6 +880,7 @@ export function scanAuthorStyles(doc) {
       dataAttrIdentityBlocked: false,
       inContainer: 0,
       marginUnstable: false,
+      marginMayBeAuto: false,
       paddingUnstable: false,
       importantProps: new Set(),
       pseudoProps: new Set(),
@@ -913,6 +928,7 @@ export function scanAuthorStyles(doc) {
       sharePartition: { blocked: state.sharePartitionBlocked, containerSels: state.shareContainerSels },
       styleIdentityDataAttrs: state.dataAttrIdentityBlocked ? null : state.dataAttrDeps,
       marginUnstable: state.marginUnstable,
+      marginMayBeAuto: state.marginMayBeAuto,
       paddingUnstable: state.paddingUnstable,
       importantProps: state.importantProps,
       elementRules: state.elementRules,
