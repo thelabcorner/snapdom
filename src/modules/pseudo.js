@@ -38,7 +38,13 @@ import {
   counterPairs
 } from '../modules/counter.js'
 import { snapFetch } from './snapFetch.js'
-import { pseudoGatesFor, pseudoUniverseFor, pseudoSnapshotFor, flushStyleInvalidations, invalidateStyleCaches } from './styles.js'
+import {
+  pseudoGatesFor,
+  pseudoUniverseFor,
+  pseudoSnapshotFor,
+  flushStyleInvalidations,
+  invalidateStyleCaches,
+} from './styles.js'
 
 /** Weak memo for per-document preflight results keyed by a cheap style fingerprint */
 const __preflightMemo = new WeakMap()
@@ -564,18 +570,26 @@ function resolveQuoteKeywords(raw, node) {
  * continuous across siblings), the pseudo's own reset/increment, counter() expansion, then
  * token collapsing so `"..."` pieces join with no gap.
  * @param {Element} node
- * @param {'::before'|'::after'} pseudo
  * @param {{get:Function, getStack:Function}} baseCtx
  * @param {WeakMap<Element, Map<string, number>>} siblingCounters - per-parent overrides, on the session
- * @returns {{ text: string, incs: Array<{name:string,num:number|undefined}> }}
+ * @param {CSSStyleDeclaration} pseudoStyle - the already-probed pseudo style from the caller
+ * @returns {{ text: string, incs: Array<{name:string,num:number|undefined}>, derived: object|null }}
  */
-function resolvePseudoContentAndIncs(node, pseudo, baseCtx, siblingCounters) {
-  let ps
-  try { ps = getStyle(node, pseudo) } catch { }
+function resolvePseudoContentAndIncs(node, baseCtx, siblingCounters, ps) {
   let raw = ps?.content
-  if (!raw || raw === 'none' || raw === 'normal') return { text: '', incs: [] }
+  if (!raw || raw === 'none' || raw === 'normal') return { text: '', incs: [], derived: null }
   raw = stripContentAltText(raw)
   raw = resolveQuoteKeywords(raw, node)
+
+  const resolvesCounters = hasCounters(raw)
+  const increment = ps?.counterIncrement
+  // Common case: literal pseudo content and no counter increment. Resets/sets cannot affect
+  // this pseudo's pixels without counter()/counters() content, and the existing sibling carry
+  // contract propagates increments only. Avoid the sibling wrapper, three counter parsers and
+  // derived-context Map entirely.
+  if (!resolvesCounters && (!increment || increment === 'none')) {
+    return { text: collapseCssContent(raw), incs: [], derived: null }
+  }
 
   // 1) sibling overrides
   const baseWithSiblings = withSiblingOverrides(node, baseCtx, siblingCounters)
@@ -584,13 +598,13 @@ function resolvePseudoContentAndIncs(node, pseudo, baseCtx, siblingCounters) {
   const derived = deriveCounterCtxForPseudo(node, ps, baseWithSiblings)
 
   // 3) resolve counter()/counters()
-  let resolved = hasCounters(raw)
+  let resolved = resolvesCounters
     ? resolveCountersInContent(raw, node, derived)
     : raw
 
   // 4) collapse tokens (drops the gap between "1" and "." -> "1.")
   const text = collapseCssContent(resolved)
-  return { text, incs: derived.__incs || [] }
+  return { text, incs: derived.__incs || [], derived }
 }
 
 /**
@@ -706,6 +720,13 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
   if (gates.marker !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.marker, '::marker', MARKER_PROPS)
   if (gates.firstLine !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.firstLine, '::first-line', FIRST_LINE_PROPS)
 
+  // Lazily memoize the host's normal computed style for this source node. A source can
+  // materialize both ::before and ::after (and occasionally ::first-letter); those branches
+  // historically repeated getStyle(source) even though getStyle itself had already memoized the
+  // same live CSSStyleDeclaration. Keep the memo local to this source's pseudo walk so no style
+  // lifetime/invalidation semantics change.
+  let hostStyle = null
+
   for (const pseudo of ['::before', '::after', '::first-letter']) {
     const gate = gates[pseudo === '::before' ? 'before' : pseudo === '::after' ? 'after' : 'firstLetter']
     if (gate !== null) {
@@ -741,7 +762,7 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
       }
 
       if (pseudo === '::first-letter') {
-        const normal = getStyle(source)
+        const normal = hostStyle ||= getStyle(source)
         // #406: wrapping the first letter in a <span> inside a flex/grid container
         // creates a new flex item; gap then inserts unwanted space (e.g. "S end Invite").
         const disp = (normal?.display || '').toLowerCase()
@@ -800,8 +821,8 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
       const rawContent = style.content ?? ''
 const isNoExplicitContent =
   rawContent === '' || rawContent === 'none' || rawContent === 'normal'
-const { text: cleanContent, incs } =
-  resolvePseudoContentAndIncs(source, pseudo, counterCtx, sessionCache.__siblingCounters)
+const { text: cleanContent, incs, derived: pseudoCounterCtx } =
+  resolvePseudoContentAndIncs(source, counterCtx, sessionCache.__siblingCounters, style)
 
       const bg = style.backgroundImage
       const bgColor = style.backgroundColor
@@ -854,9 +875,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
             if (!name) continue
             // Rebuild the final value from `derived` by asking for it again, using
             // withSiblingOverrides + derive so it stays consistent with the read above
-            const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-            const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
-            const finalVal = derived.get(source, name)
+            const finalVal = pseudoCounterCtx.get(source, name)
             map.set(name, finalVal)
           }
           sessionCache.__siblingCounters.set(source.parentElement, map)
@@ -875,9 +894,9 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       const isImageContent = cleanContent.startsWith('url(') || /^-?(?:webkit-)?image-set\(/i.test(cleanContent)
       let pinNowrap = false
       if (hasExplicitContent && !isIconFont2 && cleanContent.length > 1 && !isImageContent) {
-        const hostStyle = getStyle(source)
-        const fs = parseFloat(hostStyle.fontSize) || 16
-        let lh = parseFloat(hostStyle.lineHeight)
+        const host = hostStyle ||= getStyle(source)
+        const fs = parseFloat(host.fontSize) || 16
+        let lh = parseFloat(host.lineHeight)
         if (!Number.isFinite(lh)) lh = fs * 1.5
         const rect = source.getBoundingClientRect()
         if (rect.height < lh * 1.6) {
@@ -898,7 +917,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // kept verbatim, otherwise a blockified flex-item dot collapses to 0 and a
       // display:block dot stretches to the host width. The pseudo's parent box is the
       // host itself, so flex-item-ness comes from the host's display (#406: no floor).
-      const hostDisplay = (getStyle(source).display || '').toLowerCase()
+      const hostDisplay = ((hostStyle ||= getStyle(source)).display || '').toLowerCase()
       const pseudoIsFlexItem = hostDisplay.includes('flex') || hostDisplay.includes('grid')
       if (pseudoIsFlexItem) {
         const mw = snapshot['min-width']
@@ -1003,11 +1022,9 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // Before inserting: when the pseudo incremented anything, propagate the final value to siblings
       if (incs && incs.length && source.parentElement) {
         const map = sessionCache.__siblingCounters.get(source.parentElement) || new Map()
-        const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-        const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
         for (const { name } of incs) {
           if (!name) continue
-          const finalVal = derived.get(source, name)
+          const finalVal = pseudoCounterCtx.get(source, name)
           map.set(name, finalVal)
         }
         sessionCache.__siblingCounters.set(source.parentElement, map)
