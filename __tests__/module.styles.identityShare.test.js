@@ -78,6 +78,36 @@ describe('identity share — the fast path itself', () => {
     const off = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
     expect(on).toBe(off)
   })
+
+  it('does not leak a first-twin classic scrollbar gutter into later twins', async () => {
+    const el = mount(
+      `<div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>`,
+      `.gutter-first{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}
+       .gutter-first>i{display:block;height:10px}`
+    )
+    const [a, b, c] = el.querySelectorAll('.gutter-first')
+    for (const [node, offsetWidth, clientWidth] of [[a, 137, 120], [b, 120, 120], [c, 120, 120]]) {
+      Object.defineProperties(node, {
+        offsetWidth: { configurable: true, get: () => offsetWidth },
+        clientWidth: { configurable: true, get: () => clientWidth },
+        offsetHeight: { configurable: true, get: () => 40 },
+        clientHeight: { configurable: true, get: () => 40 },
+      })
+    }
+
+    await settle()
+    const sharedCopy = await snapdom.toRaw(el, {
+      burst: false, cache: 'disabled', __styleShareSnapshotOverlay: false,
+    })
+    await settle()
+    const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    await settle()
+    const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(sharedCopy).toBe(full)
+    expect(shared).toBe(full)
+  })
 })
 
 describe('identity share — the gates, in pixels', () => {
@@ -262,9 +292,14 @@ describe('identity share — layout re-read narrowing', () => {
     }
 
     await settle()
+    const sharedCopy = await snapdom.toRaw(el, {
+      burst: false, cache: 'disabled', __styleShareSnapshotOverlay: false,
+    })
+    await dirty(el)
     const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
     await dirty(el)
     const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(sharedCopy).toBe(full)
     expect(shared).toBe(full)
   })
 })

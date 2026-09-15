@@ -1909,6 +1909,10 @@ function usedWidthDiffersFromAvailable(el, cs) {
 }
 
 const __snapshotSig = new WeakMap()
+// R7 experiment marker. A shared overlay inherits the identity's static snapshot and owns only
+// the handful of used-value/local-correction properties that differ on this twin. Weak marking
+// keeps the representation invisible to every snapshot consumer and to for...in style emission.
+const __snapshotOverlays = new WeakSet()
 /** The snapshot's key into snapshotKeyCache, memoized per snapshot object. */
 function styleSignature(snap) {
   let sig = __snapshotSig.get(snap)
@@ -2319,7 +2323,9 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     // all non-geometry computed values, identical between identity twins by construction
     // (same matched rules; animations disable the share). Recomputing the flag per twin was
     // 7 live reads a node for an answer the identity already holds.
-    snap = { ...shared.snap }
+    const useOverlay = options?.__styleShareSnapshotOverlay !== false
+    snap = useOverlay ? Object.create(shared.snap) : { ...shared.snap }
+    if (useOverlay) __snapshotOverlays.add(snap)
     // Direct loop over the identity's re-read list (built on its first twin): the old form
     // walked all ~150 keys with a regex test per key, per twin (10.8ms of getSnapshot
     // self-time on the 500-row table, profiled). The values feed `dyn`, which composes this
@@ -2331,12 +2337,18 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       const p = rrList[i]
       const v = style.getPropertyValue(p)
       if (v) snap[p] = v
+      // `delete` would expose the inherited identity value on an overlay. An empty own value is
+      // the tombstone: every existing style consumer already treats empty as absent, and an own
+      // property suppresses the prototype's same-named enumerable property during for...in.
+      else if (useOverlay) snap[p] = ''
       else delete snap[p]
       dyn.push(v)
     }
-    Object.defineProperty(snap, '__needsBgInline', { value: shared.snap.__needsBgInline, enumerable: false })
-    if (shared.snap.__bgClipTextFix !== undefined) {
-      Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
+    if (!useOverlay) {
+      Object.defineProperty(snap, '__needsBgInline', { value: shared.snap.__needsBgInline, enumerable: false })
+      if (shared.snap.__bgClipTextFix !== undefined) {
+        Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
+      }
     }
   } else {
     const docUniverse = universeFor(el)
@@ -2410,8 +2422,10 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     if (restoredAutoMargin) dyn.push('\u0005', ...MARGIN_PROPS.map(prop => snap[prop]))
     // Seed the signature memo AFTER the strip: it deletes at most height/block-size, and two
     // twins with different strip outcomes must not collide onto one key.
+    const hasHeight = __snapshotOverlays.has(snap) ? snap.height !== '' && snap.height !== undefined : 'height' in snap
+    const hasBlockSize = __snapshotOverlays.has(snap) ? snap['block-size'] !== '' && snap['block-size'] !== undefined : 'block-size' in snap
     __snapshotSig.set(snap, shared.sig + '\u0002' + dyn.join('\u0001') +
-      ('height' in snap ? '' : '\u0003') + ('block-size' in snap ? '' : '\u0004'))
+      (hasHeight ? '' : '\u0003') + (hasBlockSize ? '' : '\u0004'))
   }
   const hosts = shadowHostsOf(el)
   snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
@@ -2913,6 +2927,12 @@ function stripHeightForWrappers(el, cs, snap) {
   if (Number.isFinite(usedH) && Number.isFinite(autoH) && Math.abs(usedH - autoH) > TOL) return
 
   // 7) Now drop height and block-size from the snapshot
-  delete snap.height
-  delete snap['block-size']
+  if (__snapshotOverlays.has(snap)) {
+    // Tombstone inherited dimensions without materializing/copying the identity snapshot.
+    snap.height = ''
+    snap['block-size'] = ''
+  } else {
+    delete snap.height
+    delete snap['block-size']
+  }
 }
