@@ -324,4 +324,37 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(linearRoot, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('keeps full-pass planning exact when an old scout would miss an unsampled outlier', async () => {
+    let css = ''
+    // Positions sampled by the old 0/powers-of-two/last scout all expose the SAME alternative,
+    // while position 3 is an unsampled different value. The scout therefore used to declare the
+    // bucket homogeneous and skip planning entirely, missing a highly selective partition. This
+    // is the exact hole the sampling heuristic could not observe; the three-arm byte oracle below
+    // ensures the full-pass planner still preserves semantics.
+    const attrs = ['common', 'common', 'common', 'needle', 'common', 'common', 'common', 'common', 'common']
+    for (let i = 0; i < attrs.length; i++) {
+      css += attrs[i]
+        ? `.idx-row[data-state="${attrs[i]}"]{outline-offset:${i + 1}px}`
+        : `.idx-row{outline-offset:${i + 1}px}`
+    }
+    installCSS(css)
+    const make = () => {
+      const root = scene()
+      const row = root.querySelector('.idx-row')
+      row.dataset.state = 'needle'
+      return root
+    }
+
+    const indexedRoot = make()
+    const indexed = await raw(indexedRoot, { __elementRuleIndex: true })
+    indexedRoot.remove()
+    const fixedRoot = make()
+    const fixed = await raw(fixedRoot, { __elementRuleIndex: true, __elementRuleKeySelectivity: false })
+    fixedRoot.remove()
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+    expect(indexed).toBe(fixed)
+    expect(indexed).toBe(linear)
+  })
 })

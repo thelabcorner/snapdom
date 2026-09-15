@@ -163,6 +163,30 @@ function decodeCssEscapes(text) {
 const CSS_WS_RE = /[\t\n\f\r ]/
 const ATTR_FUNCTION_RE = /(?:^|[^-_a-zA-Z0-9])attr\s*\(/i
 
+/** Return the final source index consumed by one CSS escape starting at `i`. CSS hex escapes
+ * consume 1-6 hex digits plus one optional whitespace terminator. Keeping this tiny tokenizer
+ * primitive shared matters: every selector-scanning fast path must agree on where syntax
+ * boundaries actually are or an escaped punctuation character can become a false key. */
+function skipCssEscape(text, i) {
+  if (++i >= text.length) return i
+  if (/[0-9a-fA-F]/.test(text[i])) {
+    let count = 1
+    while (count < 6 && i + 1 < text.length && /[0-9a-fA-F]/.test(text[i + 1])) { i++; count++ }
+    if (i + 1 < text.length && CSS_WS_RE.test(text[i + 1])) {
+      if (text[i + 1] === '\r' && text[i + 2] === '\n') i++
+      i++
+    }
+  }
+  return i
+}
+
+/** Return the closing slash index for a CSS comment starting at `i`. */
+function skipCssComment(text, i) {
+  if (text[i] !== '/' || text[i + 1] !== '*') return i
+  const end = text.indexOf('*/', i + 2)
+  return end < 0 ? text.length - 1 : end + 1
+}
+
 function mayContainAttrFunction(text) {
   if (!text) return false
   if (ATTR_FUNCTION_RE.test(text)) return true
@@ -178,22 +202,7 @@ function collectSelectorDataAttrs(selector, state) {
   let quote = null
   for (let i = 0; i < n;) {
     const c = selector[i]
-    if (c === '\\') {
-      // Skip one CSS escape, including a hex escape's digits/terminating whitespace. Decoding
-      // happens on the attribute-name token itself below.
-      i++
-      if (i >= n) break
-      if (/[0-9a-fA-F]/.test(selector[i])) {
-        let count = 1
-        while (count < 6 && i + 1 < n && /[0-9a-fA-F]/.test(selector[i + 1])) { i++; count++ }
-        if (i + 1 < n && CSS_WS_RE.test(selector[i + 1])) {
-          if (selector[i + 1] === '\r' && selector[i + 2] === '\n') i++
-          i++
-        }
-      }
-      i++
-      continue
-    }
+    if (c === '\\') { i = skipCssEscape(selector, i) + 1; continue }
     if (quote) { if (c === quote) quote = null; i++; continue }
     if (c === '"' || c === "'") { quote = c; i++; continue }
     if (c !== '[') { i++; continue }
@@ -205,17 +214,10 @@ function collectSelectorDataAttrs(selector, state) {
     while (i < n) {
       const x = selector[i]
       if (x === '\\') {
-        const start = i++
-        if (i >= n) { token += '\\'; break }
-        if (/[0-9a-fA-F]/.test(selector[i])) {
-          let count = 1
-          while (count < 6 && i + 1 < n && /[0-9a-fA-F]/.test(selector[i + 1])) { i++; count++ }
-          if (i + 1 < n && CSS_WS_RE.test(selector[i + 1])) {
-            if (selector[i + 1] === '\r' && selector[i + 2] === '\n') i++
-            i++
-          }
-        }
-        token += selector.slice(start, ++i)
+        const start = i
+        i = skipCssEscape(selector, i)
+        token += selector.slice(start, i + 1)
+        i++
         continue
       }
       if (x === '|' && selector[i + 1] !== '=') {
@@ -242,11 +244,12 @@ function collectSelectorDataAttrs(selector, state) {
     // literal "[data-x]" inside a value cannot be mistaken for another selector dependency.
     let innerQuote = null
     while (i < n) {
-      const x = selector[i++]
-      if (x === '\\') { if (i < n) i++; continue }
-      if (innerQuote) { if (x === innerQuote) innerQuote = null; continue }
-      if (x === '"' || x === "'") { innerQuote = x; continue }
-      if (x === ']') break
+      const x = selector[i]
+      if (x === '\\') { i = skipCssEscape(selector, i) + 1; continue }
+      if (innerQuote) { if (x === innerQuote) innerQuote = null; i++; continue }
+      if (x === '"' || x === "'") { innerQuote = x; i++; continue }
+      if (x === ']') { i++; break }
+      i++
     }
   }
 }
@@ -450,31 +453,7 @@ function scanSheet(sheet, universe, pseudoSels, state) {
   return scanRules(rules, universe, pseudoSels, state)
 }
 
-/** Return the final source index consumed by one CSS escape starting at `i` (`text[i] === '\\'`).
- * CSS hex escapes consume 1-6 hex digits plus one optional whitespace terminator. Keeping this
- * tiny tokenizer primitive shared matters: every selector-scanning fast path must agree on where
- * syntax boundaries actually are or an escaped punctuation character can become a false key. */
-function skipCssEscape(text, i) {
-  if (++i >= text.length) return i
-  if (/[0-9a-fA-F]/.test(text[i])) {
-    let count = 1
-    while (count < 6 && i + 1 < text.length && /[0-9a-fA-F]/.test(text[i + 1])) { i++; count++ }
-    if (i + 1 < text.length && CSS_WS_RE.test(text[i + 1])) {
-      if (text[i + 1] === '\r' && text[i + 2] === '\n') i++
-      i++
-    }
-  }
-  return i
-}
-
-/** CSS comments are token whitespace. Return the closing slash index when one starts at `i`. */
-function skipCssComment(text, i) {
-  if (text[i] !== '/' || text[i + 1] !== '*') return i
-  const end = text.indexOf('*/', i + 2)
-  return end < 0 ? text.length - 1 : end + 1
-}
-
-/** Splits `sel` on `sep` outside parentheses, brackets, comments, escapes and quotes. */
+/** Splits `sel` on `sep` outside parentheses, brackets, comments, escapes, and quotes. */
 function splitTopLevel(sel, sep) {
   const out = []
   let depth = 0, quote = null, start = 0
@@ -492,8 +471,8 @@ function splitTopLevel(sel, sep) {
   return out
 }
 
-/** A direct attribute selector on the subject compound is a necessary match condition, just like
- * a tag/class/id. Return a bucket key only for simple lowercase, non-namespaced attribute names.
+/** Direct subject attributes are necessary match conditions. Bucket keys use simple lowercase
+ * names without namespace prefixes.
  * For exact, case-sensitive `data-*` equality strengthen presence (`a<name>`) to exact value
  * (`v<name>\0<value>`). We deliberately keep the value route data-* only: unlike many HTML
  * enumerated attributes, custom data values are case-sensitive by default. Functional-pseudo
@@ -593,10 +572,10 @@ function subjectTailOf(sel) {
   for (let i = 0; i < sel.length; i++) {
     const c = sel[i]
     if (c === '\\') {
-      // A combinator-looking code point can be part of an escaped identifier (`.gap\\+x`),
-      // and a hex escape may consume one whitespace terminator (`.gap\\2b x`). Neither is a
-      // compound boundary. D1's original scanner did not skip escapes here, which could turn a
-      // legal utility-class selector into a bogus tag key and incorrectly suppress the rule.
+      // A combinator-looking code point can be part of an escaped identifier, and a hex escape
+      // may consume one whitespace terminator. Neither is a compound boundary. D1's original
+      // scanner did not skip escapes here, which could turn a legal utility-class selector into
+      // a bogus tag key and incorrectly suppress the rule.
       i = skipCssEscape(sel, i)
       continue
     }
@@ -611,10 +590,11 @@ function subjectTailOf(sel) {
 }
 
 function subjectCompoundOf(subject) {
-  // Drop functional/attribute arguments: a class inside :not()/[…] is not a condition on the subject.
-  // Escaped delimiters are identifier code points, not syntax. Treating `.foo\\[bar` as an
-  // attribute opener can truncate the subject and manufacture a bogus class key — exactly the
-  // kind of rare CSS-token edge case that can turn a performance hint into a fidelity bug.
+  // Drop functional/attribute arguments: a class inside a functional pseudo or attribute selector
+  // is not itself a condition on the subject.
+  // Escaped delimiters are identifier code points, not syntax. Treating one as an attribute
+  // opener can truncate the subject and manufacture a bogus class key, turning a performance
+  // hint into a fidelity bug.
   let compound = '', d = 0, quote = null
   for (let i = 0; i < subject.length; i++) {
     const c = subject[i]
@@ -652,9 +632,9 @@ function simpleSubjectIdent(m) {
   return m.replace(/\\(.)/g, '$1')
 }
 
-/** A necessary condition for `sel` to match an element, as a cheap subtree-presence key:
- *  the first class, else the id, else a direct attribute, else the tag of its RIGHTMOST compound
- *  (the compound the subject itself must satisfy). null = no usable key, always a candidate. */
+/** A necessary condition for `sel` to match an element, as a cheap subtree-presence key. Prefer
+ * the first class, then id, direct attribute, or the tag of the RIGHTMOST subject compound.
+ * null = no usable key, always a candidate. */
 function subjectKeyOf(sel) {
   const subject = subjectTailOf(sel)
   const compound = subjectCompoundOf(subject)
@@ -668,12 +648,9 @@ function subjectKeyOf(sel) {
   return tag ? 't' + tag.toLowerCase() : null
 }
 
-/**
- * R5-D4's measured residual is specifically a class/id key hiding a more selective direct
- * exact-data attribute key, e.g. `.row[data-state="v137"]`. Expose only that alternative here.
- * Keeping the API scalar avoids an array per rule during index compilation and deliberately does
- * not turn the experiment into a generic selector planner before evidence justifies that cost.
- */
+/** R5-D4's measured residual is specifically a class/id key hiding a more selective direct
+ * exact-data attribute key. Expose only that alternative here; the scalar API avoids an array per
+ * rule during index compilation and deliberately avoids a generic selector planner. */
 export function subjectAlternativeAttributeKey(sel, primary = null) {
   const subject = subjectTailOf(sel)
   const key = directSubjectAttributeKey(subject)

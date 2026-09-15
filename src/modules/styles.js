@@ -978,8 +978,8 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue) {
     const sourceSize = bucket.length
     if (sourceSize < 2) continue
 
-    // Avoid the selector parser entirely for ordinary class/id-only buckets. `some()` normally
-    // exits on the first rule for the mixed-compound workload D4 targets.
+    // Avoid the selector parser entirely for ordinary class/id-only buckets. The scan exits on
+    // the first rule for the mixed-compound workload D4 targets.
     let hasAttrSyntax = false
     for (let i = 0; i < sourceSize; i++) {
       if (bucket[i].sel.includes('[')) { hasAttrSyntax = true; break }
@@ -987,33 +987,12 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue) {
     if (!hasAttrSyntax) continue
 
     const primary = prefix + value
-    let sampled = false, sampleValue = null, heterogeneous = false
-    // Adaptive scout: 0, powers of two, and the last rule. A homogeneous alternative cannot
-    // beat its source bucket: moving N rules together creates an N-sized destination at best.
-    for (let i = 0; i < sourceSize;) {
-      const alternative = normalizedRuleIndexKey(
-        subjectAlternativeAttributeKey(bucket[i].sel, primary),
-        useAttrValue,
-      )
-      if (!sampled) {
-        sampled = true
-        sampleValue = alternative
-      } else if (sampleValue !== alternative) {
-        heterogeneous = true
-        break
-      }
-      if (i === sourceSize - 1) break
-      let next = i === 0 ? 1 : i << 1
-      if (next >= sourceSize) next = sourceSize - 1
-      if (next === i) break
-      i = next
-    }
-    if (!heterogeneous) continue
-
-    // Only a proven heterogeneous source pays the full parse. Count the prospective arrivals
-    // per destination before moving anything, then move a rule only when that complete
-    // destination remains strictly smaller than the source. Previously moved buckets are already
-    // reflected in `index`, making multi-source collisions conservative rather than optimistic.
+    // Count the COMPLETE prospective arrivals before moving anything. A previous logarithmic
+    // scout sampled 0/powers-of-two/last and skipped this pass when those positions looked
+    // homogeneous. That was correctness-safe, but it created blind spots exactly where D4 matters:
+    // a rare value can hide between sampled positions in a large common-class bucket. Because
+    // this loop runs only for repeated class/id buckets that actually contain '[' syntax, the
+    // full pass buys deterministic selectivity without taxing class-only/singleton controls.
     const alternatives = new Array(sourceSize)
     const arrivals = new Map()
     for (let i = 0; i < sourceSize; i++) {
