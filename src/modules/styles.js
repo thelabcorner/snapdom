@@ -1669,10 +1669,18 @@ function snapshotComputedStyleFull(style, options = {}, el = null, universe = nu
 
   // #362: Tailwind's * { border: 0 solid } renders incorrectly in capture.
   // When all border widths are 0, normalize to border: none for unambiguous output.
-  const bt = parseFloat(style.getPropertyValue('border-top-width') || 0) || 0
-  const br = parseFloat(style.getPropertyValue('border-right-width') || 0) || 0
-  const bb = parseFloat(style.getPropertyValue('border-bottom-width') || 0) || 0
-  const bl = parseFloat(style.getPropertyValue('border-left-width') || 0) || 0
+  // Border normalization runs after the snapshot pass. When an exact width is already in `out`,
+  // reuse that same-capture value instead of crossing CSSOM again. A pruned/excluded property
+  // is absent and therefore takes the historical live read; no default is inferred.
+  const reuseBorderWidths = options?.__borderNormalizeSnapshotReuse !== false
+  const bt = parseFloat((reuseBorderWidths && 'border-top-width' in out
+    ? out['border-top-width'] : style.getPropertyValue('border-top-width')) || 0) || 0
+  const br = parseFloat((reuseBorderWidths && 'border-right-width' in out
+    ? out['border-right-width'] : style.getPropertyValue('border-right-width')) || 0) || 0
+  const bb = parseFloat((reuseBorderWidths && 'border-bottom-width' in out
+    ? out['border-bottom-width'] : style.getPropertyValue('border-bottom-width')) || 0) || 0
+  const bl = parseFloat((reuseBorderWidths && 'border-left-width' in out
+    ? out['border-left-width'] : style.getPropertyValue('border-left-width')) || 0) || 0
   if (bt === 0 && br === 0 && bb === 0 && bl === 0) {
     // If border-image is being used (even with zero border widths), do NOT force
     // the shorthand `border: none` because it can override the intended rendering.
