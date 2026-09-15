@@ -5,6 +5,20 @@ import { flushStyleInvalidations } from '../src/modules/styles.js'
 const mounted = []
 let originalDocumentLang = null
 
+// This file measures the R5 R2/R3 composition mechanism itself. Later R7 lanes deliberately
+// remove many of the same CSSOM reads from both arms, which can dilute these coarse percentage
+// gates without changing R5's own behavior. Keep those unrelated mechanisms on their historical
+// counterfactuals here so a failed ratio still means the R5 router changed rather than merely
+// that the surrounding frontier became cheaper.
+const R5_MECHANISM_ONLY = Object.freeze({
+  __animationNameShare: false,
+  __lineClampPassGate: false,
+  __styleShareInsetValueGate: false,
+  __gutterSnapshotReuse: false,
+  __minWidthSnapshotReuse: false,
+  __backgroundUrlSentinel: false,
+})
+
 beforeEach(() => {
   // The Vitest browser host carries <html lang="...">. R3 deliberately treats inherited
   // language as a conservative escape because UA/language-sensitive style can exist outside
@@ -49,6 +63,7 @@ async function capture(root, compose, extra = {}) {
       cache: 'disabled',
       __styleShare: true,
       __styleShareElementUniverse: compose,
+      ...R5_MECHANISM_ONLY,
       ...extra,
     })
     return { raw, reads }
