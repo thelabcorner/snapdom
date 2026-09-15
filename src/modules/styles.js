@@ -2635,7 +2635,10 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     extendSnapshotSignature(snap, suffix)
   }
 
-  const flexItem = isFlexOrGridItem(source)
+  const flexItem = isFlexOrGridItem(
+    source,
+    ctx.options?.__parentStyleReuse === false ? null : session.styleCache,
+  )
 
   // #406: foreignObject may resolve min-width:auto differently than normal DOM
   // for flex/grid items. Explicitly set min-width:0 on flex/grid items that have
@@ -2761,15 +2764,17 @@ function hasBox(cs) {
 }
 
 /**
- * Flex/grid item (reads the parent's display, one getComputedStyle).
+ * Flex/grid item. Normal clone traversal snapshots the parent before cloning its children, so
+ * the capture-local style cache normally already owns this exact parent's live declaration.
+ * Reuse it when present; unusual/direct traversal falls back to historical getStyle(parent).
  * @param {Element} el
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache]
  */
-function isFlexOrGridItem(el) {
+function isFlexOrGridItem(el, styleCache = null) {
   const p = el.parentElement
   if (!p) return false
-  // getStyle memoizes in cache.computedStyle; raw getComputedStyle forced a fresh resolution
-  // per node on every capture (even on snapshot-cache hits).
-  const pd = getStyle(p).display || ''
+  const ps = styleCache?.get?.(p) || getStyle(p)
+  const pd = ps.display || ''
   return pd.includes('flex') || pd.includes('grid')
 }
 
