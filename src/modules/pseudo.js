@@ -706,6 +706,20 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
   if (gates.marker !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.marker, '::marker', MARKER_PROPS)
   if (gates.firstLine !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.firstLine, '::first-line', FIRST_LINE_PROPS)
 
+  // inlineAllStyles has already acquired the normal host declaration for this exact source.
+  // Pseudo materialization historically crossed into getStyle()'s separate global memo the
+  // first time it needed host metrics/display. Reuse the capture-local live declaration when
+  // available. Missing/empty means unknown and falls back to the complete historical oracle.
+  let hostStyle = null
+  const host = () => {
+    if (hostStyle) return hostStyle
+    if (options?.__pseudoHostStyleReuse !== false) {
+      const cached = sessionCache.styleCache?.get?.(source)
+      if (cached?.length) hostStyle = cached
+    }
+    return hostStyle || (hostStyle = getStyle(source))
+  }
+
   for (const pseudo of ['::before', '::after', '::first-letter']) {
     const gate = gates[pseudo === '::before' ? 'before' : pseudo === '::after' ? 'after' : 'firstLetter']
     if (gate !== null) {
@@ -741,7 +755,7 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
       }
 
       if (pseudo === '::first-letter') {
-        const normal = getStyle(source)
+        const normal = host()
         // #406: wrapping the first letter in a <span> inside a flex/grid container
         // creates a new flex item; gap then inserts unwanted space (e.g. "S end Invite").
         const disp = (normal?.display || '').toLowerCase()
@@ -875,9 +889,9 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       const isImageContent = cleanContent.startsWith('url(') || /^-?(?:webkit-)?image-set\(/i.test(cleanContent)
       let pinNowrap = false
       if (hasExplicitContent && !isIconFont2 && cleanContent.length > 1 && !isImageContent) {
-        const hostStyle = getStyle(source)
-        const fs = parseFloat(hostStyle.fontSize) || 16
-        let lh = parseFloat(hostStyle.lineHeight)
+        const normal = host()
+        const fs = parseFloat(normal.fontSize) || 16
+        let lh = parseFloat(normal.lineHeight)
         if (!Number.isFinite(lh)) lh = fs * 1.5
         const rect = source.getBoundingClientRect()
         if (rect.height < lh * 1.6) {
@@ -898,7 +912,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // kept verbatim, otherwise a blockified flex-item dot collapses to 0 and a
       // display:block dot stretches to the host width. The pseudo's parent box is the
       // host itself, so flex-item-ness comes from the host's display (#406: no floor).
-      const hostDisplay = (getStyle(source).display || '').toLowerCase()
+      const hostDisplay = (host().display || '').toLowerCase()
       const pseudoIsFlexItem = hostDisplay.includes('flex') || hostDisplay.includes('grid')
       if (pseudoIsFlexItem) {
         const mw = snapshot['min-width']
