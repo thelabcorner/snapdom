@@ -574,7 +574,12 @@ export function invalidateSnapshotsUnder(root) {
  * @param {Element} source
  * @returns {boolean}
  */
-export function needsBackgroundInline(source) {
+export function needsBackgroundInline(source, sessionSnapshots = null) {
+  const local = sessionSnapshots?.get(source)
+  if (local) {
+    const f = local.snapshot && local.snapshot.__needsBgInline
+    if (f !== undefined) return f
+  }
   const rec = snapshotCache.get(source)
   if (rec && snapshotIsCurrent(rec, source)) {
     const f = rec.snapshot && rec.snapshot.__needsBgInline
@@ -594,7 +599,13 @@ export function needsBackgroundInline(source) {
  * @param {Element} source
  * @returns {object|null}
  */
-export function snapshotFor(source) {
+export function snapshotFor(source, sessionSnapshots = null) {
+  const local = sessionSnapshots?.get(source)
+  if (local) {
+    const snap = local.snapshot
+    if (!snap || snap.__bgClipTextFix) return null
+    return snap
+  }
   const rec = snapshotCache.get(source)
   if (!rec || !snapshotIsCurrent(rec, source)) return null
   const snap = rec.snapshot
@@ -2252,8 +2263,9 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
  * @param {{st: object, id: number}|null} [shareInfo] - the identity to share under, or null
  * @returns {Record<string, string>}
  */
-function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
-  const rec = snapshotCache.get(el)
+function getSnapshot(el, preStyle = null, options = {}, shareInfo = null, sessionSnapshots = null) {
+  const useSessionSnapshots = options?.cache === 'disabled' && options?.__sessionSnapshotHandoff === true && sessionSnapshots
+  const rec = useSessionSnapshots ? null : snapshotCache.get(el)
   // The snapshot content depends on embedFonts (extra font props) and excludeStyleProps
   // (skipped props), which no invalidation signal tracks. Capturing the same element twice
   // with different options must not reuse the snapshot (#348). Callback identity cannot
@@ -2378,8 +2390,15 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     __snapshotSig.set(snap, shared.sig + '\u0002' + dyn.join('\u0001') +
       ('height' in snap ? '' : '\u0003') + ('block-size' in snap ? '' : '\u0004'))
   }
-  const hosts = shadowHostsOf(el)
-  snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
+  if (useSessionSnapshots) {
+    // Background inlining is part of this same capture and needs the exact snapshot, but a
+    // disabled cache promises no cross-capture reuse. Avoid host ancestry/stamp construction
+    // and the global WeakMap write entirely; the capture session dies with the pipeline.
+    sessionSnapshots.set(el, { snapshot: snap })
+  } else {
+    const hosts = shadowHostsOf(el)
+    snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
+  }
   return snap
 }
 
@@ -2536,12 +2555,16 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   if (NO_DEFAULTS_TAGS.has(tag)) {
     const stub = {}
     Object.defineProperty(stub, '__needsBgInline', { value: computeNeedsBgInline(pre), enumerable: false })
-    const hosts = shadowHostsOf(source)
-    snapshotCache.set(source, {
-      env: __envEpoch, stamp: stampOf(source, hosts), hosts, snapshot: stub,
-      embedFonts: !!(ctx.options && ctx.options.embedFonts),
-      excludeStyleProps: (ctx.options && ctx.options.excludeStyleProps) || null,
-    })
+    if (ctx.options?.cache === 'disabled' && ctx.options?.__sessionSnapshotHandoff === true && session.__styleSnapshots) {
+      session.__styleSnapshots.set(source, { snapshot: stub })
+    } else {
+      const hosts = shadowHostsOf(source)
+      snapshotCache.set(source, {
+        env: __envEpoch, stamp: stampOf(source, hosts), hosts, snapshot: stub,
+        embedFonts: !!(ctx.options && ctx.options.embedFonts),
+        excludeStyleProps: (ctx.options && ctx.options.excludeStyleProps) || null,
+      })
+    }
     session.styleMap.set(clone, '')
     return
   }
@@ -2568,7 +2591,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
       !source.shadowRoot && !source.assignedSlot
     if (eligible) shareInfo = { st, id }
   }
-  const snap = getSnapshot(source, pre, ctx.options, shareInfo)
+  const snap = getSnapshot(source, pre, ctx.options, shareInfo, session.__styleSnapshots)
   // Inline author declarations were normalized above from getComputedStyle too.
   // Override their zero margin (including logical shorthands) with the retained auto.
   if (source.getAttribute?.('style')) {

@@ -43,7 +43,10 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // value and inlines it per node (d12-backgrounds moved 2.7% on all three engines when
   // these read the sanitized snapshot). Shorthand fallbacks (#343) are live for the same
   // reason snapshots hold longhands only.
-  const snap = snapshotFor(srcNode)
+  const sessionSnapshots = options?.__sessionSnapshotHandoff === true
+    ? options?.__session?.__styleSnapshots
+    : null
+  const snap = snapshotFor(srcNode, sessionSnapshots)
   const read = snap
     ? (prop) => (prop in snap ? snap[prop] : '')
     : (prop) => style.getPropertyValue(prop)
@@ -246,7 +249,10 @@ export async function inlineBackgroundImages(source, clone, styleCache, options 
   if (!clone) return
 
   const jobs = []
-  if (source && needsBackgroundInline(source)) jobs.push([source, clone])
+  const sessionSnapshots = options?.__sessionSnapshotHandoff === true
+    ? options?.__session?.__styleSnapshots
+    : null
+  if (source && needsBackgroundInline(source, sessionSnapshots)) jobs.push([source, clone])
   const stack = [clone]
   while (stack.length) {
     const cn = stack.pop()
@@ -254,7 +260,7 @@ export async function inlineBackgroundImages(source, clone, styleCache, options 
     for (const child of cn.children) {
       if (child.tagName === 'STYLE') continue
       const src = nodeMap.get(child)
-      if (src && needsBackgroundInline(src)) jobs.push([src, child])
+      if (src && needsBackgroundInline(src, sessionSnapshots)) jobs.push([src, child])
       stack.push(child)
     }
   }

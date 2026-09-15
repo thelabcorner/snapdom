@@ -48,10 +48,14 @@ export async function prepareClone(element, options = {}) {
   // captureDOM always provides its own session (createCaptureSession). Direct callers
   // (tests, embedders) get fresh isolated maps.
   const session = options.__session || { styleMap: new Map(), styleCache: new WeakMap(), nodeMap: new Map() }
+  if (options.cache === 'disabled' && options.__sessionSnapshotHandoff === true && !session.__styleSnapshots) {
+    session.__styleSnapshots = new WeakMap()
+  }
   const sessionCache = {
     styleMap: session.styleMap,
     styleCache: session.styleCache,
     nodeMap: session.nodeMap,
+    __styleSnapshots: session.__styleSnapshots,
     options
   }
 

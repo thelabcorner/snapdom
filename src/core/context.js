@@ -181,6 +181,10 @@ export function createContext(options = {}) {
     // after candidate indexing/planning and unions declared property names for byte-identical
     // selector strings. Browser matches() remains the semantic oracle.
     __elementRuleSelectorCSE: options.__elementRuleSelectorCSE,
+    // Internal R5-SM1 counterfactual: when cache:'disabled', keep the style snapshot handoff
+    // capture-local instead of paying cross-capture snapshot stamps/host tracking. Undefined
+    // preserves the historical path until the experiment clears acceptance.
+    __sessionSnapshotHandoff: options.__sessionSnapshotHandoff,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
