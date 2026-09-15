@@ -267,4 +267,49 @@ describe('identity share — layout re-read narrowing', () => {
     const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
     expect(shared).toBe(full)
   })
+
+  it('does not leak a first-twin classic scrollbar gutter into later twins', async () => {
+    const el = mount(
+      `<div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>
+       <div class="gutter-first"><i>x</i></div>`,
+      `.gutter-first{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}
+       .gutter-first>i{display:block;height:10px}`
+    )
+    const [a, b, c] = el.querySelectorAll('.gutter-first')
+    for (const [node, offsetWidth, clientWidth] of [[a, 137, 120], [b, 120, 120], [c, 120, 120]]) {
+      Object.defineProperties(node, {
+        offsetWidth: { configurable: true, get: () => offsetWidth },
+        clientWidth: { configurable: true, get: () => clientWidth },
+        offsetHeight: { configurable: true, get: () => 40 },
+        clientHeight: { configurable: true, get: () => 40 },
+      })
+    }
+
+    await settle()
+    const shared = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    await dirty(el)
+    const full = await snapdom.toRaw(el, { burst: false, cache: 'disabled', __styleShare: false })
+    expect(shared).toBe(full)
+  })
+
+  it('does not compound a classic scrollbar gutter across repeated unchanged captures', async () => {
+    const el = mount(
+      '<div class="gutter-repeat"><i>x</i></div>',
+      '.gutter-repeat{display:block;width:120px;height:40px;overflow:auto;box-sizing:content-box}' +
+      '.gutter-repeat>i{display:block;height:10px}'
+    )
+    const node = el.querySelector('.gutter-repeat')
+    Object.defineProperties(node, {
+      offsetWidth: { configurable: true, get: () => 137 },
+      clientWidth: { configurable: true, get: () => 120 },
+      offsetHeight: { configurable: true, get: () => 40 },
+      clientHeight: { configurable: true, get: () => 40 },
+    })
+
+    await settle()
+    const first = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    const second = await snapdom.toRaw(el, { burst: false, cache: 'disabled' })
+    expect(second).toBe(first)
+  })
 })

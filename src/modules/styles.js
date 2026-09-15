@@ -2715,12 +2715,18 @@ export function addScrollbarGutter(source, pre, snap) {
     px(pre.getPropertyValue('border-top-width')) - px(pre.getPropertyValue('border-bottom-width'))
   let changed = 0
   const bump = (prop, gutter) => {
-    const v = snap[prop]
-    if (!v || !v.endsWith('px')) return false
-    const n = parseFloat(v)
+    // `snap` is cross-capture cached before this node-local correction runs. Derive the
+    // corrected value from the LIVE computed baseline, not from a previously corrected
+    // cached snapshot, or an unchanged second capture compounds the same gutter again.
+    // Keep the snapshot-presence check so excluded/pruned properties remain excluded.
+    const captured = snap[prop]
+    if (!captured || !captured.endsWith('px')) return false
+    const live = pre.getPropertyValue(prop)
+    const base = live && live.endsWith('px') ? live : captured
+    const n = parseFloat(base)
     if (!Number.isFinite(n)) return false
     const next = `${Math.round((n + gutter) * 1000) / 1000}px`
-    if (next === v) return false
+    if (next === captured) return false
     snap[prop] = next
     return true
   }
