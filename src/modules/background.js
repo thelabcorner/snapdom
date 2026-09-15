@@ -12,7 +12,7 @@
 import { isFirefox, isIOS } from '../utils/browser.js'
 
 import { getStyle, inlineSingleBackgroundEntry, splitBackgroundImage } from '../utils'
-import { needsBackgroundInline, snapshotFor } from './styles.js'
+import { backgroundSnapshotFor, needsBackgroundInline, snapshotFor } from './styles.js'
 import { BG_LAYOUT_PROPS, BORDER_AUX_PROPS, MASK_LAYOUT_PROPS, URL_PROPS } from './backgroundProps.js'
 
 // Kept exported from this module for compatibility with internal/tests that import it here.
@@ -76,9 +76,16 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // value and inlines it per node (d12-backgrounds moved 2.7% on all three engines when
   // these read the sanitized snapshot). Shorthand fallbacks (#343) are live for the same
   // reason snapshots hold longhands only.
-  const snap = snapshotFor(srcNode)
+  const strictSnap = snapshotFor(srcNode)
+  const snap = strictSnap || backgroundSnapshotFor(srcNode, options?.__backgroundFontEpochReuse !== false)
+  // Strict/current snapshots keep the existing universe contract: absent means the page cannot
+  // depend on that property. A font-relaxed snapshot is only an OVERLAY on the historical stale
+  // path: reuse values it actually captured, but live-read every absent property so the fallback
+  // path's serialized defaults remain byte-identical.
   const read = snap
-    ? (prop) => (prop in snap ? snap[prop] : '')
+    ? (strictSnap
+        ? (prop) => (prop in snap ? snap[prop] : '')
+        : (prop) => (prop in snap ? snap[prop] : style.getPropertyValue(prop)))
     : (prop) => style.getPropertyValue(prop)
 
   // Border-image present?
@@ -123,16 +130,19 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // the probe twice.
   let liveSources = null
   let hasLiveSource = true
+  let hasLiveMaskSource = true
   if (options?.__backgroundUrlSentinel !== false) {
     liveSources = new Map([['background-image', bgImage]])
     const sourceProps = options?.__backgroundSourceBasis === false
       ? COMPLETE_SOURCE_BASIS
       : backgroundSourceBasis(srcNode.ownerDocument || document)
     hasLiveSource = !!(bgImage && bgImage !== 'none')
+    hasLiveMaskSource = false
     for (const prop of sourceProps) {
       const val = style.getPropertyValue(prop)
       liveSources.set(prop, val)
       if (val && val !== 'none') hasLiveSource = true
+      if (prop !== 'border-image-source' && val && val !== 'none') hasLiveMaskSource = true
     }
     // #343: some engines/sites expose a url() only through the background shorthand even when
     // background-image itself is empty/none. Keep that historical escape in the sentinel too.
@@ -168,12 +178,18 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
       }
     }
   }
-  // 2) Copy mask layout longhands (position / size / repeat, etc.)
-  for (const prop of MASK_LAYOUT_PROPS) {
-    const val = read(prop)
-    // Skip empty/initial defaults to avoid bloating
-    if (!val || val === 'initial') continue
-    cloneNode.style.setProperty(prop, val)
+  // 2) Copy mask layout longhands (position / size / repeat, etc.). When the late BGS1 source
+  // sentinel is available, reuse its exact live answer: without a mask source these longhands
+  // are inert and need not be crossed through CSSOM/snapshot lookup at all. If the sentinel is
+  // disabled we fail closed to the historical unconditional copy.
+  const maskLayoutRepresented = !snap || MASK_LAYOUT_PROPS.some((prop) => prop in snap)
+  if (options?.__maskLayoutSourceGate !== true || !liveSources || hasLiveMaskSource || maskLayoutRepresented) {
+    for (const prop of MASK_LAYOUT_PROPS) {
+      const val = read(prop)
+      // Skip empty/initial defaults to avoid bloating
+      if (!val || val === 'initial') continue
+      cloneNode.style.setProperty(prop, val)
+    }
   }
   // 3) Copy border-image auxiliaries only if border-image is active
   if (hasBorderImage) {

@@ -17,6 +17,24 @@
  * @module styleScan
  */
 
+import { BG_LAYOUT_PROPS, BORDER_AUX_PROPS, MASK_LAYOUT_PROPS } from './backgroundProps.js'
+
+// Font completion can change font-metric units without any DOM/style mutation. The ordinary
+// snapshot cache therefore invalidates on every FontFaceSet completion. The background phase,
+// however, may retain a same-capture snapshot across a font-only epoch when no relevant
+// background/mask/border-image layout declaration can depend on those metrics.
+const BACKGROUND_FONT_METRIC_PROPS = new Set([
+  ...BG_LAYOUT_PROPS,
+  ...MASK_LAYOUT_PROPS,
+  ...BORDER_AUX_PROPS,
+  'background', 'mask', '-webkit-mask', 'border-image',
+])
+const FONT_METRIC_VALUE_RE = /(?:^|[^a-z-])(?:ch|ex|cap|ic|lh|rlh)\b|(?:var|attr|calc|min|max|clamp)\s*\(/i
+
+export function backgroundValueMayDependOnFontMetrics(prop, value) {
+  return BACKGROUND_FONT_METRIC_PROPS.has(prop) && FONT_METRIC_VALUE_RE.test(value || '')
+}
+
 /** Properties always read regardless of what the page's CSS mentions: layout and text
  *  essentials, plus everything presentational HTML attributes (width=, bgcolor=, dir=,
  *  align=…) can set without appearing in any stylesheet. Longhands, matching what
@@ -346,6 +364,9 @@ function scanRules(rules, universe, pseudoSels, state) {
         const prop = style[j]
         let propValue
         const readValue = () => propValue ??= style.getPropertyValue(prop)
+        if (!state.backgroundFontSensitive && backgroundValueMayDependOnFontMetrics(prop, readValue())) {
+          state.backgroundFontSensitive = true
+        }
         // attr(data-x) observes the source attribute value even when no selector names it.
         // Only declarations that could contain attr() pay the value scan. Backslashes are
         // included because the function name itself may be escaped.
@@ -882,7 +903,7 @@ export function scanAuthorStyles(doc) {
     marginUnstable: true, marginMayBeAuto: true, paddingUnstable: true, insetUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
-    elementUniverseBlocked: true, hasAnimations: true,
+    elementUniverseBlocked: true, hasAnimations: true, backgroundFontSensitive: true,
   }
   try {
     const universe = new Set(ALWAYS_PROPS)
@@ -903,7 +924,7 @@ export function scanAuthorStyles(doc) {
       importantProps: new Set(),
       pseudoProps: new Set(),
       elementRules: [], elementKeyedRuleCount: 0, elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
-      elementUniverseBlocked: false, hasAnimations: false,
+      elementUniverseBlocked: false, hasAnimations: false, backgroundFontSensitive: false,
     }
     for (const sheet of doc.styleSheets) {
       if (!scanSheet(sheet, universe, pseudoSels, state)) return unreliable
@@ -957,6 +978,7 @@ export function scanAuthorStyles(doc) {
       elementAlwaysProps: state.elementAlwaysProps,
       elementUniverseBlocked: state.elementUniverseBlocked,
       hasAnimations: state.hasAnimations,
+      backgroundFontSensitive: state.backgroundFontSensitive,
     }
   } catch {
     return unreliable

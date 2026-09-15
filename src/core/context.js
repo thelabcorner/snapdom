@@ -224,6 +224,14 @@ export function createContext(options = {}) {
     // source properties this engine can actually expose (plus compatibility aliases proven by
     // the engine family). False restores BGS1's complete seven-source probe set.
     __backgroundSourceBasis: options.__backgroundSourceBasis,
+    // Internal R7-BGSNAP1 counterfactual. Background inlining may retain a same-capture style
+    // snapshot across font-only environment epochs when its source/style stamp is unchanged and
+    // no relevant declaration can depend on font metrics. False restores full-env invalidation.
+    __backgroundFontEpochReuse: options.__backgroundFontEpochReuse,
+    // Internal R7-MASKLAY1 research arm. Explicit true gates mask-layout copying on the late
+    // source sentinel plus snapshot representation proof. Default remains historical because
+    // the hardened mechanism produced no standing browser-call reduction.
+    __maskLayoutSourceGate: options.__maskLayoutSourceGate,
     // Internal R7-BGSTATE1 counterfactual. Unique neutral HTML elements can skip the roughly
     // ten-read background/mask/border-image admission probe only when the complete author scan
     // and this node's inline/shadow state prove none of those non-inherited families can apply.

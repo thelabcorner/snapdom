@@ -20,7 +20,13 @@ import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getS
 import { getDefaultStyleForTag, LOGICAL_TO_PHYSICAL } from '../utils/css.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
-import { scanAuthorStyles, scanInlineStyleDataAttrs, subjectAlternativeAttributeKey, collectSubjectAlternativeKeys } from './styleScan.js'
+import {
+  backgroundValueMayDependOnFontMetrics,
+  scanAuthorStyles,
+  scanInlineStyleDataAttrs,
+  subjectAlternativeAttributeKey,
+  collectSubjectAlternativeKeys,
+} from './styleScan.js'
 import { isInternalNode, markInternalNode } from '../utils/ownership.js'
 import {
   BACKGROUND_INLINE_FLAG_PROPS,
@@ -29,8 +35,9 @@ import {
   MASK_LAYOUT_PROPS,
 } from './backgroundProps.js'
 
-/** element -> { env, stamp, snapshot, embedFonts, excludeStyleProps }. Cross-capture; a hit
- *  needs the env epoch and the node's stamp unchanged (snapshotIsCurrent). */
+/** element -> { env, backgroundEnv, fontEnv, backgroundFontSensitive, stamp, snapshot,
+ * embedFonts, excludeStyleProps }. Cross-capture; an ordinary hit needs the full env epoch and
+ * the node's stamp unchanged (snapshotIsCurrent). */
 const snapshotCache = new WeakMap()
 const MARGIN_PROPS = [
   'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
@@ -69,6 +76,11 @@ const snapshotKeyCache = new Map()
 const MAX_SNAPSHOT_KEY_CACHE = 2000
 let __epoch = 0
 function bumpEpoch() { __epoch++ }
+// Background inlining has one narrower same-capture validity question: a FontFaceSet completion
+// should not invalidate fixed background/mask layout values. Keep separate cause epochs while
+// preserving __envEpoch's stricter contract for every existing consumer.
+let __backgroundEnvEpoch = 0
+let __fontEnvEpoch = 0
 
 /** Bumps the style epoch by hand. Nothing in src calls it; tests use it to force a re-snapshot. */
 export function notifyStyleEpoch() { bumpEpoch() }
@@ -184,6 +196,7 @@ export function getStyleStamp(element) {
 export function invalidateStyleCaches() {
   bumpEpoch()
   __envEpoch++
+  __backgroundEnvEpoch++
 }
 
 /** Prepare style-local persistent state for a cache-disabled capture BEFORE any consumer reads
@@ -370,6 +383,7 @@ function onDomRecords(records) {
     // A stylesheet node may live in <body>; its CSS still reaches the entire document.
     // Local stamping at the node's parent would leave distant captures on old snapshots.
     __envEpoch++
+    __backgroundEnvEpoch++
     __allStamp++
     return
   }
@@ -432,9 +446,11 @@ function setupInvalidationOnce(doc = document) {
     if (hasExternalMutation(records)) {
       bumpEpoch()
       __envEpoch++
+      __backgroundEnvEpoch++
     }
   }
-  const onFonts = () => { bumpEpoch(); __envEpoch++ }
+  const onFonts = () => { bumpEpoch(); __envEpoch++; __fontEnvEpoch++ }
+  const onViewportEnvironment = () => { bumpEpoch(); __envEpoch++; __backgroundEnvEpoch++ }
   try {
     const o = new MutationObserver(onDomRecords)
     o.observe(doc.documentElement, { subtree: true, childList: true, characterData: true, attributes: true })
@@ -447,7 +463,7 @@ function setupInvalidationOnce(doc = document) {
   } catch { }
   try {
     // Viewport resizes flip media queries — computed styles change with no DOM mutation.
-    view?.addEventListener('resize', onFonts, { passive: true })
+    view?.addEventListener('resize', onViewportEnvironment, { passive: true })
   } catch { }
   try {
     // Interaction pseudo-classes (:focus, :focus-visible, :checked, :disabled) re-style
@@ -562,7 +578,9 @@ export function flushStyleInvalidations() {
       }
       const r = o.takeRecords()
       if (!r.length) continue
-      if (env) { if (hasExternalMutation(r)) { bumpEpoch(); __envEpoch++ } }
+      if (env) {
+        if (hasExternalMutation(r)) { bumpEpoch(); __envEpoch++; __backgroundEnvEpoch++ }
+      }
       else onDomRecords(r)
     }
     for (let i = __shadowObservers.length - 1; i >= 0; i--) {
@@ -627,6 +645,19 @@ export function snapshotFor(source) {
   return snap
 }
 
+/** Background-only snapshot authority. The ordinary cache deliberately treats every font
+ * completion as document-wide invalidation. For background/mask layout, a same-capture snapshot
+ * can remain exact across that font-only epoch when the source/style stamp is unchanged, no
+ * non-font environment channel moved, and the author/inline values cannot depend on font metrics.
+ * A false control restores snapshotFor's strict full-env validity. */
+export function backgroundSnapshotFor(source, allowFontEpochReuse = true) {
+  const rec = snapshotCache.get(source)
+  if (!rec || !(allowFontEpochReuse ? backgroundSnapshotIsCurrent(rec, source) : snapshotIsCurrent(rec, source))) return null
+  const snap = rec.snapshot
+  if (!snap || snap.__bgClipTextFix) return null
+  return snap
+}
+
 /** Per-document memo of the scanned property universe, keyed on __epoch (see the rule-epoch
  *  note above getStyleEnvEpoch for why not something narrower).
  *  Exported so the base reset prunes itself with the SAME universe the snapshots use:
@@ -640,6 +671,28 @@ function scanFor(doc) {
     universeCache.set(doc, rec)
   }
   return rec
+}
+
+/** Whether a font completion could change background/mask/border-image layout values for this
+ * element. The document scanner covers authored sheets; inline declarations are checked here.
+ * Shadow-host/slotted/shadow-tree styling is outside that scanner and therefore fails closed. */
+function backgroundFontSensitiveFor(el) {
+  try {
+    const doc = el.ownerDocument || document
+    const root = el.getRootNode?.()
+    if (root !== doc || el.shadowRoot || el.assignedSlot) return true
+    const scan = scanFor(doc)
+    if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations || scan.backgroundFontSensitive) return true
+    const inline = el.style
+    if (!inline?.length) return false
+    for (let i = 0; i < inline.length; i++) {
+      const prop = inline[i]
+      if (backgroundValueMayDependOnFontMetrics(prop, inline.getPropertyValue(prop))) return true
+    }
+    return false
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -2110,6 +2163,15 @@ function snapshotIsCurrent(rec, el) {
   return rec.env === __envEpoch && rec.stamp === stampOf(el, rec.hosts)
 }
 
+function backgroundSnapshotIsCurrent(rec, el) {
+  if (rec.backgroundEnv !== __backgroundEnvEpoch || rec.stamp !== stampOf(el, rec.hosts)) return false
+  if (rec.fontEnv === __fontEnvEpoch) return true
+  if (rec.backgroundFontSensitive === undefined) {
+    rec.backgroundFontSensitive = backgroundFontSensitiveFor(el)
+  }
+  return !rec.backgroundFontSensitive
+}
+
 /**
  * Identity-share fast path (the per-element cold lever).
  *
@@ -2581,7 +2643,13 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       ('height' in snap ? '' : '\u0003') + ('block-size' in snap ? '' : '\u0004'))
   }
   const hosts = shadowHostsOf(el)
-  snapshotCache.set(el, { env: __envEpoch, stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex })
+  snapshotCache.set(el, {
+    env: __envEpoch,
+    backgroundEnv: __backgroundEnvEpoch,
+    fontEnv: __fontEnvEpoch,
+    backgroundFontSensitive: undefined,
+    stamp: stampOf(el, hosts), hosts, snapshot: snap, embedFonts: ef, excludeStyleProps: ex,
+  })
   return snap
 }
 
@@ -2739,7 +2807,11 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     Object.defineProperty(stub, '__needsBgInline', { value: computeNeedsBgInline(pre), enumerable: false })
     const hosts = shadowHostsOf(source)
     snapshotCache.set(source, {
-      env: __envEpoch, stamp: stampOf(source, hosts), hosts, snapshot: stub,
+      env: __envEpoch,
+      backgroundEnv: __backgroundEnvEpoch,
+      fontEnv: __fontEnvEpoch,
+      backgroundFontSensitive: undefined,
+      stamp: stampOf(source, hosts), hosts, snapshot: stub,
       embedFonts: !!(ctx.options && ctx.options.embedFonts),
       excludeStyleProps: (ctx.options && ctx.options.excludeStyleProps) || null,
     })
