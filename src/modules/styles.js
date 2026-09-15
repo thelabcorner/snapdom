@@ -1101,7 +1101,118 @@ function rekeySelectiveBuckets(index, map, prefix, useAttrValue, useCompoundKeys
   }
   for (const [rule, key] of moves) pushIndexedRule(index, key, rule)
 }
-function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity = true, useCompoundKeys = true) {
+function mergeRuleProps(target, source) {
+  const tp = target.props
+  const sp = source.props
+  for (let i = 0; i < sp.length; i++) {
+    const prop = sp[i]
+    let seen = false
+    for (let j = 0; j < tp.length; j++) {
+      if (tp[j] === prop) { seen = true; break }
+    }
+    if (!seen) tp.push(prop)
+  }
+}
+
+/**
+ * R5-D6 selector-program CSE. R3 asks one boolean question per rule: does THIS element match the
+ * selector, and if so which property NAMES must survive the narrowed universe? For byte-identical
+ * selector strings that predicate is literally the same browser `matches()` call. Collapse those
+ * repeated interpreter entries to one selector plus the union of their property names.
+ *
+ * The first duplicate triggers the allocation. Unique buckets therefore pay one Map construction
+ * but keep their original rule objects/arrays; duplicate buckets allocate only the merged records
+ * that need a widened props array. This runs lazily after the D5 planner, so R2-only captures and
+ * captures that never cross the rule-index router pay nothing.
+ */
+function coalesceSelectorBucket(bucket) {
+  const n = bucket?.length || 0
+  if (n < 2) return bucket
+  const firstBySelector = new Map()
+  let out = null
+  for (let i = 0; i < n; i++) {
+    const rule = bucket[i]
+    const prior = firstBySelector.get(rule.sel)
+    if (prior === undefined) {
+      firstBySelector.set(rule.sel, i)
+      if (out) out.push(rule)
+      continue
+    }
+    if (!out) out = bucket.slice(0, i)
+    // `prior` indexes the original prefix until the first duplicate; after compaction, find the
+    // exact selector among the already-small output. This path runs only for actual duplicates.
+    let target = null
+    for (let j = 0; j < out.length; j++) {
+      if (out[j].sel === rule.sel) { target = out[j]; break }
+    }
+    if (!target) continue
+    // Never mutate styleScan's shared rule object/props array: other counterfactual indexes for
+    // the same style epoch may still reference it. Clone lazily on the first merge for this sel.
+    if (!target.__selectorCSE) {
+      target = { sel: target.sel, key: target.key, props: target.props.slice(), __selectorCSE: true }
+      for (let j = 0; j < out.length; j++) {
+        if (out[j].sel === rule.sel) { out[j] = target; break }
+      }
+    }
+    mergeRuleProps(target, rule)
+  }
+  return out || bucket
+}
+
+function coalesceSelectorIndex(index) {
+  index.unkeyed = coalesceSelectorBucket(index.unkeyed)
+  const coalesceMap = (map) => {
+    for (const [key, bucket] of map) {
+      const merged = coalesceSelectorBucket(bucket)
+      if (merged !== bucket) map.set(key, merged)
+    }
+  }
+  coalesceMap(index.byTag)
+  coalesceMap(index.byId)
+  coalesceMap(index.byClass)
+  coalesceMap(index.byAttr)
+  for (const values of index.byAttrValue.values()) coalesceMap(values)
+}
+
+/**
+ * Cheap production admission scout for D6. A full CSE pass walks every final key bucket, which is
+ * measurable cold overhead when every selector is unique. Sampling is safe here in a way it was
+ * NOT safe for D4/D5 key planning: a false negative leaves the complete D5 program untouched; it
+ * can only miss a speedup, never remove a candidate rule. A coarse-to-fine cardinality search
+ * found K=1/K=4 production wins cleanly favorable. K=8 showed a positive forced-CSE result but
+ * its production confirmations were unstable/null-biased, so it remains research-only rather
+ * than being admitted by a release router. Production therefore requires heavy repetition:
+ * <=5 distinct selector strings in thirty-two geometrically spread samples. The wider sample is
+ * deliberate hardening against locally repetitive / globally high-cardinality sheets: an earlier
+ * 16-point scout could be fooled by a sparse repeated selector landing exactly on its sample
+ * positions, admitting a full CSE pass with essentially no matcher savings. False positives are
+ * performance-only, not semantic, but the release router should still avoid that tax. Thirty-two
+ * points preserves the measured K<=4 admission region, rejects K=8, and gives the protected path
+ * an early exit as soon as a sixth distinct selector is observed. `true` on the internal option
+ * still forces CSE for differential tests/benchmarks and future crossover work.
+ */
+function selectorCSEWorthTrying(rules) {
+  const n = rules?.length || 0
+  if (n < 2) return false
+  const count = Math.min(32, n)
+  const seen = new Set()
+  for (let i = 0; i < count; i++) {
+    const at = count === n ? i : Math.floor(i * (n - 1) / (count - 1))
+    seen.add(rules[at].sel)
+    if (seen.size > 5) return false
+    // Even if every remaining sample is new, the final sample still satisfies the <=5 gate.
+    if (seen.size + (count - i - 1) <= 5) return true
+  }
+  return seen.size <= 5
+}
+
+function compileElementRuleIndex(
+  rules,
+  useAttrValue = true,
+  useKeySelectivity = true,
+  useCompoundKeys = true,
+  useSelectorCSE = true,
+) {
   const index = {
     unkeyed: [], byTag: new Map(), byId: new Map(), byClass: new Map(), byAttr: new Map(),
     byAttrValue: new Map(),
@@ -1145,6 +1256,7 @@ function compileElementRuleIndex(rules, useAttrValue = true, useKeySelectivity =
     rekeySelectiveBuckets(index, index.byId, 'i', useAttrValue, false)
     rekeySelectiveBuckets(index, index.byClass, 'c', useAttrValue, useCompoundKeys)
   }
+  if (useSelectorCSE) coalesceSelectorIndex(index)
   return index
 }
 
@@ -1314,6 +1426,7 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   const attrValueMode = options?.__elementRuleAttrValueIndex !== false
   const keySelectivityMode = options?.__elementRuleKeySelectivity !== false
   const compoundKeyMode = options?.__elementRuleCompoundKeyPlanner !== false
+  const selectorCSEMode = options?.__elementRuleSelectorCSE
   // In HTML quirks mode class/ID selector matching can use ASCII case-folding rules that are not
   // equivalent to classList.contains()/direct id equality. The index is only a dispatch hint, so
   // fail closed to the historical browser-matched linear interpreter instead of duplicating
@@ -1348,16 +1461,27 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
       if (!applyRule(rule)) return bail()
     }
   } else {
-    const slot = keySelectivityMode
+    const baseSlot = keySelectivityMode
       ? (compoundKeyMode
           ? (attrValueMode ? 'ruleIndexCompoundSelective' : 'ruleIndexAttrNameCompoundSelective')
           : (attrValueMode ? 'ruleIndexSelective' : 'ruleIndexAttrNameSelective'))
       : (attrValueMode ? 'ruleIndex' : 'ruleIndexAttrName')
+    let useSelectorCSE
+    if (selectorCSEMode === true) useSelectorCSE = true
+    else if (selectorCSEMode === false) useSelectorCSE = false
+    else {
+      // The admission decision is style-epoch-local, just like the compiled index. Sampling on
+      // every element would turn the protected no-duplicate path into repeated Set allocation.
+      if (st.selectorCSEUse === undefined) st.selectorCSEUse = selectorCSEWorthTrying(scan.elementRules)
+      useSelectorCSE = st.selectorCSEUse
+    }
+    const slot = useSelectorCSE ? baseSlot + 'CSE' : baseSlot
     const ruleIndex = st[slot] || (st[slot] = compileElementRuleIndex(
       scan.elementRules,
       attrValueMode,
       keySelectivityMode,
       compoundKeyMode,
+      useSelectorCSE,
     ))
     if (!visitIndexedElementRules(el, ruleIndex, applyRule)) return bail()
   }

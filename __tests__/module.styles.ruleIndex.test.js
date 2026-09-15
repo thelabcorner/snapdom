@@ -586,4 +586,59 @@ describe('R5-D compiled element-rule subject index', () => {
     const linear = await raw(root, { __elementRuleIndex: false })
     expect(indexed).toBe(linear)
   })
+
+  it('coalesces byte-identical selector predicates without changing the property universe', async () => {
+    let css = ''
+    const props = [
+      ['letter-spacing', (i) => `${(i % 5) / 10}px`],
+      ['word-spacing', (i) => `${(i % 7) / 10}px`],
+      ['text-indent', (i) => `${i % 3}px`],
+      ['outline-offset', (i) => `${i % 4}px`],
+    ]
+    for (let i = 0; i < 240; i++) {
+      const [prop, value] = props[i % props.length]
+      css += `.cse-row{${prop}:${value(i)}}`
+    }
+    const style = document.createElement('style')
+    style.textContent = `.cse-root{width:700px;font:13px Arial,sans-serif}.cse-row{display:block}${css}`
+    document.head.appendChild(style)
+    mounted.push(style)
+    flushStyleInvalidations()
+
+    const make = () => {
+      const root = document.createElement('div')
+      root.className = 'cse-root'
+      for (let i = 0; i < 120; i++) {
+        const row = document.createElement('span')
+        row.className = 'cse-row'
+        row.textContent = `row ${i}`
+        root.appendChild(row)
+      }
+      document.body.appendChild(root)
+      mounted.push(root)
+      flushStyleInvalidations()
+      return root
+    }
+    const capture = async (cse) => {
+      const root = make()
+      try {
+        return await raw(root, {
+          __elementRuleIndex: true,
+          __elementRuleKeySelectivity: true,
+          __elementRuleCompoundKeyPlanner: true,
+          __elementRuleSelectorCSE: cse,
+        })
+      } finally {
+        root.remove()
+      }
+    }
+
+    const cse = await capture(true)
+    const d5 = await capture(false)
+    const linearRoot = make()
+    const linear = await raw(linearRoot, { __elementRuleIndex: false })
+
+    expect(cse).toBe(d5)
+    expect(cse).toBe(linear)
+  })
 })

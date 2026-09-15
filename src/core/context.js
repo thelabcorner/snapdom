@@ -176,6 +176,11 @@ export function createContext(options = {}) {
     // Default behavior also considers additional direct class/ID conditions in the subject
     // compound while preserving browser matches() as the final semantic oracle.
     __elementRuleCompoundKeyPlanner: options.__elementRuleCompoundKeyPlanner,
+    // Internal R5-D6 control: false preserves one R3 interpreter entry per CSS rule; true forces
+    // exact-selector CSE; undefined uses the cheap production repetition scout. CSE runs only
+    // after candidate indexing/planning and unions declared property names for byte-identical
+    // selector strings. Browser matches() remains the semantic oracle.
+    __elementRuleSelectorCSE: options.__elementRuleSelectorCSE,
     // Internal R5 composition control. `true` forces R3's per-element property universe on
     // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
     // and `undefined` uses the adaptive production router. Identity hits still reuse the
