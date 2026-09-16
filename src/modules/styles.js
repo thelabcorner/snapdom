@@ -2327,6 +2327,14 @@ function identityFor(el, st, selectors = null) {
     for (let i = 0; i < list.length; i++) {
       const attr = list[i]
       const name = attr.name
+      // PWH1: an inline container declaration or cq unit can make the inherited font inputs
+      // (em/lh) container-dependent and is invisible to the stylesheet scan. Every captured
+      // element's own style attribute is checked here, so a container ancestor INSIDE the
+      // capture is seen before the pseudo gate runs. Capture-local and fail closed.
+      if (name === 'style') {
+        const v = attr.value
+        if (v.includes('cq') || v.includes('container')) st.containerExposure = true
+      }
       if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) {
         // Engine-owned markers participate in shadow/pseudo/internal pipeline contracts that
         // are not necessarily represented in the page's author stylesheet scan. Never elide
@@ -2453,14 +2461,18 @@ const PSEUDO_UNCERTAIN_LENGTH_RE = /\(|cq|var|env|attr|inherit|unset|revert|fit-
  *  even here (all three engines), and var()/env() can hide one — the document scan owns
  *  that channel (pseudoLengthUnstable), so it and shadow content fail closed too, as do
  *  missing `content` (e.g. UA-generated) and uncertain value classes. */
-function pseudoInlineWhReusable(snap, source) {
+function pseudoInlineWhReusable(snap, source, st) {
   if (!snap || snap.display !== 'inline') return false
   const c = snap.content
   if (c === undefined || c === '' || c === 'none' || c === 'normal') return false
   if (/(?:url|image-set|element|paint)\(/i.test(c)) return false
+  // Inline container exposure (source node or any captured ancestor) fails closed too.
+  if (st && st.containerExposure) return false
   const doc = source.ownerDocument || document
   if (source.getRootNode && source.getRootNode() !== doc) return false
   const scan = scanFor(doc)
+  // pseudoContainerUnstable covers sheet @container rules, container declarations and cq units
+  // in any declaration; pseudoLengthUnstable keeps the width/height var()/env() channel.
   if (scan.pseudoLengthUnstable || scan.pseudoContainerUnstable) return false
   const w = snap.width === undefined ? 'auto' : snap.width
   const h = snap.height === undefined ? 'auto' : snap.height
@@ -2520,7 +2532,7 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const recNew = { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap }
   // PWH1: decided once on the identity's first occurrence; the false arm leaves the record
   // exactly historical (no gate work, no rider change).
-  if (options?.__pseudoInlineWhRiderReuse !== false) recNew.wh = pseudoInlineWhReusable(snap, source)
+  if (options?.__pseudoInlineWhRiderReuse !== false) recNew.wh = pseudoInlineWhReusable(snap, source, st)
   snaps.set(key, recNew)
   return snap
 }
