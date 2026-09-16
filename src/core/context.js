@@ -209,6 +209,10 @@ export function createContext(options = {}) {
     // stylesheet/inline evidence can make their used value geometry-dependent. False restores
     // the historical unconditional top/right/bottom/left/inset-* rider set.
     __styleShareInsetValueGate: options.__styleShareInsetValueGate,
+    // Internal R7-SO1 counterfactual: default/true stores identity twins as a tiny
+    // own-property overlay whose prototype is the immutable shared snapshot; false forces the
+    // historical full object spread for byte/timing counterfactuals.
+    __styleShareSnapshotOverlay: options.__styleShareSnapshotOverlay,
     // Internal R7-GR1 counterfactual. Reuse exact gutter inputs already present in this node's
     // style snapshot; false restores the historical duplicate live CSSOM reads.
     __gutterSnapshotReuse: options.__gutterSnapshotReuse,
