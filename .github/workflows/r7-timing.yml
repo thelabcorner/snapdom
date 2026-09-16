@@ -137,7 +137,7 @@ jobs:
             const path = require('path');
             const { execSync } = require('child_process');
             const fresh = execSync('find lane6-scratch/r5/results -name \"*.json\" -newer \"$RUNNER_TEMP/r7_t0\" -print', { encoding: 'utf8' }).split('\n').filter(Boolean).map((p) => path.basename(p));
-            if (!fresh.includes('timing-environment-latest.json')) { console.log('no result artifacts (bench never ran)'); return; }
+            if (!fresh.includes('timing-environment-latest.json')) { console.log('no result artifacts (bench never ran)'); process.exit(0); }
             const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
             console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
             for (const f of fresh.filter((x) => x !== 'timing-environment-latest.json')) {
