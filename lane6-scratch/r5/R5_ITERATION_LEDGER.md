@@ -169,3 +169,14 @@ Standing lesson: CSSOM-read deletions (SA2 gCS, BRST scroll census, OFF1 offsets
 wall time on these fixtures; allocation/copy removal (SO1 overlays) does. Next highest-leverage
 timing: clean P1 (30k repeated pseudo snapshot copies — same family as SO1's win), then LCG1
 whole-prepass removal; memo-hit harness for BRST2/BSAFE afterwards.
+
+## R7-SO1 PROMOTED 2026-09-16
+
+`perf/v3-r7-overlay-gutterfix` @ `356f3c1`, bundle `C4E4CCDA7195` (deterministic rebuild verified).
+Correctness: full Chromium 228 files / 1788 tests / 0 failures (+focused 15/15); raw parity in
+every timing arm. Timing (homelab, gate PASS, null CIs span 0, CoV 13.2%/12.9%):
+cards400-safe **-12.3% CI[-15.3,-9.2]**, cards400-neutral-unsafe **-9.1% CI[-11.6,-6.3]**;
+non-neutral point -9.3% but CoV 60.9% (not claimed). Bundle vs `456ca8f`: **+331 raw /
++154 gzip / +88 Brotli bytes**. Lint + `tsc --noEmit` clean. Verdict: **PROMOTE** as the
+shared-snapshot overlay representation; third-fixture noise does not outweigh two clean claims
+with consistent point estimates.
