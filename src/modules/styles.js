@@ -2536,7 +2536,8 @@ function pseudoInlineWhReusable(snap, source) {
   if (/(?:url|image-set|element|paint)\(/i.test(c)) return false
   const doc = source.ownerDocument || document
   if (source.getRootNode && source.getRootNode() !== doc) return false
-  if (scanFor(doc).pseudoLengthUnstable) return false
+  const scan = scanFor(doc)
+  if (scan.pseudoLengthUnstable || scan.pseudoContainerUnstable) return false
   const w = snap.width === undefined ? 'auto' : snap.width
   const h = snap.height === undefined ? 'auto' : snap.height
   return !PSEUDO_UNCERTAIN_LENGTH_RE.test(w) && !PSEUDO_UNCERTAIN_LENGTH_RE.test(h)

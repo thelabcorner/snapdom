@@ -123,6 +123,12 @@ const UNSTABLE_INSET_VALUE_RE = /%|\bauto\b|calc\(|var\(|attr\(|anchor(?:-size)?
 // (display:inline, where the property does not apply — verified on all three engines), and
 // var()/env() can carry one in from an inherited custom property. Document-wide, fail closed.
 const PSEUDO_LENGTH_UNSTABLE_RE = /cq(?:w|h|i|b|min|max)\b|var\(|env\(/i
+// PWH1: a @container rule can flip a pseudo's computed display between identity twins — the
+// selector that reaches it (`.host::before`) matches BOTH container states, so the identity/
+// partition proof cannot split them, and the first twin's `inline` would ride onto a twin
+// whose box is block-level (used width/height). Container declarations are the enabling
+// channel. Document-wide and fail closed, like the other instability flags.
+const CONTAINER_DECL_RE = /^(?:container|container-type|container-name)$/
 const INSET_PROP_RE = /^(?:top|right|bottom|left|inset(?:-|$))/
 // Values that can make a non-inherited margin compute to the `auto` keyword that
 // getComputedStyle() later exposes as used 0px. var()/attr()/inherit/revert stay conservative:
@@ -395,6 +401,9 @@ function scanRules(rules, universe, pseudoSels, state) {
             PSEUDO_LENGTH_UNSTABLE_RE.test(readValue())) {
           state.pseudoLengthUnstable = true
         }
+        if (!state.pseudoContainerUnstable && CONTAINER_DECL_RE.test(prop)) {
+          state.pseudoContainerUnstable = true
+        }
         if (prop.length > 5 && (prop[0] === 'm' || prop[0] === 'p')) {
           const fam = prop.startsWith('margin') ? 'marginUnstable'
             : prop.startsWith('padding') ? 'paddingUnstable' : null
@@ -489,7 +498,7 @@ function scanRules(rules, universe, pseudoSels, state) {
       // constructor.name instead of instanceof: a rule from an iframe document belongs to
       // that window's CSSContainerRule, so the parent realm's constructor never claims it.
       const container = rule.constructor?.name === 'CSSContainerRule'
-      if (container) state.inContainer++
+      if (container) { state.inContainer++; state.pseudoContainerUnstable = true }
       const ok = scanRules(rule.cssRules, universe, pseudoSels, state)
       if (container) state.inContainer--
       if (!ok) return false
@@ -900,10 +909,12 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases,
  *   `pseudoLengthUnstable` marks an authored pseudo width/height that a container unit,
  *   var() or env() could resolve against a different containing block per identity twin,
+ *   and `pseudoContainerUnstable` marks any @container rule or container declaration that
+ *   can flip a pseudo's computed display (or box-derived values) between identity twins,
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, pseudoLengthUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, pseudoLengthUnstable: boolean, pseudoContainerUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -912,7 +923,7 @@ export function scanAuthorStyles(doc) {
     universe: null, pseudoUniverse: null, usesHas: true, shareGate: null, sharePartition: null,
     styleIdentityDataAttrs: null,
     marginUnstable: true, marginMayBeAuto: true, paddingUnstable: true, insetUnstable: true,
-    pseudoLengthUnstable: true, importantProps: null,
+    pseudoLengthUnstable: true, pseudoContainerUnstable: true, importantProps: null,
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true, backgroundFontSensitive: true,
@@ -934,6 +945,7 @@ export function scanAuthorStyles(doc) {
       paddingUnstable: false,
       insetUnstable: false,
       pseudoLengthUnstable: false,
+      pseudoContainerUnstable: false,
       importantProps: new Set(),
       pseudoProps: new Set(),
       elementRules: [], elementKeyedRuleCount: 0, elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
@@ -984,6 +996,7 @@ export function scanAuthorStyles(doc) {
       paddingUnstable: state.paddingUnstable,
       insetUnstable: state.insetUnstable,
       pseudoLengthUnstable: state.pseudoLengthUnstable,
+      pseudoContainerUnstable: state.pseudoContainerUnstable,
       importantProps: state.importantProps,
       elementRules: state.elementRules,
       elementKeyedRuleCount: state.elementKeyedRuleCount,
