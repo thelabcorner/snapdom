@@ -212,6 +212,9 @@ export function createContext(options = {}) {
     // Internal R7-GR1 counterfactual. Reuse exact gutter inputs already present in this node's
     // style snapshot; false restores the historical duplicate live CSSOM reads.
     __gutterSnapshotReuse: options.__gutterSnapshotReuse,
+    // Internal R7-PWH1 counterfactual. Undefined/true drops the width/height riders from a
+    // proven non-replaced inline pseudo identity; false restores the historical per-twin read.
+    __pseudoInlineWhRiderReuse: options.__pseudoInlineWhRiderReuse,
     // Internal R7-MW1 counterfactual. `min-width` is mandatory in the element snapshot universe;
     // flex/grid correction may reuse that exact same-capture value when present. False restores
     // the historical duplicate live read, and excluded/missing snapshots always fall back.

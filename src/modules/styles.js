@@ -2437,6 +2437,35 @@ function shareLists(rec, el, insetValueGate = true) {
   return rrList
 }
 
+/** PWH1: value classes whose read on a non-replaced inline pseudo could stop being the
+ *  SPECIFIED token on some engine — a resolved used length would let identity twins diverge.
+ *  Percentages, absolute-ish lengths and `auto` are pinned specified-and-invariant by the
+ *  premise probe on all three engines; functional (`calc()`, `var()`, `min()`), container
+ *  relative and explicit-inheritance values keep the historical per-twin read. */
+const PSEUDO_UNCERTAIN_LENGTH_RE = /\(|cq|var|env|attr|inherit|unset|revert|fit-content|min-content|max-content|stretch/i
+
+/** PWH1 gate: may this pseudo identity drop `width`/`height` from its twin re-read riders?
+ *  Only a NON-REPLACED pseudo whose computed display is exactly `inline`: width/height do not
+ *  apply there and CSSOM returns the SPECIFIED value (Chromium/Firefox/WebKit probe), which
+ *  the identity proof already fixes — the per-twin read can only reproduce it. Replaced content
+ *  (url()/image-set()/-moz-element()/paint()) and every other computed display resolve
+ *  width/height to a used, box-derived length. Container units resolve to a used length
+ *  even here (all three engines), and var()/env() can hide one — the document scan owns
+ *  that channel (pseudoLengthUnstable), so it and shadow content fail closed too, as do
+ *  missing `content` (e.g. UA-generated) and uncertain value classes. */
+function pseudoInlineWhReusable(snap, source) {
+  if (!snap || snap.display !== 'inline') return false
+  const c = snap.content
+  if (c === undefined || c === '' || c === 'none' || c === 'normal') return false
+  if (/(?:url|image-set|element|paint)\(/i.test(c)) return false
+  const doc = source.ownerDocument || document
+  if (source.getRootNode && source.getRootNode() !== doc) return false
+  if (scanFor(doc).pseudoLengthUnstable) return false
+  const w = snap.width === undefined ? 'auto' : snap.width
+  const h = snap.height === undefined ? 'auto' : snap.height
+  return !PSEUDO_UNCERTAIN_LENGTH_RE.test(w) && !PSEUDO_UNCERTAIN_LENGTH_RE.test(h)
+}
+
 /**
  * A pseudo-element's snapshot, shared between identity twins the way the element's is. The
  * identity interned for `source` during the clone walk (same tag, attributes and ancestor
@@ -2447,6 +2476,9 @@ function shareLists(rec, el, insetValueGate = true) {
  * under the root, animations, an unreadable scan, shadow content) or the walk refused this
  * node an identity. Deep tree with a `::before` on every leaf (1,936 pseudos), bare page:
  * pruned reads alone 272 ms; shared 190 ms; without the rule 125.
+ * PWH1 narrows the per-twin riders further: for a proven non-replaced inline pseudo the
+ * width/height entries leaving `shareLists` are dropped (pseudoInlineWhReusable), unless
+ * `__pseudoInlineWhRiderReuse:false` restores the historical read for same-build causality.
  * @param {Element} source
  * @param {string} pseudo '::before' | '::after'
  * @param {CSSStyleDeclaration} style getComputedStyle(source, pseudo)
@@ -2466,10 +2498,16 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   if (rec) {
     const snap = { ...rec.snap }
     const rr = rec.rr || shareLists(rec, source, options?.__styleShareInsetValueGate !== false)
+    // PWH1: a proven non-replaced inline pseudo's CSSOM width/height reads return the
+    // identity's own SPECIFIED values, so these two always-geometry riders can only
+    // re-read what the shared base already holds. The false arm restores one read each.
+    const skipWh = rec.wh === true && options?.__pseudoInlineWhRiderReuse !== false
     for (let i = 0; i < rr.length; i++) {
-      const v = style.getPropertyValue(rr[i])
-      if (v) snap[rr[i]] = v
-      else delete snap[rr[i]]
+      const p = rr[i]
+      if (skipWh && (p === 'width' || p === 'height')) continue
+      const v = style.getPropertyValue(p)
+      if (v) snap[p] = v
+      else delete snap[p]
     }
     return snap
   }
@@ -2478,7 +2516,11 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   // pseudo was paid on the deep tree for 1,936 identities that never had a twin. The one
   // write the pass makes afterwards (a flex-item min-width floor) depends on the host's
   // display, identical for twins.
-  snaps.set(key, { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap })
+  const recNew = { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap }
+  // PWH1: decided once on the identity's first occurrence; the false arm leaves the record
+  // exactly historical (no gate work, no rider change).
+  if (options?.__pseudoInlineWhRiderReuse !== false) recNew.wh = pseudoInlineWhReusable(snap, source)
+  snaps.set(key, recNew)
   return snap
 }
 
