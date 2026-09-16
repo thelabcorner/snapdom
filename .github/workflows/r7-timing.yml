@@ -97,25 +97,42 @@ jobs:
       - name: Run gated timing
         id: bench
         run: |
+          # inputs.* are empty on pull_request events — fall back to full defaults there.
+          BENCH_INPUT='${{ inputs.bench }}'
+          BENCH_INPUT=${BENCH_INPUT:-snapshot-overlay}
           BENCH=lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs
-          case '${{ inputs.bench }}' in
+          case "$BENCH_INPUT" in
             style-cache-handoff) BENCH=lane6-scratch/r5/bench-r7-style-cache-handoff-controlled.mjs ;;
             burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
             focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
             option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
           esac
-          ARGS="--candidate=dist/snapdom.mjs --browser=${{ inputs.browser }} --n=${{ inputs.n }} --batch=${{ inputs.batch }} --warmup=3 --bootstrap=12000 --epsilon=0.02"
+          BROWSER='${{ inputs.browser }}'; BROWSER=${BROWSER:-chromium}
+          N='${{ inputs.n }}'; N=${N:-20}
+          BATCH='${{ inputs.batch }}'; BATCH=${BATCH:-3}
+          ARGS="--candidate=dist/snapdom.mjs --browser=$BROWSER --n=$N --batch=$BATCH --warmup=3 --bootstrap=12000 --epsilon=0.02"
           if [ -n '${{ inputs.only }}' ]; then ARGS="$ARGS --only=${{ inputs.only }}"; fi
-          if [ '${{ inputs.bench }}' = 'option-pair' ]; then ARGS="$ARGS ${{ inputs.extra }}"; fi
+          if [ "$BENCH_INPUT" = 'option-pair' ]; then ARGS="$ARGS ${{ inputs.extra }}"; fi
+          set +e
           # shellcheck disable=SC2086
           node lane6-scratch/r5/run-with-timing-gate.mjs -- node "$BENCH" $ARGS
-          echo "exit=$?"
-        # exit 3 = ambient gate BLOCKED (no timing consumed, rerun later);
-        # anything else nonzero = real failure.
+          CODE=$?
+          echo "exit=$CODE"
+          # exit 3 = ambient gate BLOCKED (no timing consumed: neutral, rerun later);
+          # anything else nonzero = real failure.
+          if [ "$CODE" -eq 3 ]; then
+            echo "ambient gate blocked: no timing consumed; rerun later"
+            exit 0
+          fi
+          exit "$CODE"
 
       - name: Summarize
         if: always()
         run: |
+          if ! ls lane6-scratch/r5/results/*.json >/dev/null 2>&1; then
+            echo "no result artifacts (bench never ran)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           node -e "
             const fs = require('fs');
             const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
@@ -141,4 +158,4 @@ jobs:
         with:
           name: r7-timing-${{ inputs.bench }}-${{ inputs.browser }}-n${{ inputs.n }}
           path: lane6-scratch/r5/results/*.json
-          if-no-files-found: error
+          if-no-files-found: warn
