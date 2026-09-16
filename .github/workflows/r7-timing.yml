@@ -24,6 +24,7 @@ on:
           - snapshot-overlay
           - style-cache-handoff
           - burst-scroll
+          - focus-partition
           - option-pair
       browser:
         description: Engine
@@ -90,6 +91,7 @@ jobs:
           case '${{ inputs.bench }}' in
             style-cache-handoff) BENCH=lane6-scratch/r5/bench-r7-style-cache-handoff-controlled.mjs ;;
             burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
+            focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
             option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
           esac
           ARGS="--candidate=dist/snapdom.mjs --browser=${{ inputs.browser }} --n=${{ inputs.n }} --batch=${{ inputs.batch }} --warmup=3 --bootstrap=12000 --epsilon=0.02"
@@ -110,7 +112,8 @@ jobs:
             console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
             for (const f of fs.readdirSync('lane6-scratch/r5/results').filter((x) => x.endsWith('.json') && x !== 'timing-environment-latest.json')) {
               const r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8'));
-              console.log('## ' + f, r.provenance.sha256.slice(0, 12), r.provenance.browser, 'N=' + r.provenance.n);
+              const prov = r.provenance || { sha256: r.sha || r.candidate || 'unknown', browser: r.browser || '?', n: r.n };
+              console.log('## ' + f, String(prov.sha256).slice(0, 12), prov.browser, 'N=' + prov.n);
               for (const [name, fx] of Object.entries(r.fixtures)) {
                 if (fx.pairs) {
                   console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'));

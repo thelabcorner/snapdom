@@ -170,6 +170,18 @@ wall time on these fixtures; allocation/copy removal (SO1 overlays) does. Next h
 timing: clean P1 (30k repeated pseudo snapshot copies — same family as SO1's win), then LCG1
 whole-prepass removal; memo-hit harness for BRST2/BSAFE afterwards.
 
+## Homelab timing campaign 2026-09-16, round 2 (P1 / LCG1 / FP1)
+
+| candidate | run | result |
+|---|---|---|
+| P1 clean (`pseudo-overlay-clean`, `88CBE7A7B01D`) | scout N=8 cards400-safe: -5.0% CI[-8.5,-1.4] CoV 7.0%; full N=20 x3 fixtures | Full: safe -1.6% CoV 20.0%, neutral -2.7% CI[-5.4,0.0] CoV 16.5%, non-neutral CoV 72%. **No claim: noisy, and cards fixtures understate pseudo share (one ::before per card). P1 needs its dedicated repeated-pseudo stress scene for wall timing.** Artifacts `r7-p1-scout-homelab.json`, `r7-p1-controlled-homelab.json`. |
+| LCG1 (`integration`, `5045DE64687A` pre-SO1-fold) | scout N=8: -3.6% CI[-7.2,-0.4] CoV 8.3%; full N=20 x3 | Full: safe -1.2% CI[-3.6,1.1] CoV 7.1%, others neutral/noisy. **Wall-neutral; whole-prepass removal joins SA2/BRST/OFF1 as counter-only on these fixtures.** Artifacts `r7-lcg1-scout-homelab.json`, `r7-lcg1-controlled-homelab.json`. |
+| FP1 (`focus-partition`, `0B64C9B9FF53` = commit `a047f45`) | full N=20/batch=3, focus fixtures | **PROMOTE: focus-20 -20.7% CI[-22.2,-19.2]; focus-400 -39.0% CI[-40.8,-37.2]; focus-1000 -41.8% CI[-43.4,-40.0]; focus-within-400 -43.9% CI[-45.3,-42.4]; mixed-focus-400 -41.2% CI[-42.8,-39.6].** All parity PASS, nulls span 0, CoV 8.6-13.3%. Correctness 33/33 cross-engine + SnapDIFF; full Chromium 227/1790 green (pre-existing); lint + tsc clean; bundle +181 raw. **Watch items (recorded, not blocking):** focus-plus-hover-veto +3.9% CI[1.3,6.8] — mild tax on the veto path, below the regression bar; no-focus-400 -5.4% claim=PASS (unexpected bonus, mechanism TBD). Timing is Chromium-only; cross-engine timing is follow-up (GHA `focus-partition` choice added for exactly this). Artifact `r7-focus-partition-controlled-homelab.json`. |
+
+**Method lesson (winner's curse):** N=8 scouts for OFF1 (-5.8%), P1 (-5.0%) and LCG1 (-3.6%)
+all looked promotable, and all collapsed to neutral at N=20. Scouts are triage only; never
+discuss promotion below N=20 with CoV < 15% and a clean null.
+
 ## R7-SO1 PROMOTED 2026-09-16
 
 `perf/v3-r7-overlay-gutterfix` @ `356f3c1`, bundle `C4E4CCDA7195` (deterministic rebuild verified).
