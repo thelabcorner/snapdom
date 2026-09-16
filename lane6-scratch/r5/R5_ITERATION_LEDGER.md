@@ -170,6 +170,38 @@ wall time on these fixtures; allocation/copy removal (SO1 overlays) does. Next h
 timing: clean P1 (30k repeated pseudo snapshot copies — same family as SO1's win), then LCG1
 whole-prepass removal; memo-hit harness for BRST2/BSAFE afterwards.
 
+## R7-P1 VERDICT: REJECT as production default (pair/triple regression) 2026-09-16
+
+Dedicated stage-1 scene timing on the clean P1 bundle (`88CBE7A7B01D`, homelab, gate PASS,
+N=20/batch=3, parity PASS on all 12 cells, nulls span zero). Harness
+`bench-r7-pseudo-stage1.mjs` (+`pseudo-stage1` workflow choice for reruns); artifacts
+`r7-pseudo-stage1-{parity,full}-homelab.json`.
+
+| scene | effect | verdict |
+|---|---|---|
+| pseudo-20 / pseudo-400 / pseudo-mixed-400 | -5.7% / **-8.6%** / -5.3%, CoV <=12.4% | PASS |
+| pseudo-flex-400 / pseudo-percent-400 / pseudo-state-veto-400 | -6.3% / -9.1% / -7.4%, CoV <=8.8% | PASS |
+| pseudo-before-only-400 | -5.0% CI[-8.2,-1.9] | INCONCLUSIVE (misses epsilon by 0.1pp; not re-run — chasing it would be p-hacking) |
+| pseudo-entropy-400 / no-pseudo-400 | +0.9% / -1.6% | neutral, mechanism correctly inactive |
+| **pseudo-pairs-400** | **+8.2% CI[5.7,10.8], CoV 6.9%** | **REGRESSION** |
+| **pseudo-triples-unique-style-360** | **+7.0% CI[4.6,9.3], CoV 6.3%** | **REGRESSION** |
+| pseudo-pairs-unique-style-400 | +4.1% CI[1.2,7.1] | INCONCLUSIVE, same direction |
+
+Mechanism: occurrence #2 allocates the overlay immediately but stays on the historical key
+path; only #3+ can enter the key cache. Pair scenes never reach #3, so every twin pays the
+overlay allocation plus slower prototype-chain downstream reads with zero offsetting win.
+The 16-miss breaker guards the key cache, but nothing guards the #2 overlay allocation —
+the design note "pair-only pseudos remain off the signature/Map path" is true yet
+insufficient. Pair-heavy CSS is the common real-world shape (any repeated component), so
+protected controls regressing +7-8% fails the promotion rule despite genuine -5..-9% wins
+on repeat-heavy scenes. Byte parity holds everywhere: this is purely a wall-time verdict.
+
+**REJECT P1 as a production default in its current form; keep as research.** Concrete
+follow-up hypothesis (new row if pursued, NOT implemented here): allocate the overlay
+lazily at #3 alongside key-cache entry and keep #2 on the historical spread — pairs then
+cost exactly zero, triples keep key wins minus one spread. Do not re-time P1 on cards
+fixtures; the stage-1 scenes are its acceptance workload.
+
 ## GHA quiet-runner confirmation 2026-09-16 (run 35148249650, PR #1)
 
 First green end-to-end CI timing: ambient gate **median 0.1%** (shared runners are
