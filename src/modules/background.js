@@ -12,7 +12,7 @@
 import { isFirefox, isIOS } from '../utils/browser.js'
 
 import { getStyle, inlineSingleBackgroundEntry, splitBackgroundImage } from '../utils'
-import { backgroundSnapshotFor, needsBackgroundInline, snapshotFor } from './styles.js'
+import { backgroundSnapshotFor, maskLayoutInitialValues, needsBackgroundInline, snapshotFor } from './styles.js'
 import { BG_LAYOUT_PROPS, BORDER_AUX_PROPS, MASK_LAYOUT_PROPS, URL_PROPS } from './backgroundProps.js'
 
 // Kept exported from this module for compatibility with internal/tests that import it here.
@@ -184,8 +184,22 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // disabled we fail closed to the historical unconditional copy.
   const maskLayoutRepresented = !snap || MASK_LAYOUT_PROPS.some((prop) => prop in snap)
   if (options?.__maskLayoutSourceGate !== true || !liveSources || hasLiveMaskSource || maskLayoutRepresented) {
+    // R7-MASKDEF1: in the font-relaxed overlay path an absent mask longhand is live-read per
+    // node. When the complete scan proves the document cannot author mask layout and this node
+    // carries no inline mask channel, the per-tag initial values are stable: capture them once
+    // per (document, tag) and reuse the exact strings. The false arm restores historical reads.
+    const maskInitials = snap && !strictSnap && !maskLayoutRepresented && !hasLiveMaskSource &&
+      options?.__maskLayoutInitialDefaults !== false
+      ? maskLayoutInitialValues(srcNode)
+      : null
     for (const prop of MASK_LAYOUT_PROPS) {
-      const val = read(prop)
+      let val
+      if (maskInitials) {
+        if (maskInitials.has(prop)) val = maskInitials.get(prop)
+        else { val = read(prop); maskInitials.set(prop, val) }
+      } else {
+        val = read(prop)
+      }
       // Skip empty/initial defaults to avoid bloating
       if (!val || val === 'initial') continue
       cloneNode.style.setProperty(prop, val)

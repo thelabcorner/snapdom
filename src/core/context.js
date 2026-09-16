@@ -232,6 +232,11 @@ export function createContext(options = {}) {
     // source sentinel plus snapshot representation proof. Default remains historical because
     // the hardened mechanism produced no standing browser-call reduction.
     __maskLayoutSourceGate: options.__maskLayoutSourceGate,
+    // Internal R7-MASKDEF1 counterfactual. In the font-relaxed BGSNAP1 overlay path, when the
+    // complete scan proves the document and node have no mask channel, per-tag initial mask
+    // layout values are captured once and reused instead of live-read per node. False restores
+    // the historical per-node live reads.
+    __maskLayoutInitialDefaults: options.__maskLayoutInitialDefaults,
     // Internal R7-BGSTATE1 counterfactual. Unique neutral HTML elements can skip the roughly
     // ten-read background/mask/border-image admission probe only when the complete author scan
     // and this node's inline/shadow state prove none of those non-inherited families can apply.

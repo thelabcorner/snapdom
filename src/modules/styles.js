@@ -2001,6 +2001,67 @@ function canSkipBackgroundInlineStateProbe(el, options, docUniverse) {
   }
 }
 
+// R7-MASKDEF1 mask-layout initial-default folding.
+//
+// In the font-relaxed background overlay path (BGSNAP1) every property absent from the
+// same-capture snapshot is live-read per node, because the historical stale worklist
+// materialized those live values into the clone's inline style. Mask longhands are absent
+// from the snapshot whenever the document never authors a mask family property (the R3
+// element universe only keeps properties the page can observe), so a font-epoch asset
+// capture pays 15 live reads per flagged node for values that are the engine's initial
+// computed mask layout for that tag.
+//
+// When the complete document scan proves the page has no mask channel at all (no author
+// mask declaration, no `all` rule, no animation, no unreadable sheet) and the node itself
+// carries no inline mask declaration and no SVG `mask` presentation attribute, then every
+// node of a tag shares that tag's initial values: capture them once per (document, tag)
+// and reuse the exact strings. The emitted bytes are unchanged; only the redundant CSSOM
+// crossings are removed. Any doubt returns null and restores the historical live reads.
+const MASK_DECL_RE = /^(?:mask(?:-|$)|-webkit-mask(?:-|$))/i
+const maskInitialsByDoc = new WeakMap()
+
+/**
+ * Lazy Map(prop -> captured initial value) for a provably mask-initial element, or null
+ * when folding is not proven. The first node of a tag pays the live reads; every later
+ * node of that tag reuses the same strings.
+ * @param {Element} el
+ * @returns {Map<string,string>|null}
+ */
+export function maskLayoutInitialValues(el) {
+  try {
+    const doc = el.ownerDocument || document
+    if (typeof el.getRootNode !== 'function' || el.getRootNode() !== doc) return null
+    if (el.shadowRoot || el.assignedSlot) return null
+    if (el.hasAttribute?.('mask')) return null
+    const scan = scanFor(doc)
+    if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations) return null
+    let safe = scan.__maskLayoutInitialSafe
+    if (safe === undefined) {
+      safe = Array.isArray(scan.elementAllRules) && scan.elementAllRules.length === 0 && !!scan.elementDeclaredProps
+      if (safe) {
+        for (const prop of scan.elementDeclaredProps) {
+          if (MASK_DECL_RE.test(prop)) { safe = false; break }
+        }
+      }
+      Object.defineProperty(scan, '__maskLayoutInitialSafe', { value: safe, configurable: true })
+    }
+    if (!safe) return null
+    const inline = el.style
+    if (inline?.length) {
+      for (let i = 0; i < inline.length; i++) if (MASK_DECL_RE.test(inline[i])) return null
+    }
+    const tag = el.localName || el.tagName?.toLowerCase()
+    if (!tag) return null
+    let byTag = maskInitialsByDoc.get(doc)
+    if (!byTag) maskInitialsByDoc.set(doc, byTag = new Map())
+    let memo = byTag.get(tag)
+    if (!memo) byTag.set(tag, memo = new Map())
+    return memo
+  } catch {
+    return null
+  }
+}
+
 function computeNeedsBgInline(style) {
   return computeBackgroundInlineState(style).needsInline
 }
