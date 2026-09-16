@@ -21,9 +21,11 @@
  * @param {{left:number,top:number,right:number,bottom:number}|null} [clipRect] - Clip mode:
  *   prune subtrees painting entirely outside this viewport-coords window (their clamp work
  *   is discarded with the culled clone anyway).
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache] optional capture-local
+ *   declaration cache shared with later capture phases.
  * @returns {() => void} Combined undo function
  */
-export function lineClampTree(el, clipRect) {
+export function lineClampTree(el, clipRect, styleCache = null) {
   if (!el) return () => {}
   const undos = []
   // 200px of slack around the clip window, the same margin capture.js gives the font walk.
@@ -38,8 +40,10 @@ export function lineClampTree(el, clipRect) {
             bottom < clipRect.top - M || r.top > clipRect.bottom + M) return
       }
     }
-    // One computed-style read per node, shared by both passes (hot path).
-    const cs = getComputedStyle(node)
+    // One computed-style acquisition per node, shared by both clamp passes and optionally
+    // handed to later capture phases.
+    const cs = styleCache?.get?.(node) || getComputedStyle(node)
+    styleCache?.set?.(node, cs)
     const u1 = lineClamp(node, cs)
     if (u1) undos.push(u1)
     const u2 = textEllipsis(node, cs)

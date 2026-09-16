@@ -19,7 +19,8 @@ import { createCaptureSession } from './session.js'
 import { sessionWarn } from '../utils/debug.js'
 import { lineClampTree } from '../modules/lineClamp.js'
 import { runHook, getGlobalPlugins, normalizePlugin } from './plugins.js'
-import { styleShareSafe } from '../modules/styles.js'
+import { needsTextTruncationPrepass, prepareStyleCapture, styleSharePlan } from '../modules/styles.js'
+import { preparePseudoEnvironment } from '../modules/pseudo.js'
 import { stageReaches, DEFAULT_STAGE } from './stages.js'
 import { compressCloneAssets, numberCompressedAssets, snapshotCompressedAssets } from '../modules/compress.js'
 import { applyTextFieldSelectionLayers } from '../modules/selection.js'
@@ -70,6 +71,16 @@ function collectResolveNodeHooks(options) {
 export async function captureDOM(element, options) {
   if (!element) throw new Error('Element cannot be null or undefined')
   options.__session = createCaptureSession(options.cache)
+  // Adopted stylesheet mutations have no MutationObserver signal. The pseudo preflight owns
+  // the existing stylesheet fingerprint that detects them; establish it before styleSharePlan
+  // and deepClone so it can never invalidate freshly-created snapshots halfway through the
+  // same capture.
+  preparePseudoEnvironment(element.ownerDocument || document, options.__session)
+  // `cache:'disabled'` must invalidate the style epoch before styleSharePlan() reads the
+  // per-document dependency scan. CSSOM/adopted-sheet changes have no MutationObserver signal;
+  // deferring this reset until the first inlineAllStyles() node could make the plan one capture
+  // stale even though every ordinary cache had already been cleared.
+  prepareStyleCapture(options.__session, options.cache)
   delete options.__compressedAssets
   delete options.__compressedSnapshot
   delete options.__compressionDensity
@@ -124,21 +135,34 @@ export async function captureDOM(element, options) {
   const preClipRect = state.clip ? resolveClipRect(state.element, state.clip) : null
 
   // Identity-share fast path (see styles.js): decided ONCE per capture, before any clone
-  // work. Both gates are cheap and both err toward full reads: an unscannable stylesheet or
-  // any selector that can split identical identities answers unsafe, and one running
-  // animation/transition anywhere under the root (computed styles differ per frame) turns
-  // it off wholesale. Respect an explicit override so tests can pin the slow path.
+  // work. Safe structural/sibling selectors can now partition otherwise-identical twins by
+  // their exact selector match vector; state/container/counter/scope uncertainty still falls
+  // back to full reads. Running animations/transitions turn sharing off wholesale because
+  // computed styles differ per frame. Respect an explicit override so tests can pin the slow
+  // path exactly as before.
   if (options.__styleShare === undefined) {
     try {
-      options.__styleShare = styleShareSafe(state.element) &&
-        (typeof state.element.getAnimations !== 'function' ||
-          state.element.getAnimations({ subtree: true }).length === 0)
+      const plan = styleSharePlan(state.element, options.__styleShareFocusPartition !== false)
+      const noAnimations = typeof state.element.getAnimations !== 'function' ||
+        state.element.getAnimations({ subtree: true }).length === 0
+      options.__styleShare = plan.share && noAnimations
+      options.__styleShareSelectors = options.__styleShare ? plan.selectors : null
     } catch {
       options.__styleShare = false
+      options.__styleShareSelectors = null
     }
+  } else if (!options.__styleShare) {
+    options.__styleShareSelectors = null
   }
 
-  const undoClamp = lineClampTree(state.element, preClipRect)
+  const needsClampPass = options.__lineClampPassGate === false || needsTextTruncationPrepass(state.element)
+  const undoClamp = needsClampPass
+    ? lineClampTree(
+        state.element,
+        preClipRect,
+        options.__lineClampStyleSeed === false ? null : options.__session?.styleCache,
+      )
+    : () => {}
   try {
     // Keep this capture's own clone→source map — every later pass must use this
     // reference (sessions are per-capture; there is no shared session global).
@@ -212,7 +236,12 @@ export async function captureDOM(element, options) {
     // backdrop-filter can't be trusted to the svg rasterizer (#457): pre-compose it
     // from the already-inlined clone. Non-blocking — a failure just loses the effect.
     try {
-      emulateBackdropFilters(state.element, state.clone, state.nodeMap)
+      emulateBackdropFilters(
+        state.element,
+        state.clone,
+        state.nodeMap,
+        state.options?.__backdropStyleReuse === false ? null : state.styleCache,
+      )
     } catch (e) {
       sessionWarn(options.__session, 'backdrop-filter-failed', 'backdrop-filter emulation failed', e)
       console.warn('[snapdom] backdrop-filter emulation failed:', e)

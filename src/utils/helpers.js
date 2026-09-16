@@ -147,6 +147,40 @@ export function isPasswordInput(el) {
   return !!el && el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'password'
 }
 
+export const SCROLLABLE_OVERFLOW = new Set(['auto', 'scroll', 'hidden', 'overlay'])
+
+/** Whether an element can carry a non-zero programmatic scroll offset. `visible` and `clip`
+ * may report scrollWidth > clientWidth even though scrollTop/scrollLeft stay pinned at zero;
+ * `hidden`, `auto`, and `scroll` accept offsets on Chromium, Firefox, and WebKit. The
+ * document scrolling element is special and remains eligible regardless of computed overflow.
+ * Unknown/unreadable style fails closed to true.
+ * @param {Element} el
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache]
+ */
+export function canCarryScrollOffsetFromStyle(el, cs) {
+  if (!el || el.nodeType !== 1) return false
+  try {
+    const doc = el.ownerDocument
+    if (el === doc?.scrollingElement || el === doc?.documentElement || el === doc?.body) return true
+  } catch { }
+  if (!cs?.length) return true
+  try {
+    const ox = String(cs.overflowX || cs.getPropertyValue?.('overflow-x') || '').toLowerCase()
+    const oy = String(cs.overflowY || cs.getPropertyValue?.('overflow-y') || '').toLowerCase()
+    return SCROLLABLE_OVERFLOW.has(ox) || SCROLLABLE_OVERFLOW.has(oy)
+  } catch {
+    return true
+  }
+}
+
+export function canCarryScrollOffset(el, styleCache = null) {
+  let cs = styleCache?.get?.(el) || null
+  if (!cs?.length) {
+    try { cs = getComputedStyle(el) } catch { return true }
+  }
+  return canCarryScrollOffsetFromStyle(el, cs)
+}
+
 /** Same-length bullet mask: rendered width stays plausible, the secret is gone. */
 export function maskValue(value) {
   return '\u2022'.repeat(String(value ?? '').length)

@@ -38,12 +38,13 @@
  *                            the captured subtree, so any of these is external by
  *                            construction and the frame is torn
  *  - shadow DOM ............ one observer per open root, plus the composed:false listeners
- *                            and the <img> tracker (querySelectorAll does not cross
- *                            the boundary either), rescanned per capture so a root attached
- *                            after the memo is also caught (trackShadowRoots).
- *                            Costs one subtree walk per capture: ~1ms at 8k nodes, against
- *                            a memo that replaces a ~100ms pipeline. Closed roots cannot
- *                            be observed by anyone → `invalidate: true` territory.
+ *                            and the <img> tracker (querySelectorAll does not cross the
+ *                            boundary either). Clean established memos retain the exact
+ *                            element census from their last structural scan and inspect those
+ *                            references for newly attached open roots; a dirty/new-root frame
+ *                            falls back to a fresh recursive census before it can be served.
+ *                            Closed roots cannot be observed by anyone → `invalidate: true`
+ *                            territory.
  *  - canvas pixel draws .... bypass burst (invisible to every observer)
  *  - CSSOM rule edits ...... EXCLUDED (insertRule/rule.style.*) → `invalidate: true`
  *  - impure render plugins . suspend auto memo/diff (plugins.js hasImpureRenderPlugins)
@@ -65,7 +66,7 @@ import {
   invalidateSnapshotsUnder,
 } from '../modules/styles.js'
 import { tryDiffCapture } from './diff.js'
-import { isPasswordInput } from '../utils/helpers.js'
+import { canCarryScrollOffset, canCarryScrollOffsetFromStyle, isPasswordInput } from '../utils/helpers.js'
 
 /** Per-element state lookup; the bounded LRU below retains and disposes live memos. */
 const burstStates = new WeakMap()
@@ -166,32 +167,50 @@ function disposeState(element, state) {
   state.retainedFrameDriven = false
 }
 
-/** Sources whose next painted frame cannot be inferred from DOM/events. Keep auto-burst for
- *  normal DOM, but bypass it entirely for these uncommon trees. One traversal also crosses
- *  open shadow roots; it replaces the old canvas-only traversal on the same hot path. */
-export function isAutoBurstSafe(element) {
-  if (knownFrameDriven.has(element)) return false
+/** Structural half of auto-burst admission. Unlike the historical full classifier this does
+ * not read any per-node style/src payload. A fresh/dirty frame needs the complete OPEN-tree
+ * census; clean established memos retain this exact element list and can detect the one
+ * record-less structural exception (attachShadow()) by checking those references directly.
+ * The resulting list is also reused by the full classifier, shadow/image trackers and semantic
+ * scroll admission so one call never walks the same tree twice just for bookkeeping. */
+function scanAutoBurstStructure(element) {
   safetyScans.delete(element)
   const scopes = [element]
   const controls = []
   const images = []
+  const scannedElements = []
   for (let i = 0; i < scopes.length; i++) {
     const scope = scopes[i]
     const nodes = []
     if (scope?.nodeType === 1) nodes.push(scope)
-    try { nodes.push(...scope.querySelectorAll('*')) } catch { return false }
+    try { nodes.push(...scope.querySelectorAll('*')) } catch { return null }
     for (const el of nodes) {
+      scannedElements.push(el)
       if (el.shadowRoot) scopes.push(el.shadowRoot)
+      const tag = String(el.localName || el.tagName || '').toLowerCase()
+      if (tag === 'img') {
+        images.push(el)
+      }
+      if (/^(?:input|textarea|select|option)$/.test(tag)) controls.push(el)
+    }
+  }
+  const scan = { roots: scopes.slice(1), controls, images, scannedElements }
+  safetyScans.set(element, scan)
+  return scan
+}
+
+/** Complete historical unsafe/frame-source classifier over an already enumerated structure. */
+function classifyAutoBurstScan(scan) {
+  if (!scan) return false
+  for (const el of scan.scannedElements) {
       const tag = String(el.localName || el.tagName || '').toLowerCase()
       if (/^(?:iframe|canvas|video|audio|object|embed|marquee|blink)$/.test(tag)) return false
       if (tag === 'progress' && !el.hasAttribute('value')) return false
       if (/^(?:animate|animatetransform|animatemotion|set)$/.test(tag)) return false
       let src = ''
       if (tag === 'img') {
-        images.push(el)
         try { src = el.currentSrc || el.src || '' } catch { }
       }
-      if (/^(?:input|textarea|select|option)$/.test(tag)) controls.push(el)
       const style = el.getAttribute?.('style') || ''
       let record = animationSources.get(el)
       if (src || style) {
@@ -201,10 +220,20 @@ export function isAutoBurstSafe(element) {
         }
         if (record.animated) return false
       } else if (record) animationSources.delete(el)
-    }
   }
-  safetyScans.set(element, { roots: scopes.slice(1), controls, images })
   return true
+}
+
+/** Sources whose next painted frame cannot be inferred from DOM/events. Keep auto-burst for
+ * normal DOM, but bypass it entirely for these uncommon trees. `allowEstablishedFastPath`
+ * changes only API-entry admission: an existing state may enter captureWithBurst without this
+ * expensive classifier because that function synchronously drains observers, performs the
+ * mandatory structural shadow-root census, and reclassifies before any dirty/new-root frame
+ * can be served or committed. Direct callers/tests keep the historical full answer. */
+export function isAutoBurstSafe(element, allowEstablishedFastPath = false) {
+  if (knownFrameDriven.has(element)) return false
+  if (allowEstablishedFastPath && burstStates.has(element)) return true
+  return classifyAutoBurstScan(scanAutoBurstStructure(element))
 }
 
 /**
@@ -223,6 +252,8 @@ function trackShadowRoots(element, state) {
   if (scanned) {
     state.controls = scanned.controls
     state.scannedImages = scanned.images
+    state.scannedScrollElements = scanned.scannedElements
+    state.safetyElements = state.retainSafetyElements ? scanned.scannedElements : null
   }
   if (!scanned) {
     const bases = [element]
@@ -480,21 +511,84 @@ function collectControls(element, state) {
   state.controls = controls
 }
 
-/** Discover scroll offsets that can repaint without a MutationRecord. The layout reads happen
- *  only when state is created or a full capture commits; memo hits sample the short list. */
-function collectScrollNodes(element, state) {
+/** Discover scroll offsets that can repaint without a MutationRecord.
+ *
+ * Historical mode proves overflow with four layout getters per node. Semantic mode does no
+ * geometry discovery: before the first full capture it tracks the whole reachable tree so a
+ * same-task programmatic scroll is visible; after a capture it narrows to exact overflow-
+ * eligible nodes from the capture-local live style cache. Zero offsets are represented
+ * sparsely by renderStateOf(), so the broad->narrow transition does not manufacture a state
+ * change. Root/ancestor scroll is always tracked because it can move the captured element. */
+function collectScrollNodes(element, state, styleCache = null, sourceNodes = null) {
   const out = []
   const seen = new Set()
   const add = (el, force = false) => {
     if (!el || seen.has(el)) return
     seen.add(el)
     try {
-      if (force || el.scrollLeft || el.scrollTop || el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) out.push(el)
+      if (force) { out.push(el); return }
+      if (state.semanticScrollTracking) {
+        if (!styleCache || canCarryScrollOffset(el, styleCache)) out.push(el)
+        return
+      }
+      if (el.scrollLeft || el.scrollTop || el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) out.push(el)
     } catch { }
   }
   for (let el = element; el; el = el.parentElement) add(el, true)
-  for (const scope of scopesOf(element, state)) for (const el of elementsOf(scope)) add(el)
+  if (sourceNodes) {
+    for (const el of sourceNodes) add(el)
+  } else {
+    for (const scope of scopesOf(element, state)) for (const el of elementsOf(scope)) add(el)
+  }
   state.scrollNodes = out
+}
+
+function serializeSparseScroll(x, y, entries) {
+  const rows = []
+  for (const [ref, pair] of entries) {
+    const left = pair[0] || 0
+    const top = pair[1] || 0
+    if (left || top) rows.push([ref, left, top])
+  }
+  rows.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
+  const out = [x || 0, y || 0]
+  for (const row of rows) out.push(...row)
+  return out.join('|')
+}
+
+function sparseScrollState(view, nodes) {
+  const entries = new Map()
+  for (const el of nodes) {
+    const left = el.scrollLeft || 0
+    const top = el.scrollTop || 0
+    if (left || top) entries.set(signatureRef(el), [left, top])
+  }
+  return serializeSparseScroll(view?.scrollX || 0, view?.scrollY || 0, entries)
+}
+
+function beginCaptureScrollBaseline(element) {
+  const doc = element.ownerDocument || document
+  const view = doc.defaultView
+  const baseline = {
+    x: view?.scrollX || 0,
+    y: view?.scrollY || 0,
+    entries: new Map(),
+  }
+  // Ancestors are outside the capture's style walk but can move the captured root. Record
+  // them now; zero values are retained internally so a later observation cannot overwrite
+  // the true capture-start baseline.
+  for (let el = element; el; el = el.parentElement) {
+    const ref = signatureRef(el)
+    if (!baseline.entries.has(ref)) baseline.entries.set(ref, [el.scrollLeft || 0, el.scrollTop || 0])
+  }
+  return baseline
+}
+
+function recordCaptureScrollBaseline(baseline, el, cs) {
+  if (!baseline || !canCarryScrollOffsetFromStyle(el, cs)) return
+  const ref = signatureRef(el)
+  if (baseline.entries.has(ref)) return
+  baseline.entries.set(ref, [el.scrollLeft || 0, el.scrollTop || 0])
 }
 
 /** State that can change what paints while producing no MutationRecord. It is sampled before
@@ -520,8 +614,14 @@ function renderStateOf(element, state) {
   const fullscreen = doc.fullscreenElement
   if (active?.contains(element) || element.contains(active)) style.push(signatureRef(active))
   if (fullscreen?.contains(element) || element.contains(fullscreen)) style.push(signatureRef(fullscreen))
-  const scroll = [view?.scrollX || 0, view?.scrollY || 0]
-  for (const el of state.scrollNodes) scroll.push(el.scrollLeft || 0, el.scrollTop || 0)
+  let scroll
+  if (state.semanticScrollTracking) {
+    scroll = sparseScrollState(view, state.scrollNodes)
+  } else {
+    const values = [view?.scrollX || 0, view?.scrollY || 0]
+    for (const el of state.scrollNodes) values.push(el.scrollLeft || 0, el.scrollTop || 0)
+    scroll = values.join('|')
+  }
   const controls = []
   for (const el of state.controls) {
     const tag = String(el.localName || '').toLowerCase()
@@ -541,7 +641,7 @@ function renderStateOf(element, state) {
   }
   return {
     style: style.join('|'),
-    scroll: scroll.join('|'),
+    scroll,
     controls,
     images,
     frameDriven: state.retainedFrameDriven,
@@ -589,7 +689,12 @@ function targetScope(element, state, target) {
  * listeners for the record-less half of the matrix, and the shadow and image
  * trackers. Runs once per element; captureWithBurst keeps the result in burstStates.
  */
-function createState(element) {
+function createState(
+  element,
+  semanticScrollTracking = true,
+  captureScrollBaseline = true,
+  retainSafetyElements = true,
+) {
   const state = {
     dirty: true,
     pending: [],           // records seen while capturing, judged by hasTornMutation after
@@ -606,8 +711,13 @@ function createState(element) {
     trackedImages: new Map(),
     images: [],
     scannedImages: null,
+    scannedScrollElements: null,
     scrollNodes: [],
+    semanticScrollTracking,
+    captureScrollBaseline,
     controls: [],
+    retainSafetyElements,
+    safetyElements: null,
     envEpoch: getStyleEnvEpoch(), // shared head+fonts environment epoch (styles.js)
     styleEpoch: getStyleEpoch(),
     styleStamp: getStyleStamp(element),
@@ -679,7 +789,11 @@ function createState(element) {
   } catch { /* degrade: record-less interactions won't invalidate */ }
   const usedSafetyScan = trackShadowRoots(element, state)
   if (!usedSafetyScan) collectControls(element, state)
-  collectScrollNodes(element, state)
+  const initialScrollSources = state.semanticScrollTracking && state.captureScrollBaseline
+    ? []
+    : state.scannedScrollElements
+  collectScrollNodes(element, state, null, initialScrollSources)
+  state.scannedScrollElements = null
   trackPendingImages(element, state)
   return state
 }
@@ -777,12 +891,21 @@ function optionsSignature(userOptions, plugins) {
  * @returns {Promise<object>} the memoized or freshly captured result
  */
 export function captureWithBurst(element, userOptions, context, runCapture, makeResult = null) {
+  const retainedSafetyFastPath = context.__burstRetainedSafetyFastPath !== false
+  const retainedShadowProbe = context.__burstRetainedShadowProbe !== false
   let state = burstStates.get(element)
   if (!state) {
-    state = createState(element)
+    state = createState(
+      element,
+      context.__burstSemanticScrollTracking !== false,
+      context.__burstCaptureScrollBaseline !== false,
+      retainedShadowProbe,
+    )
     state.baselineSignature = optionsSignature(userOptions, context.plugins)
     burstStates.set(element, state)
   }
+  state.retainSafetyElements = retainedShadowProbe
+  if (!retainedShadowProbe) state.safetyElements = null
   const sig = optionsSignature(userOptions, context.plugins)
 
   const run = async () => {
@@ -806,18 +929,67 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
     } else {
       state.pendingSig = null
     }
+    let structuralScan = safetyScans.get(element) || null
+    let discoveredShadow = false
+    if (retainedSafetyFastPath) {
+      // The optimized established-state path deliberately skipped the API-entry classifier.
+      // Drain existing observers first. A clean state cannot gain/lose a DOM element without
+      // producing one of these records, so BSAFE2 may reuse the previous exact element census.
+      for (const o of state.observers) o.__flush(o.takeRecords())
+      flushStyleInvalidations()
+
+      if (retainedShadowProbe && !state.dirty && state.safetyElements) {
+        // attachShadow() is the record-less structural exception. Existing source elements are
+        // stable while clean, so inspect only those references for a newly exposed open root.
+        for (const el of state.safetyElements) {
+          const root = el?.shadowRoot
+          if (root && !state.trackedShadowRoots.has(root)) {
+            discoveredShadow = true
+            break
+          }
+        }
+      }
+
+      if (!retainedShadowProbe || state.dirty || !state.safetyElements || discoveredShadow) {
+        structuralScan = scanAutoBurstStructure(element)
+        if (!structuralScan) {
+          disposeState(element, state)
+          return runCapture()
+        }
+        for (const root of structuralScan.roots) {
+          if (!state.trackedShadowRoots.has(root)) { discoveredShadow = true; break }
+        }
+      } else {
+        structuralScan = null
+      }
+    } else {
+      // Exact historical ordering/cost model for the same-build false arm: API entry already
+      // produced a complete safety scan, and the trackers consume it before observer draining.
+      trackShadowRoots(element, state)
+      trackPendingImages(element, state)
+      for (const o of state.observers) o.__flush(o.takeRecords())
+      flushStyleInvalidations()
+    }
+
     // Before serving: a shadow root attached since the last capture produces no mutation
-    // record anywhere, so it has to be discovered by scanning.
-    trackShadowRoots(element, state)
-    // Same for an <img> appended since the last capture's finally: it carries no load
-    // listener yet, so its arrival would not invalidate the memo. Arming here as well as in
-    // the finally closes the between-captures window, at one querySelectorAll('img') next
-    // to the subtree walk trackShadowRoots already does.
-    trackPendingImages(element, state)
-    for (const o of state.observers) o.__flush(o.takeRecords())
-    // The document-wide observer owns selector reach outside the capture. Drain it before a
-    // memo decision so same-task sibling/ancestor mutations have already moved root's stamp.
-    flushStyleInvalidations()
+    // record anywhere, so it has to be discovered by scanning. The structural scan also
+    // supplies image/control lists to the adjacent trackers without another subtree walk.
+    if (retainedSafetyFastPath && structuralScan) {
+      trackShadowRoots(element, state)
+      trackPendingImages(element, state)
+    }
+
+    // A clean established memo has already been proven safe. Re-run the COMPLETE historical
+    // frame-source classifier only when something observer-visible changed, or attachShadow()
+    // exposed a new root that no observer could have reported. Classification reuses the
+    // structural node list above, so even the dirty path avoids a duplicate querySelectorAll.
+    if (retainedSafetyFastPath && structuralScan && (state.dirty || discoveredShadow) &&
+        !classifyAutoBurstScan(structuralScan)) {
+      safetyScans.delete(element)
+      disposeState(element, state)
+      return runCapture()
+    }
+    safetyScans.delete(element)
     const outsideMutations = getOutsideMutationCount(element)
     // A local dirty root cannot represent simultaneous ancestor/sibling/container changes.
     // Purely internal edits keep diff, including its geometry-reconcile path.
@@ -916,6 +1088,13 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
       return state.last
     }
 
+    let firstCaptureScrollBaseline = null
+    if (state.semanticScrollTracking && state.captureScrollBaseline && !state.renderState) {
+      firstCaptureScrollBaseline = beginCaptureScrollBaseline(element)
+      context.__recordScrollBaseline = (el, cs) =>
+        recordCaptureScrollBaseline(firstCaptureScrollBaseline, el, cs)
+    }
+
     state.capturing = true
     let pendingRetained = null
     try {
@@ -958,20 +1137,30 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
           state.retained = pendingRetained
           state.retainedFrameDriven = retainedHasFrameDriven(pendingRetained)
           collectControls(element, state)
-          collectScrollNodes(element, state)
+          collectScrollNodes(element, state, pendingRetained.styleCache, pendingRetained.nodeMap?.values())
         } else if (usedDiff) {
           // Diff mutates the retained clone/maps in place. Inspect only rebuilt roots: this
           // closes static→animated blob/extensionless changes without a whole-clone rescan.
           state.retainedFrameDriven ||= retainedHasFrameDriven(state.retained, diffRoots)
           collectControls(element, state)
-          collectScrollNodes(element, state)
+          collectScrollNodes(element, state, state.retained?.styleCache, state.retained?.nodeMap?.values())
         }
         const committedRenderState = renderStateOf(element, state)
         committedRenderState.animation = animationSignature(animationsInScopes(element, state))
         const stableKeys = ['style', 'scroll', 'controls', 'images']
         if (!animationRunning) stableKeys.push('animation')
+        const stableReference = firstCaptureScrollBaseline
+          ? {
+              ...liveRenderState,
+              scroll: serializeSparseScroll(
+                firstCaptureScrollBaseline.x,
+                firstCaptureScrollBaseline.y,
+                firstCaptureScrollBaseline.entries,
+              ),
+            }
+          : liveRenderState
         const stableRenderState = stableKeys
-          .every((key) => sameRenderState(liveRenderState, committedRenderState, key))
+          .every((key) => sameRenderState(stableReference, committedRenderState, key))
         state.renderState = committedRenderState
         state.styleEpoch = getStyleEpoch()
         state.styleStamp = getStyleStamp(element)
@@ -995,6 +1184,7 @@ export function captureWithBurst(element, userOptions, context, runCapture, make
       return result
     } finally {
       context.__retain = undefined
+      context.__recordScrollBaseline = undefined
       for (const o of state.observers) for (const rec of o.takeRecords()) state.pending.push(rec)
       // Drain self-undoing preparation now, so it cannot appear as fresh outside work on the
       // next call. A real outside mutation during the capture still tears this frame.

@@ -305,7 +305,11 @@ async function diffCapture(element, state, context) {
     if (context.compress) {
       try { await compressCloneAssets(sub, context, delta) } catch { /* parity with full */ }
     }
-    for (const [cloneNode, srcNode] of delta.entries()) wrapScrolledClone(cloneNode, srcNode)
+    for (const [cloneNode, srcNode] of delta.entries()) {
+      wrapScrolledClone(
+        cloneNode, srcNode, R.styleCache, context.__wrapScrolledSemanticGate !== false, context.__recordScrollBaseline
+      )
+    }
 
     oldClone.replaceWith(sub)
     pruneSubtreeFromMaps(oldClone, R)
