@@ -70,6 +70,11 @@ const crossOriginCss = (() => {
 const network = await networkGate.status()
 
 export default defineConfig({
+  // Focus/style unit tests now use SnapDIFF's browser-side diff engine directly. Pre-bundle it
+  // up front: discovering this dependency lazily during BROWSER=all reloads one Vitest worker
+  // mid-suite (WebKit was the unlucky worker in the first run), which Vitest correctly warns can
+  // duplicate/lose tests. This is test-harness-only and has zero effect on SnapDOM's bundle.
+  optimizeDeps: { include: ['@zumer/snapdiff/diff'] },
   // packages/plugins/* import '@zumer/snapdom' by NAME (they are published separately, so they
   // must). Under test that name resolved to whatever npm had installed in node_modules — the
   // last PUBLISHED release, 2.24.1 — so gif-export and video-export ran their internal

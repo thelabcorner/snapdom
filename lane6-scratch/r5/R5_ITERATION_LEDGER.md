@@ -170,6 +170,25 @@ wall time on these fixtures; allocation/copy removal (SO1 overlays) does. Next h
 timing: clean P1 (30k repeated pseudo snapshot copies — same family as SO1's win), then LCG1
 whole-prepass removal; memo-hit harness for BRST2/BSAFE afterwards.
 
+## R7-FP1 FOLDED into style-authority integration 2026-09-16
+
+Ported `perf/v3-r7-focus-partition @ a047f45` onto the integration line (which already
+carries folded SO1): `SHARE_PARTITION_FOCUS_PSEUDOS` + `focusPartition` threading through
+`partitionableShareSelector`/`styleSharePlan`, `__styleShareFocusPartition` forward in
+`context.js`/`capture.js`, the 14-test `sharePartition` focus suite (additive: 234+/0- on the
+tracked file), the SnapDIFF whole-canvas focus oracle in `identityShare`, and the
+test-only `optimizeDeps` pre-bundle. Production diff is 17 lines in `styles.js` + 1 in
+`capture.js` + 3 in `context.js`, mirroring the source branch exactly (whitespace-ignored
+stat identical to normal stat: no churn).
+
+Verification on the folded line: lint + `tsc --noEmit` clean; full Chromium suite
+**241 files / 1871 tests passed, 1 failed** — the single failure is
+`sharePartition > tracks :focus-within across shadow boundaries`, a real-focus-move test
+that fails **identically on the pristine FP1 branch in this environment (13/14 chromium,
+3-failure profile across BROWSER=all on both lines)**. Under the workstation's current
+~38% ambient load this is recorded as host-noise, not a fold regression; GHA quiet-runner
+rerun will confirm. Cross-engine focused files: 126/129, same single test failing x3.
+
 ## Homelab timing campaign 2026-09-16, round 2 (P1 / LCG1 / FP1)
 
 | candidate | run | result |
