@@ -200,6 +200,45 @@ describe('PWH1 — pseudo inline width/height rider', () => {
     }
     await round('.mu::before{content:"";display:block;width:50%;height:40px;background:#00e}', 'blockified')
     await round('.mu::before{content:"";display:inline;width:25cqw;height:5cqh;background:#00e}', 'container units')
-    await round('.mu::before{content:"";display:inline;width:50%;height:40px;background:#00e}', 'inline again')
+    await round('.mu::before{content:""}'.replace('content:""', 'content:"";display:inline;width:50%;height:40px;background:#00e'), 'inline again')
+  })
+
+  it('fails closed on the adversary @container / container-unit fixtures (exact parity)', async () => {
+    // pwh1-adversary fixtures: `.wrap{width:max-content}` with short vs long text makes the two
+    // query containers differ, so the wide twin's pseudo flips to display:block while the narrow
+    // twin stays inline — the first twin's gate decision must not ride onto it.
+    const CQ = '.wrap{display:block;width:max-content}.host{font:16px Arial}.cq{container-type:inline-size}'
+    const body = (n) => {
+      let h = ''
+      for (let i = 0; i < n; i++) {
+        h += '<div class="wrap">A<div class="cq"><div class="host"></div></div></div>'
+        h += `<div class="wrap">${'B'.repeat(37)}<div class="cq"><div class="host"></div></div></div>`
+      }
+      return h
+    }
+    const cases = [
+      ['cq-empty-width', '.host::before{display:inline;content:"";width:10cqw;height:12px}'],
+      ['cq-height-content', '.host::before{display:inline;content:"p";height:10cqw}'],
+      ['cq-height-empty', '.host::before{display:inline;content:"";height:10cqw}'],
+      ['container-flip', '.host::before{display:inline;content:"";width:50%;height:12px}@container (min-width:150px){.host::before{display:block}}'],
+    ]
+    for (const [name, rule] of cases) {
+      const before = mounted.length
+      const el = mount(CQ + rule, body(100))
+      await settle()
+      if (name === 'container-flip') {
+        // Pin the hazard the guard exists for: the twins really do compute different displays.
+        const hosts = el.querySelectorAll('.host')
+        expect(getComputedStyle(hosts[0], '::before').display).toBe('inline')
+        expect(getComputedStyle(hosts[1], '::before').display).toBe('block')
+      }
+      const hist = await arm(el, HIST)
+      const cand = await arm(el, CAND)
+      expect(cand.value, name).toBe(hist.value)
+      // 200 hosts: an open gate would remove 2*199 = 398 reads; the guard must remove none.
+      expect(Math.abs(hist.n - cand.n), name).toBeLessThanOrEqual(10)
+      while (mounted.length > before) mounted.pop().remove()
+      await settle()
+    }
   })
 })
