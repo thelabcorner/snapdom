@@ -1,0 +1,17 @@
+{
+ "engine": "webkit",
+ "fixtures": {
+  "late-mutation": {
+   "onReads": 114,
+   "offReads": 114,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  },
+  "crossorigin": {
+   "onReads": 170,
+   "offReads": 170,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  }
+ }
+}
