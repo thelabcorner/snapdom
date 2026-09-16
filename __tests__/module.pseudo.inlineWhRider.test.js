@@ -240,5 +240,37 @@ describe('PWH1 — pseudo inline width/height rider', () => {
       while (mounted.length > before) mounted.pop().remove()
       await settle()
     }
+
+    // rev3: cq units OUTSIDE width/height (line-height/font-size), and the inline-style
+    // container channel that no stylesheet scan can see.
+    const CQI = '.wrap{display:block;width:max-content}.host{font:16px Arial}'
+    const inlineBody = (n, hostInline) => {
+      let h = ''
+      for (let i = 0; i < n; i++) {
+        h += '<div class="wrap">A<div class="cq" style="container-type:inline-size"><div class="host"></div></div></div>'
+        h += `<div class="wrap">${'B'.repeat(37)}<div class="cq" style="container-type:inline-size"><div class="host"${hostInline ? ` style="${hostInline}"` : ''}></div></div></div>`
+      }
+      return h
+    }
+    const inlineCases = [
+      ['lineheight-cq-inline-container', CQI + '.host::before{display:inline;content:"p";line-height:2cqw;height:1lh;width:12px}', '', 'height'],
+      ['fontsize-cq-empty-inline-container', CQI + '.host::before{display:inline;content:"";font-size:2cqw;width:1em;height:12px}', '', 'width'],
+      ['inline-host-fontsize-cq', CQI + '.host::before{display:inline;content:"";width:1em;height:12px}', 'font-size:2cqw', 'width'],
+    ]
+    for (const [name, css, hostInline, liveProp] of inlineCases) {
+      const before = mounted.length
+      const el = mount(css, inlineBody(100, hostInline))
+      await settle()
+      // Pin the hazard: the twins' live pseudo box really does resolve differently.
+      const hosts = el.querySelectorAll('.host')
+      expect(getComputedStyle(hosts[0], '::before')[liveProp])
+        .not.toBe(getComputedStyle(hosts[1], '::before')[liveProp])
+      const hist = await arm(el, HIST)
+      const cand = await arm(el, CAND)
+      expect(cand.value, name).toBe(hist.value)
+      expect(Math.abs(hist.n - cand.n), name).toBeLessThanOrEqual(10)
+      while (mounted.length > before) mounted.pop().remove()
+      await settle()
+    }
   })
 })

@@ -129,6 +129,10 @@ const PSEUDO_LENGTH_UNSTABLE_RE = /cq(?:w|h|i|b|min|max)\b|var\(|env\(/i
 // whose box is block-level (used width/height). Container declarations are the enabling
 // channel. Document-wide and fail closed, like the other instability flags.
 const CONTAINER_DECL_RE = /^(?:container|container-type|container-name)$/
+// PWH1: a cq unit in ANY declaration (font-size, line-height, ...) makes downstream em/lh-derived
+// pseudo width/height resolve against a container that can differ between identity twins, and the
+// resolved px no longer reveals provenance. Checked per rule behind a cheap cssText guard.
+const CONTAINER_UNIT_RE = /cq(?:w|h|i|b|min|max)\b/i
 const INSET_PROP_RE = /^(?:top|right|bottom|left|inset(?:-|$))/
 // Values that can make a non-inherited margin compute to the `auto` keyword that
 // getComputedStyle() later exposes as used 0px. var()/attr()/inherit/revert stay conservative:
@@ -359,6 +363,7 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (style) {
       const cssText = style.cssText || ''
       const styleMayHaveAttr = mayContainAttrFunction(cssText)
+      const ruleMayHaveCq = cssText.includes('cq')
       // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
       // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
       // per selector below so an unrelated reset rule does not disable narrowing globally.
@@ -400,6 +405,9 @@ function scanRules(rules, universe, pseudoSels, state) {
         if (!state.pseudoLengthUnstable && pseudoRule && (prop === 'width' || prop === 'height') &&
             PSEUDO_LENGTH_UNSTABLE_RE.test(readValue())) {
           state.pseudoLengthUnstable = true
+        }
+        if (!state.pseudoContainerUnstable && ruleMayHaveCq && CONTAINER_UNIT_RE.test(readValue())) {
+          state.pseudoContainerUnstable = true
         }
         if (!state.pseudoContainerUnstable && CONTAINER_DECL_RE.test(prop)) {
           state.pseudoContainerUnstable = true
