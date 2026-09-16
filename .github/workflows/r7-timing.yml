@@ -157,10 +157,17 @@ jobs:
             }
           " >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Collect run artifacts
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/r7out"
+          find lane6-scratch/r5/results -name "*.json" -newer "$RUNNER_TEMP/r7_t0" -exec cp {} "$RUNNER_TEMP/r7out/" \;
+          ls "$RUNNER_TEMP/r7out" || true
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: r7-timing-${{ inputs.bench || 'snapshot-overlay' }}-${{ inputs.browser || 'chromium' }}-n${{ inputs.n || '20' }}
-          path: lane6-scratch/r5/results/*.json
+          path: ${{ runner.temp }}/r7out/*.json
           if-no-files-found: warn

@@ -170,6 +170,19 @@ wall time on these fixtures; allocation/copy removal (SO1 overlays) does. Next h
 timing: clean P1 (30k repeated pseudo snapshot copies — same family as SO1's win), then LCG1
 whole-prepass removal; memo-hit harness for BRST2/BSAFE afterwards.
 
+## GHA quiet-runner confirmation 2026-09-16 (run 35148249650, PR #1)
+
+First green end-to-end CI timing: ambient gate **median 0.1%** (shared runners are
+quieter than either local host). Candidate `ABB8360C0EDA` = folded line (SO1+FP1), same-bundle
+overlay counterfactual — SO1's marginal effect on top of FP1, still clean factorial logic:
+cards400-safe **-14.6%** (CoV 19.0%, inconclusive), neutral-unsafe **-10.8%** (CoV 49.2%,
+inconclusive), **non-neutral -10.6% CI[-11.4,-9.7], null exactly 0.0% CI[-1.3,1.4], CoV 4.3%,
+claim=PASS**. Parity PASS everywhere. Combined with homelab (safe+neutral claimed there),
+all three fixtures now have an independent claim with consistent ~-10 to -15% points.
+Artifact `r7-snapshot-overlay-controlled-gha.json`. CI fixes made along the way: PR-event
+input defaults, neutral gate-block exit, mtime-scoped summary/uploads, `process.exit`
+instead of bare `return` in `node -e`.
+
 ## R7-FP1 FOLDED into style-authority integration 2026-09-16
 
 Ported `perf/v3-r7-focus-partition @ a047f45` onto the integration line (which already
