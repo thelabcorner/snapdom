@@ -107,6 +107,7 @@ jobs:
             focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
             option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
           esac
+          touch "$RUNNER_TEMP/r7_t0"
           BROWSER='${{ inputs.browser }}'; BROWSER=${BROWSER:-chromium}
           N='${{ inputs.n }}'; N=${N:-20}
           BATCH='${{ inputs.batch }}'; BATCH=${BATCH:-3}
@@ -129,16 +130,20 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          if ! ls lane6-scratch/r5/results/*.json >/dev/null 2>&1; then
-            echo "no result artifacts (bench never ran)" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          # Only this run's outputs: the branch carries committed probe JSONs with
+          # unrelated schemas, so scope by mtime (marker touched just before the gate).
           node -e "
             const fs = require('fs');
+            const path = require('path');
+            const { execSync } = require('child_process');
+            const fresh = execSync('find lane6-scratch/r5/results -name \"*.json\" -newer \"$RUNNER_TEMP/r7_t0\" -print', { encoding: 'utf8' }).split('\n').filter(Boolean).map((p) => path.basename(p));
+            if (!fresh.includes('timing-environment-latest.json')) { console.log('no result artifacts (bench never ran)'); return; }
             const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
             console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
-            for (const f of fs.readdirSync('lane6-scratch/r5/results').filter((x) => x.endsWith('.json') && x !== 'timing-environment-latest.json')) {
-              const r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8'));
+            for (const f of fresh.filter((x) => x !== 'timing-environment-latest.json')) {
+              let r;
+              try { r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8')); } catch { console.log('## ' + f + ' (unparseable, skipped)'); continue; }
+              if (!r || typeof r !== 'object' || !r.fixtures || typeof r.fixtures !== 'object') { console.log('## ' + f + ' (not a bench report, skipped)'); continue; }
               const prov = r.provenance || { sha256: r.sha || r.candidate || 'unknown', browser: r.browser || '?', n: r.n };
               console.log('## ' + f, String(prov.sha256).slice(0, 12), prov.browser, 'N=' + prov.n);
               for (const [name, fx] of Object.entries(r.fixtures)) {
@@ -156,6 +161,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: r7-timing-${{ inputs.bench }}-${{ inputs.browser }}-n${{ inputs.n }}
+          name: r7-timing-${{ inputs.bench || 'snapshot-overlay' }}-${{ inputs.browser || 'chromium' }}-n${{ inputs.n || '20' }}
           path: lane6-scratch/r5/results/*.json
           if-no-files-found: warn
