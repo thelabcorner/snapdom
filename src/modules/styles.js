@@ -2402,8 +2402,9 @@ function identityFor(el, st, selectors = null) {
       // element's own style attribute is checked here, so a container ancestor INSIDE the
       // capture is seen before the pseudo gate runs. Capture-local and fail closed.
       if (name === 'style') {
-        const v = attr.value
-        if (v.includes('cq') || v.includes('container')) st.containerExposure = true
+        // CSS property names and units are case-insensitive, so an uppercase spelling
+        // (CONTAINER-TYPE / 2CQW) resolves normally and must not slip past this guard.
+        if (/cq|container/i.test(attr.value)) st.containerExposure = true
       }
       if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) {
         // Engine-owned markers participate in shadow/pseudo/internal pipeline contracts that

@@ -128,7 +128,7 @@ const PSEUDO_LENGTH_UNSTABLE_RE = /cq(?:w|h|i|b|min|max)\b|var\(|env\(/i
 // partition proof cannot split them, and the first twin's `inline` would ride onto a twin
 // whose box is block-level (used width/height). Container declarations are the enabling
 // channel. Document-wide and fail closed, like the other instability flags.
-const CONTAINER_DECL_RE = /^(?:container|container-type|container-name)$/
+const CONTAINER_DECL_RE = /^(?:container|container-type|container-name)$/i
 // PWH1: a cq unit in ANY declaration (font-size, line-height, ...) makes downstream em/lh-derived
 // pseudo width/height resolve against a container that can differ between identity twins, and the
 // resolved px no longer reveals provenance. Checked per rule behind a cheap cssText guard.
@@ -363,7 +363,8 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (style) {
       const cssText = style.cssText || ''
       const styleMayHaveAttr = mayContainAttrFunction(cssText)
-      const ruleMayHaveCq = cssText.includes('cq')
+      // Case-insensitive: CSS units are case-insensitive and CSSOM may preserve author case.
+      const ruleMayHaveCq = /cq/i.test(cssText)
       // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
       // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
       // per selector below so an unrelated reset rule does not disable narrowing globally.
