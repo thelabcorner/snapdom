@@ -1,0 +1,131 @@
+name: R7 decision-quality timing (scout-grade)
+
+# Same-bundle option-only crossovers with fresh-page slot crossover, symmetric
+# warmup, paired log ratios, full-copy null control, seeded bootstrap and no
+# outlier deletion. See lane6-scratch/r5/R5_ITERATION_LEDGER.md ("Current adaptive
+# selection") for the acceptance rules: exact raw parity, null CI spans zero,
+# CoV < 15%, candidate CI clears the practical epsilon.
+#
+# Shared GHA runners are noisier than a quiet dedicated host, so results here are
+# DIRECTIONAL SCOUTS: a claim=PASS here still needs a gated PASS rerun on a quiet
+# runner before any promotion. INCONCLUSIVE/REGRESSION signals are real either way.
+# This workflow never commits, never rewrites baselines, never pushes — it only
+# uploads JSON artifacts and a job summary (Juan §3).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: Which harness to run
+        required: true
+        default: snapshot-overlay
+        type: choice
+        options:
+          - snapshot-overlay
+          - style-cache-handoff
+          - burst-scroll
+          - option-pair
+      browser:
+        description: Engine
+        required: true
+        default: chromium
+        type: choice
+        options:
+          - chromium
+          - firefox
+          - webkit
+      n:
+        description: Paired observations per layout
+        required: false
+        default: '20'
+      batch:
+        description: Captures averaged per observation
+        required: false
+        default: '3'
+      only:
+        description: Fixture subset (empty = harness default)
+        required: false
+        default: ''
+      extra:
+        description: Extra args for option-pair (e.g. --base=__a=false --opt=__a=true --out=r7-x.json --label=R7-X)
+        required: false
+        default: ''
+
+concurrency:
+  group: r7-timing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps ${{ inputs.browser }}
+
+      - name: Compile candidate bundle
+        run: |
+          npm run compile
+          node -e "const fs=require('fs'),crypto=require('crypto');const b=fs.readFileSync('dist/snapdom.mjs');console.log('dist/snapdom.mjs', b.length, 'bytes sha256', crypto.createHash('sha256').update(b).digest('hex').toUpperCase().slice(0,12))"
+
+      - name: Run gated timing
+        id: bench
+        run: |
+          BENCH=lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs
+          case '${{ inputs.bench }}' in
+            style-cache-handoff) BENCH=lane6-scratch/r5/bench-r7-style-cache-handoff-controlled.mjs ;;
+            burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
+            option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
+          esac
+          ARGS="--candidate=dist/snapdom.mjs --browser=${{ inputs.browser }} --n=${{ inputs.n }} --batch=${{ inputs.batch }} --warmup=3 --bootstrap=12000 --epsilon=0.02"
+          if [ -n '${{ inputs.only }}' ]; then ARGS="$ARGS --only=${{ inputs.only }}"; fi
+          if [ '${{ inputs.bench }}' = 'option-pair' ]; then ARGS="$ARGS ${{ inputs.extra }}"; fi
+          # shellcheck disable=SC2086
+          node lane6-scratch/r5/run-with-timing-gate.mjs -- node "$BENCH" $ARGS
+          echo "exit=$?"
+        # exit 3 = ambient gate BLOCKED (no timing consumed, rerun later);
+        # anything else nonzero = real failure.
+
+      - name: Summarize
+        if: always()
+        run: |
+          node -e "
+            const fs = require('fs');
+            const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
+            console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
+            for (const f of fs.readdirSync('lane6-scratch/r5/results').filter((x) => x.endsWith('.json') && x !== 'timing-environment-latest.json')) {
+              const r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8'));
+              console.log('## ' + f, r.provenance.sha256.slice(0, 12), r.provenance.browser, 'N=' + r.provenance.n);
+              for (const [name, fx] of Object.entries(r.fixtures)) {
+                if (fx.pairs) {
+                  console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'));
+                  for (const [pid, p] of Object.entries(fx.pairs)) console.log('   ' + pid, p.candidate.pct.toFixed(1) + '% CI[' + p.candidate.ci95.map((v) => v.toFixed(1)).join(', ') + '] CoV=' + (p.maxCov * 100).toFixed(1) + '% claim=' + (p.claimable ? 'PASS' : p.regression ? 'REGRESSION' : 'INCONCLUSIVE'));
+                } else {
+                  console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'), 'effect ' + fx.candidate.pct.toFixed(1) + '% CI[' + fx.candidate.ci95.map((v) => v.toFixed(1)).join(', ') + '] null ' + fx.control.pct.toFixed(1) + '% CI[' + fx.control.ci95.map((v) => v.toFixed(1)).join(', ') + '] CoV=' + (fx.maxCov * 100).toFixed(1) + '% claim=' + (fx.claimable ? 'PASS' : fx.regression ? 'REGRESSION' : 'INCONCLUSIVE'));
+                }
+              }
+            }
+          " >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r7-timing-${{ inputs.bench }}-${{ inputs.browser }}-n${{ inputs.n }}
+          path: lane6-scratch/r5/results/*.json
+          if-no-files-found: error
