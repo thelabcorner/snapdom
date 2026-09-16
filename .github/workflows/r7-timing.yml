@@ -13,6 +13,16 @@ name: R7 decision-quality timing (scout-grade)
 # uploads JSON artifacts and a job summary (Juan §3).
 
 on:
+  # Runs from the PR branch's own file, so no main-branch copy is needed.
+  # Draft-PR CI vehicle: open a draft PR from the perf branch and every push
+  # gets a gated decision-quality run on the merge ref.
+  pull_request:
+    paths:
+      - lane6-scratch/r5/bench-r7-*.mjs
+      - lane6-scratch/r5/run-with-timing-gate.mjs
+      - lane6-scratch/atlas/profiler/fixtures.mjs
+      - src/**/*.js
+      - .github/workflows/r7-timing.yml
   workflow_dispatch:
     inputs:
       bench:
