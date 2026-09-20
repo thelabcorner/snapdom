@@ -128,7 +128,6 @@ const PSEUDO_LENGTH_UNSTABLE_RE = /cq(?:w|h|i|b|min|max)\b|var\(|env\(/i
 // partition proof cannot split them, and the first twin's `inline` would ride onto a twin
 // whose box is block-level (used width/height). Container declarations are the enabling
 // channel. Document-wide and fail closed, like the other instability flags.
-const CONTAINER_DECL_RE = /^(?:container|container-type|container-name)$/i
 // PWH1: a cq unit in ANY declaration (font-size, line-height, ...) makes downstream em/lh-derived
 // pseudo width/height resolve against a container that can differ between identity twins, and the
 // resolved px no longer reveals provenance. Checked per rule behind a cheap cssText guard.
@@ -363,8 +362,12 @@ function scanRules(rules, universe, pseudoSels, state) {
     if (style) {
       const cssText = style.cssText || ''
       const styleMayHaveAttr = mayContainAttrFunction(cssText)
-      // Case-insensitive: CSS units are case-insensitive and CSSOM may preserve author case.
-      const ruleMayHaveCq = /cq/i.test(cssText)
+      // PWH1: CSSOM serializes unit spellings canonically on Chromium/Firefox/WebKit, including
+      // escaped and author-uppercase cq units. One rule-level test is sufficient; the previous
+      // prefilter + per-property regex repeated work inside the hottest declaration loop.
+      if (!state.pseudoContainerUnstable && CONTAINER_UNIT_RE.test(cssText)) {
+        state.pseudoContainerUnstable = true
+      }
       // CSSOM may expand the `all` shorthand into longhands instead of exposing `all`
       // through style[i]. Detect the authored shorthand explicitly as well. It is tracked
       // per selector below so an unrelated reset rule does not disable narrowing globally.
@@ -406,12 +409,6 @@ function scanRules(rules, universe, pseudoSels, state) {
         if (!state.pseudoLengthUnstable && pseudoRule && (prop === 'width' || prop === 'height') &&
             PSEUDO_LENGTH_UNSTABLE_RE.test(readValue())) {
           state.pseudoLengthUnstable = true
-        }
-        if (!state.pseudoContainerUnstable && ruleMayHaveCq && CONTAINER_UNIT_RE.test(readValue())) {
-          state.pseudoContainerUnstable = true
-        }
-        if (!state.pseudoContainerUnstable && CONTAINER_DECL_RE.test(prop)) {
-          state.pseudoContainerUnstable = true
         }
         if (prop.length > 5 && (prop[0] === 'm' || prop[0] === 'p')) {
           const fam = prop.startsWith('margin') ? 'marginUnstable'
@@ -968,6 +965,13 @@ export function scanAuthorStyles(doc) {
       for (const sheet of adopted) {
         if (!scanSheet(sheet, universe, pseudoSels, state)) return unreliable
       }
+    }
+    // PWH1: declaration names are already accumulated in `universe`. CSSOM exposes canonical
+    // lowercase property names across the supported engines, so container declaration exposure
+    // does not need a regex test for every property in every rule.
+    if (!state.pseudoContainerUnstable &&
+        (universe.has('container') || universe.has('container-type') || universe.has('container-name'))) {
+      state.pseudoContainerUnstable = true
     }
     // Programmatic (WAAPI) animations don't live in stylesheets — union their keyframe props.
     if (typeof doc.getAnimations === 'function') {
