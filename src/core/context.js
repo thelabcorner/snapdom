@@ -212,6 +212,11 @@ export function createContext(options = {}) {
     // stylesheet/inline evidence can make their used value geometry-dependent. False restores
     // the historical unconditional top/right/bottom/left/inset-* rider set.
     __styleShareInsetValueGate: options.__styleShareInsetValueGate,
+    // Internal R8-P1 counterfactuals. Repeated pseudo identities can switch from full snapshot
+    // spreads to copy-on-write overlays and reuse generated style keys by compact signature, but
+    // only after repetition is proven. False restores either historical leg independently.
+    __styleSharePseudoOverlay: options.__styleSharePseudoOverlay,
+    __styleSharePseudoKeyCache: options.__styleSharePseudoKeyCache,
     // Internal R7-SO1 counterfactual: default/true stores identity twins as a tiny
     // own-property overlay whose prototype is the immutable shared snapshot; false forces the
     // historical full object spread for byte/timing counterfactuals.
