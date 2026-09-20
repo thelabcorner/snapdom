@@ -2295,6 +2295,25 @@ const UNSTABLE_INSET_INLINE_RE = /(?:^|;)\s*(?:top|right|bottom|left|inset(?:-[a
 const INLINE_POSITION_TRY_RE = /(?:^|;)\s*(?:position-area|inset-area|position-anchor|position-try(?:-[a-z-]+)?)\s*:/i
 const AUTO_MARGIN_INLINE_RE = /margin[a-z-]*\s*:[^;]*(\bauto\b|var\(|attr\(|\binherit\b|\brevert(?:-layer)?\b)/i
 const AUTO_MARGIN_INLINE_ALL_RE = /(?:^|;)\s*all\s*:\s*(?:inherit|revert(?:-layer)?)(?:\s*!important)?\s*(?:;|$)/i
+// PWH1 inline container exposure: keep the raw-string token check as a cheap prefilter, then
+// interrogate CSSOM by declaration. Property NAMES and VALUES must stay separate: searching the
+// whole serialized cssText made inert names such as `--acqw-token` look like a `cqw` unit and
+// needlessly closed the gate. CSSOM canonicalization also normalizes escaped/case variants.
+const INLINE_CONTAINER_MAYBE_RE = /cq|container/i
+const INLINE_CONTAINER_PROP_RE = /^container(?:-type|-name)?$/
+const INLINE_CQ_UNIT_RE = /cq(?:w|h|i|b|min|max)\b/i
+const INLINE_CONTAINER_FALLBACK_RE = /(?:^|;)\s*container(?:-type|-name)?\s*:|cq(?:w|h|i|b|min|max)\b/i
+
+function inlineStyleHasContainerExposure(el, raw) {
+  if (!raw || !INLINE_CONTAINER_MAYBE_RE.test(raw)) return false
+  const style = el.style
+  if (!style) return INLINE_CONTAINER_FALLBACK_RE.test(raw)
+  for (let i = 0; i < style.length; i++) {
+    const prop = style[i]
+    if (INLINE_CONTAINER_PROP_RE.test(prop) || INLINE_CQ_UNIT_RE.test(style.getPropertyValue(prop))) return true
+  }
+  return false
+}
 const UA_AUTO_MARGIN_TAGS = new Set(['DIALOG', 'HR'])
 
 // Legacy HTML presentational hints live outside author stylesheets and inline CSS, so styleScan
@@ -2397,15 +2416,6 @@ function identityFor(el, st, selectors = null) {
     for (let i = 0; i < list.length; i++) {
       const attr = list[i]
       const name = attr.name
-      // PWH1: an inline container declaration or cq unit can make the inherited font inputs
-      // (em/lh) container-dependent and is invisible to the stylesheet scan. Every captured
-      // element's own style attribute is checked here, so a container ancestor INSIDE the
-      // capture is seen before the pseudo gate runs. Capture-local and fail closed.
-      if (name === 'style') {
-        // CSS property names and units are case-insensitive, so an uppercase spelling
-        // (CONTAINER-TYPE / 2CQW) resolves normally and must not slip past this guard.
-        if (/cq|container/i.test(attr.value)) st.containerExposure = true
-      }
       if (dataAttrs !== null && name.startsWith('data-') && !dataAttrs.has(name)) {
         // Engine-owned markers participate in shadow/pseudo/internal pipeline contracts that
         // are not necessarily represented in the page's author stylesheet scan. Never elide
@@ -2475,8 +2485,11 @@ function identityFor(el, st, selectors = null) {
  *  @param {boolean} [copyForSpread=true] materialize the historical spread-optimized base.
  *    Snapshot overlays never spread the base, so they can build the lists/signature directly
  *    from the canonical object and avoid this one full-object copy per reused identity.
+ *  @param {boolean} [omitInlineWh=false] omit width/height from this record's rider plan.
+ *    PWH1 uses this only for a capture-local pseudo record already proven to expose invariant
+ *    specified values for those two properties; element records always leave it false.
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
-function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
+function shareLists(rec, el, insetValueGate = true, copyForSpread = true, omitInlineWh = false) {
   // Historical copy path: the identity's own object is built by keyed stores (dictionary mode
   // in V8), and twins that spread it clone faster from a spread-made object. R7 overlays do not
   // spread the base at all, so paying this copy would be pure setup overhead.
@@ -2505,6 +2518,7 @@ function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
   const rrT = stored.transform !== undefined && stored.transform !== 'none'
   const rrList = []
   for (const k in stored) {
+    if (omitInlineWh && (k === 'width' || k === 'height')) continue
     if (LAYOUT_ALWAYS_RE.test(k) ||
         (rrI && LAYOUT_INSET_RE.test(k)) ||
         (rrG && (k === 'grid-template-columns' || k === 'grid-template-rows')) ||
@@ -2543,8 +2557,17 @@ function pseudoInlineWhReusable(snap, source, st) {
   const c = snap.content
   if (c === undefined || c === '' || c === 'none' || c === 'normal') return false
   if (/(?:url|image-set|element|paint)\(/i.test(c)) return false
-  // Inline container exposure (source node or any captured ancestor) fails closed too.
-  if (st && st.containerExposure) return false
+  // Inline container exposure is not represented by the document stylesheet scan. Check only
+  // this identity's captured ancestor chain, lazily on its first TWIN: an unrelated sibling
+  // container cannot affect this pseudo, and scanning every inline style during identityFor()
+  // made unique/no-pseudo captures pay for a proof they could never reuse. `st.ids` also gives
+  // us the capture boundary for free — the first parent without an id is outside the subtree and
+  // therefore common context for every identity in this capture.
+  for (let el = source; el; el = el.parentElement) {
+    if (st && st.ids.get(el) === undefined) break
+    const raw = el.getAttribute?.('style') || ''
+    if (inlineStyleHasContainerExposure(el, raw)) return false
+  }
   const doc = source.ownerDocument || document
   if (source.getRootNode && source.getRootNode() !== doc) return false
   const scan = scanFor(doc)
@@ -2587,14 +2610,24 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const rec = snaps.get(key)
   if (rec) {
     const snap = { ...rec.snap }
-    const rr = rec.rr || shareLists(rec, source, options?.__styleShareInsetValueGate !== false)
-    // PWH1: a proven non-replaced inline pseudo's CSSOM width/height reads return the
-    // identity's own SPECIFIED values, so these two always-geometry riders can only
-    // re-read what the shared base already holds. The false arm restores one read each.
-    const skipWh = rec.wh === true && options?.__pseudoInlineWhRiderReuse !== false
+    // PWH1 specializes the capture-local rider plan once, on the first identity hit. A proven
+    // non-replaced inline pseudo never inserts width/height into that plan, so later twins avoid
+    // both CSSOM reads AND the previous per-rider skip branch. The false arm never sets rec.wh,
+    // therefore shareLists materializes the exact historical plan there.
+    // Do not prove PWH1 on the first occurrence: there is no read to save until this first twin
+    // arrives. This keeps high-entropy/unique pseudo scenes on the exact historical miss path.
+    if (rec.wh === undefined && options?.__pseudoInlineWhRiderReuse !== false) {
+      rec.wh = pseudoInlineWhReusable(rec.snap, source, st)
+    }
+    const rr = rec.rr || shareLists(
+      rec,
+      source,
+      options?.__styleShareInsetValueGate !== false,
+      true,
+      rec.wh === true,
+    )
     for (let i = 0; i < rr.length; i++) {
       const p = rr[i]
-      if (skipWh && (p === 'width' || p === 'height')) continue
       const v = style.getPropertyValue(p)
       if (v) snap[p] = v
       else delete snap[p]
@@ -2607,9 +2640,8 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   // write the pass makes afterwards (a flex-item min-width floor) depends on the host's
   // display, identical for twins.
   const recNew = { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap }
-  // PWH1: decided once on the identity's first occurrence; the false arm leaves the record
-  // exactly historical (no gate work, no rider change).
-  if (options?.__pseudoInlineWhRiderReuse !== false) recNew.wh = pseudoInlineWhReusable(snap, source, st)
+  // PWH1 stays undecided until the first identity twin. A one-off pseudo cannot amortize gate
+  // work and therefore remains on the historical miss path.
   snaps.set(key, recNew)
   return snap
 }

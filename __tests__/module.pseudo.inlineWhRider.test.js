@@ -24,6 +24,20 @@ function mount(css, html) {
   return el
 }
 
+function mountIsolated(css, html) {
+  const iframe = document.createElement('iframe')
+  iframe.style.cssText = 'width:520px;height:240px;border:0'
+  document.body.appendChild(iframe)
+  mounted.push(iframe)
+  const doc = iframe.contentDocument
+  doc.open()
+  doc.write('<!doctype html><html><head><style>' + css + '</style></head><body>' +
+    '<div id="pwh-root" style="width:480px;background:#fff;font:14px Arial">' + html +
+    '</div></body></html>')
+  doc.close()
+  return doc.getElementById('pwh-root')
+}
+
 async function settle() {
   await new Promise((r) => setTimeout(r, 0))
   flushStyleInvalidations()
@@ -41,12 +55,12 @@ async function dirty(el) {
 async function arm(el, opts) {
   await snapdom.toRaw(el, { ...opts })
   await dirty(el)
-  return whReads(() => snapdom.toRaw(el, { ...opts }))
+  return whReads(() => snapdom.toRaw(el, { ...opts }), el.ownerDocument?.defaultView || window)
 }
 
 /** Browser-bound counter: how many `width`/`height` CSSOM reads one capture performs. */
-async function whReads(fn) {
-  const proto = CSSStyleDeclaration.prototype
+async function whReads(fn, realm = window) {
+  const proto = realm.CSSStyleDeclaration.prototype
   const orig = proto.getPropertyValue
   let n = 0
   proto.getPropertyValue = function (p) {
@@ -81,6 +95,40 @@ describe('PWH1 — pseudo inline width/height rider', () => {
     // own delta is pinned exactly at 2*399 in pwh1-scratch/probe-pwh1-counterfactual.mjs.
     expect(hist.n - cand.n).toBeGreaterThanOrEqual(2 * 399 - 4)
     expect(hist.n - cand.n).toBeLessThanOrEqual(2 * 399)
+  })
+
+  it('keeps the gate open for inert inline cq/container substrings', async () => {
+    // These names tripped the old raw `/cq|container/i` exposure test even though neither is a
+    // container declaration or a cq unit. Because containerExposure is capture-wide, one such
+    // false positive could disable PWH1 for every later pseudo identity in the capture.
+    const inertRows = '<div class="row" style="--container-label:plain;--acq-token:1;--acqw-token:1;--cqmin-token:plain">x</div>'.repeat(200)
+    const el = mountIsolated(
+      '.pwh-inert .row::before{content:"#";display:inline;width:12px;height:8px;color:#334155}',
+      '<div class="pwh-inert">' + inertRows + '</div>')
+    await settle()
+    const hist = await arm(el, HIST)
+    const cand = await arm(el, CAND)
+    expect(cand.value).toBe(hist.value)
+    expect(hist.n - cand.n).toBeGreaterThanOrEqual(2 * 199 - 4)
+    // Cross-realm capture can move the two first-pseudo width/height reads between the arms;
+    // keep a four-read harness tolerance while still separating an admitted gate (~398-400)
+    // from a vetoed gate (~0) by two orders of magnitude.
+    expect(hist.n - cand.n).toBeLessThanOrEqual(2 * 199 + 4)
+  })
+
+  it('does not let an unrelated inline container veto another pseudo identity', async () => {
+    // Container exposure is causal only along the pseudo host's ancestor chain. The old
+    // capture-wide bit made this unrelated sibling disable PWH1 for all 200 rows.
+    const el = mountIsolated(
+      '.pwh-local .row::before{content:"#";display:inline;width:12px;height:8px;color:#334155}',
+      '<div style="container-type:inline-size"><span>unrelated</span></div>' +
+      '<div class="pwh-local">' + rows('row', 200) + '</div>')
+    await settle()
+    const hist = await arm(el, HIST)
+    const cand = await arm(el, CAND)
+    expect(cand.value).toBe(hist.value)
+    expect(hist.n - cand.n).toBeGreaterThanOrEqual(2 * 199 - 4)
+    expect(hist.n - cand.n).toBeLessThanOrEqual(2 * 199 + 4)
   })
 
   it('keeps the historical read for blockified, replaced, container-unit and var()-hidden cases', async () => {
