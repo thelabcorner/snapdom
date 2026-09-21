@@ -1,0 +1,131 @@
+{
+  "probe": "R8-I1 stage attribution",
+  "candidate": "dist/snapdom.mjs",
+  "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F",
+  "browser": "chromium",
+  "n": 5,
+  "warmup": 2,
+  "method": "public snapdom.toRaw(opts); native prototype counters; per-capture totals. Measurement evidence only; no promotion.",
+  "fixtures": {
+    "cards400-safe": {
+      "samples": 5,
+      "wallMs": {
+        "mean": 143.4,
+        "median": 144.60000002384186,
+        "min": 128.60000002384186,
+        "max": 159.5,
+        "cov": 0.08606130517490891
+      },
+      "bytes": 165053,
+      "countersTotal": {
+        "getComputedStyle": 8055,
+        "getPropertyValue": 47630,
+        "getBoundingClientRect": 25,
+        "querySelectorAll": 125
+      },
+      "countersPerCapture": {
+        "getComputedStyle": 1611,
+        "getPropertyValue": 9526,
+        "getBoundingClientRect": 5,
+        "querySelectorAll": 25
+      },
+      "raw": [
+        {
+          "ms": 150.09999990463257,
+          "getComputedStyle": 1611,
+          "getPropertyValue": 9526,
+          "getBoundingClientRect": 5,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 144.60000002384186,
+          "getComputedStyle": 1611,
+          "getPropertyValue": 9526,
+          "getBoundingClientRect": 5,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 159.5,
+          "getComputedStyle": 1611,
+          "getPropertyValue": 9526,
+          "getBoundingClientRect": 5,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 134.20000004768372,
+          "getComputedStyle": 1611,
+          "getPropertyValue": 9526,
+          "getBoundingClientRect": 5,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 128.60000002384186,
+          "getComputedStyle": 1611,
+          "getPropertyValue": 9526,
+          "getBoundingClientRect": 5,
+          "querySelectorAll": 25
+        }
+      ]
+    },
+    "entropy-400": {
+      "samples": 5,
+      "wallMs": {
+        "mean": 59.320000004768374,
+        "median": 59.39999997615814,
+        "min": 56.5,
+        "max": 62.89999997615814,
+        "cov": 0.041727541356635575
+      },
+      "bytes": 46124,
+      "countersTotal": {
+        "getComputedStyle": 4090,
+        "getPropertyValue": 137010,
+        "getBoundingClientRect": 2030,
+        "querySelectorAll": 125
+      },
+      "countersPerCapture": {
+        "getComputedStyle": 818,
+        "getPropertyValue": 27402,
+        "getBoundingClientRect": 406,
+        "querySelectorAll": 25
+      },
+      "raw": [
+        {
+          "ms": 57.60000002384186,
+          "getComputedStyle": 818,
+          "getPropertyValue": 27402,
+          "getBoundingClientRect": 406,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 56.5,
+          "getComputedStyle": 818,
+          "getPropertyValue": 27402,
+          "getBoundingClientRect": 406,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 62.89999997615814,
+          "getComputedStyle": 818,
+          "getPropertyValue": 27402,
+          "getBoundingClientRect": 406,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 59.39999997615814,
+          "getComputedStyle": 818,
+          "getPropertyValue": 27402,
+          "getBoundingClientRect": 406,
+          "querySelectorAll": 25
+        },
+        {
+          "ms": 60.200000047683716,
+          "getComputedStyle": 818,
+          "getPropertyValue": 27402,
+          "getBoundingClientRect": 406,
+          "querySelectorAll": 25
+        }
+      ]
+    }
+  }
+}

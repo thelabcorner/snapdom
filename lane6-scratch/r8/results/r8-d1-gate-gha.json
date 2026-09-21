@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-09-21T03:45:59.583Z",
+  "host": {
+    "platform": "linux",
+    "release": "6.17.0-1022-azure",
+    "logicalCpus": 4
+  },
+  "method": "os.cpus tick deltas while gate process is otherwise idle",
+  "thresholds": {
+    "median": 10,
+    "mean": 12,
+    "max": 20
+  },
+  "samples": [
+    3.30788804071247,
+    0.5263157894736858,
+    0,
+    0.5865102639296182,
+    1.171875,
+    0,
+    0.5181347150259086,
+    0.2544529262086481
+  ],
+  "summary": {
+    "mean": 0.7956470919187913,
+    "median": 0.5222252522497972,
+    "min": 0,
+    "max": 3.30788804071247
+  },
+  "pass": true,
+  "command": [
+    "node",
+    "lane6-scratch/r5/bench-r7-option-pair-controlled.mjs",
+    "--candidate=dist/snapdom.mjs",
+    "--browser=chromium",
+    "--n=20",
+    "--batch=3",
+    "--warmup=3",
+    "--bootstrap=12000",
+    "--epsilon=0.02",
+    "--base=__autoMarginDocProofCache=false",
+    "--opt=__autoMarginDocProofCache=true",
+    "--out=r8-d1-controlled.json",
+    "--label=R8-D1"
+  ]
+}

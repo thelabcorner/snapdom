@@ -67,26 +67,26 @@ describe.skipIf(typeof Element.prototype.computedStyleMap !== 'function')('auto 
     card.firstElementChild.attachShadow({ mode: 'open' }).innerHTML = '<div></div>'
     expect(card.getBoundingClientRect().x).toBe(before)
     expect(card.computedStyleMap().get('margin-left').toString()).toBe('auto')
-    await expectCentered(await snapdom(root, { embedFonts: false, burst: false }), 50)
+    await expectCentered(await snapdom(root, { embedFonts: false, burst: false, __autoMarginProbeGate: true }), 50)
   })
 
   it('keeps centering through a cold capture, a memo hit, and a width edit', async () => {
     const { root, card } = fixture()
-    const first = await snapdom(root, { embedFonts: false })
+    const first = await snapdom(root, { embedFonts: false, __autoMarginProbeGate: true })
     await expectCentered(first, 50)
-    const second = await snapdom(root, { embedFonts: false })
+    const second = await snapdom(root, { embedFonts: false, __autoMarginProbeGate: true })
     expect(second.url).toBe(first.url)
     await expectCentered(second, 50)
 
     card.style.width = '180px'
-    const changed = await snapdom(root, { embedFonts: false })
+    const changed = await snapdom(root, { embedFonts: false, __autoMarginProbeGate: true })
     expect(changed.url).not.toBe(first.url)
     await expectCentered(changed, 60)
   })
 
   it('preserves an inline logical auto margin through inline-style normalization', async () => {
     const { root } = fixture(true)
-    await expectCentered(await snapdom(root, { embedFonts: false, burst: false }), 50)
+    await expectCentered(await snapdom(root, { embedFonts: false, burst: false, __autoMarginProbeGate: true }), 50)
   })
 
   it('does not restore excluded margin properties', async () => {
@@ -94,9 +94,66 @@ describe.skipIf(typeof Element.prototype.computedStyleMap !== 'function')('auto 
     let snapshot
     await snapdom(root, {
       embedFonts: false,
+      __autoMarginProbeGate: true,
       excludeStyleProps: /^margin-/,
       plugins: [{ name: 'margin-snapshot', pure: true, afterClone() { snapshot = snapshotFor(card) } }],
     })
     expect(Object.keys(snapshot).filter(prop => prop.startsWith('margin-'))).toEqual([])
+  })
+
+  it('skips Typed-OM margin recovery when neither author, inline nor UA styles can produce auto', async () => {
+    const root = document.createElement('div')
+    root.style.width = '300px'
+    const card = document.createElement('div')
+    card.className = 'plain-margin-card'
+    card.textContent = 'plain'
+    root.appendChild(card)
+    document.body.append(root)
+    mounted.push(root)
+    const map = card.computedStyleMap.bind(card)
+    const spy = vi.spyOn(card, 'computedStyleMap').mockImplementation(() => map())
+    await snapdom(root, { embedFonts: false, burst: false, cache: 'disabled', __autoMarginProbeGate: true })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('keeps legacy table align presentational auto margins on the historical probe path', async () => {
+    const root = document.createElement('div')
+    root.style.cssText = 'width:300px;height:120px;background:white'
+    root.innerHTML = '<table align="center" style="width:100px"><tbody><tr><td>x</td></tr></tbody></table>'
+    document.body.append(root)
+    mounted.push(root)
+    const table = root.querySelector('table')
+
+    // Chromium/WebKit expose the presentational hint as `auto` through Typed OM while ordinary
+    // computed style reports its used pixel margin. That is precisely the state the recovery
+    // pass exists to preserve. Firefox currently lacks computedStyleMap in this test lane.
+    const typed = table.computedStyleMap().get('margin-left').toString()
+    expect(typed).toBe('auto')
+
+    const gated = await snapdom.toRaw(root, {
+      embedFonts: false, burst: false, cache: 'disabled', __autoMarginProbeGate: true,
+    })
+    const historical = await snapdom.toRaw(root, {
+      embedFonts: false, burst: false, cache: 'disabled', __autoMarginProbeGate: false,
+    })
+    expect(gated).toBe(historical)
+  })
+
+  it('keeps inline all:inherit/revert on the conservative Typed-OM path', async () => {
+    const root = document.createElement('div')
+    root.style.width = '300px'
+    const card = document.createElement('div')
+    card.style.cssText = 'all:inherit;width:100px'
+    card.textContent = 'inherit probe'
+    root.appendChild(card)
+    document.body.append(root)
+    mounted.push(root)
+
+    const map = card.computedStyleMap.bind(card)
+    const spy = vi.spyOn(card, 'computedStyleMap').mockImplementation(() => map())
+    await snapdom(root, {
+      embedFonts: false, burst: false, cache: 'disabled', __autoMarginProbeGate: true,
+    })
+    expect(spy).toHaveBeenCalled()
   })
 })

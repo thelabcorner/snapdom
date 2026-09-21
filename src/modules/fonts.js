@@ -1219,8 +1219,13 @@ export function collectFontUsage(root, keep) {
     for (const pseudo of ['::before', '::after']) {
       const gate = pseudo === '::before' ? elementGates.before : elementGates.after
       if (gate !== null) {
-        if (gate === '') continue
-        try { if (!el.matches(gate)) continue } catch { /* probe */ }
+        // UA <q> quotes exist without an author selector. Treat that fixed semantic locally
+        // instead of forcing `q` into both document-wide selector gates (PQU1).
+        const uaQuote = el.localName === 'q'
+        if (!uaQuote) {
+          if (gate === '') continue
+          try { if (!el.matches(gate)) continue } catch { /* probe */ }
+        }
       }
       const cs = getStyle(el, pseudo)
       const c = cs && cs.content

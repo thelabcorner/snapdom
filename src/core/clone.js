@@ -418,14 +418,18 @@ export async function deepClone(node, sessionCache, options) {
     resolveCSSVars(node, clone)
     sessionCache.nodeMap.set(clone, node)
     if (node.tagName === 'IMG') {
-      freezeImgSrcset(node, clone, options)
+      const cachedImageStyle = options.__imageStyleReuse === false
+        ? null
+        : sessionCache.styleCache?.get?.(node)
+      const imageStyle = cachedImageStyle?.length ? cachedImageStyle : null
+      freezeImgSrcset(node, clone, options, imageStyle)
       // Record original image dimensions (pre-transform) for fallback usage when inlining fails.
       // #498: keep them fractional. `offsetWidth` is an integer, and the `min-width` written below
       // from a rounded-up value (25.6px → 26px) beats the frozen `width`, grows the image and
       // pushes the text after it past its frozen container (last word wraps). The computed
       // style carries the used size at 1/1000px; offset/attribute/natural sizes stay as fallback.
       try {
-        const cs = window.getComputedStyle(node)
+        const cs = imageStyle || window.getComputedStyle(node)
         let width = parseFloat(cs.width)
         let height = parseFloat(cs.height)
         if (!(width > 0) || !(height > 0)) {
@@ -459,7 +463,7 @@ export async function deepClone(node, sessionCache, options) {
       // write px inline so the clone does not "lose" the image.
       try {
         const authored = node.getAttribute('style') || ''
-        const cs = window.getComputedStyle(node)
+        const cs = imageStyle || window.getComputedStyle(node)
         const usesPercentOrAuto = (prop) => {
           const a = authored.match(new RegExp(`${prop}\\s*:\\s*([^;]+)`, 'i'))
           const v = a ? a[1].trim() : cs.getPropertyValue(prop)
@@ -651,7 +655,10 @@ export async function deepClone(node, sessionCache, options) {
       'color'
     ]
     try {
-      const cs = window.getComputedStyle(node)
+      const cached = options.__svgPaintStyleReuse === false
+        ? null
+        : sessionCache.styleCache?.get?.(node)
+      const cs = cached?.length ? cached : window.getComputedStyle(node)
       for (const prop of SVG_PAINT_PROPS) {
         const val = cs.getPropertyValue(prop)
         if (val) clone.style.setProperty(prop, val)

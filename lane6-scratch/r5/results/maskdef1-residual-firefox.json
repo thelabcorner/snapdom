@@ -1,0 +1,17 @@
+{
+ "engine": "firefox",
+ "fixtures": {
+  "late-mutation": {
+   "onReads": 112,
+   "offReads": 112,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  },
+  "crossorigin": {
+   "onReads": 154,
+   "offReads": 154,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  }
+ }
+}

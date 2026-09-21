@@ -12,66 +12,44 @@
 import { isFirefox, isIOS } from '../utils/browser.js'
 
 import { getStyle, inlineSingleBackgroundEntry, splitBackgroundImage } from '../utils'
-import { needsBackgroundInline, snapshotFor } from './styles.js'
+import { backgroundSnapshotFor, maskLayoutInitialValues, needsBackgroundInline, snapshotFor } from './styles.js'
+import { BG_LAYOUT_PROPS, BORDER_AUX_PROPS, MASK_LAYOUT_PROPS, URL_PROPS } from './backgroundProps.js'
 
-/** Props that can contain url(...) and may need inlining. */
-export const URL_PROPS = [
-  'background-image',
+// Kept exported from this module for compatibility with internal/tests that import it here.
+export { URL_PROPS } from './backgroundProps.js'
 
-  // Mask shorthands & images (both standard and WebKit)
-  'mask',
-  'mask-image',
-  '-webkit-mask',
-  '-webkit-mask-image',
-
-  // Mask sources (rare, but keep)
-  'mask-source',
-  'mask-box-image-source',
-  'mask-border-source',
-  '-webkit-mask-box-image-source',
-
-  // Border image
-  'border-image',
+const COMPLETE_SOURCE_BASIS = [
+  'mask-image', '-webkit-mask-image',
+  'mask-source', 'mask-box-image-source', 'mask-border-source', '-webkit-mask-box-image-source',
   'border-image-source',
 ]
 
-/** Mask longhands to preserve spatial layout (copy as-is).
- * Must run AFTER the `mask` shorthand in URL_PROPS — setting the shorthand
- * resets every longhand to its initial value (#402: lost mask-mode/composite). */
-const MASK_LAYOUT_PROPS = [
-  'mask-position',
-  'mask-size',
-  'mask-repeat',
-  'mask-mode',
-  'mask-composite',
-  // WebKit variants
-  '-webkit-mask-position',
-  '-webkit-mask-size',
-  '-webkit-mask-repeat',
-  '-webkit-mask-composite',
-  // Extra (optional but helpful across engines)
-  'mask-origin',
-  'mask-clip',
-  '-webkit-mask-origin',
-  '-webkit-mask-clip',
-  // Some engines expose X/Y position separately:
-  '-webkit-mask-position-x',
-  '-webkit-mask-position-y',
-]
-/** Background longhands copied only when the node has a background at all (see hasBg). */
-const BG_LAYOUT_PROPS = [
-  'background-position', 'background-position-x', 'background-position-y',
-  'background-size', 'background-repeat',
-  'background-origin', 'background-clip',
-  'background-attachment', 'background-blend-mode'
-]
-/** Border-image aux longhands (copy only when active) */
-const BORDER_AUX_PROPS = [
-  'border-image-slice',
-  'border-image-width',
-  'border-image-outset',
-  'border-image-repeat',
-]
+// Late URL-source admission basis. Current Chromium/Firefox/WebKit expose `mask` and
+// `-webkit-mask` through the same computed mask-image value; WebKit exposes mask-border through
+// its -webkit-mask-box-image-source alias; border-image has its own canonical source. Keep the
+// uncommon standards-source names fail-closed via a per-document feature probe: if an engine
+// starts supporting one independently, it is automatically restored to the sentinel instead of
+// being silently skipped. WeakMap keeps iframe/browser-realm support decisions isolated.
+const sourceBasisByDocument = new WeakMap()
+function backgroundSourceBasis(doc) {
+  let basis = sourceBasisByDocument.get(doc)
+  if (basis) return basis
+  basis = ['mask-image', '-webkit-mask-box-image-source', 'border-image-source']
+  const view = doc?.defaultView || globalThis
+  const supports = view?.CSS?.supports?.bind(view.CSS)
+  if (supports) {
+    for (const prop of ['mask-source', 'mask-box-image-source', 'mask-border-source']) {
+      try {
+        if (supports(prop, 'url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")')) basis.push(prop)
+      } catch { basis.push(prop) }
+    }
+  } else {
+    // No support oracle: preserve the complete conservative source family.
+    basis.push('mask-source', 'mask-box-image-source', 'mask-border-source')
+  }
+  sourceBasisByDocument.set(doc, basis)
+  return basis
+}
 
 /**
  * Inline URL-bearing properties (background/mask/border-image) from one source element onto its
@@ -87,9 +65,9 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   if (!styleCache.has(srcNode)) styleCache.set(srcNode, style)
   // Same-capture snapshot reuse (idea validated independently by v2 PR #492's bg reuse):
   // most of the ~19 CSSOM reads per flagged node repeated what inlineAllStyles already
-  // resolved. Present in the snapshot -> that value; absent -> pruned by the property
-  // universe, i.e. the computed value is the default and there is nothing to copy ('' skips
-  // every site below). No snapshot (stale stamps, or the Firefox bg-clip:text fallback) ->
+  // resolved. Present in the snapshot -> that value; absent -> the style-universe dependency
+  // contract guarantees this consumer cannot need it, so '' skips every site below. No
+  // snapshot (stale stamps, or the Firefox bg-clip:text fallback) ->
   // plain live reads, exactly the old path.
   //
   // URL-BEARING reads stay LIVE on purpose — snapshot values are NOT the live values there:
@@ -98,9 +76,16 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // value and inlines it per node (d12-backgrounds moved 2.7% on all three engines when
   // these read the sanitized snapshot). Shorthand fallbacks (#343) are live for the same
   // reason snapshots hold longhands only.
-  const snap = snapshotFor(srcNode)
+  const strictSnap = snapshotFor(srcNode)
+  const snap = strictSnap || backgroundSnapshotFor(srcNode, options?.__backgroundFontEpochReuse !== false)
+  // Strict/current snapshots keep the existing universe contract: absent means the page cannot
+  // depend on that property. A font-relaxed snapshot is only an OVERLAY on the historical stale
+  // path: reuse values it actually captured, but live-read every absent property so the fallback
+  // path's serialized defaults remain byte-identical.
   const read = snap
-    ? (prop) => (prop in snap ? snap[prop] : '')
+    ? (strictSnap
+        ? (prop) => (prop in snap ? snap[prop] : '')
+        : (prop) => (prop in snap ? snap[prop] : style.getPropertyValue(prop)))
     : (prop) => style.getPropertyValue(prop)
 
   // Border-image present?
@@ -113,11 +98,16 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
   // rasterization cost. Copy only when a background actually exists. background-color is
   // included so the background-clip:text trick (color clipped to text) still works.
   const bgImage = style.getPropertyValue('background-image')
+  let bgShorthand
+  const readBgShorthand = () => {
+    if (bgShorthand === undefined) bgShorthand = style.getPropertyValue('background')
+    return bgShorthand
+  }
   const bgColor = read('background-color')
   const hasBg =
     (bgImage && bgImage !== 'none') ||
     (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') ||
-    /url\s*\(|gradient\s*\(/i.test(style.getPropertyValue('background') || '')
+    /url\s*\(|gradient\s*\(/i.test(readBgShorthand() || '')
   // Firefox cannot rasterize background-clip:text in a foreignObject, so the style snapshot
   // already swapped such a background for a plain text colour (applyBgClipTextFallback);
   // re-copying it here would paint the gradient as a full box over the text it stands in for.
@@ -132,37 +122,88 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
       cloneNode.style.setProperty(prop, v)
     }
   }
-  // 1) Inline URL-bearing properties
-  for (const prop of URL_PROPS) {
-    if (skipBackground && prop === 'background-image') continue
-    let val = style.getPropertyValue(prop)
-    // Fallback: when background-image is none/empty, parse url() from background shorthand (#343)
-    if ((prop === 'background-image') && (!val || val === 'none')) {
-      const bgShorthand = style.getPropertyValue('background')
-      if (bgShorthand && /url\s*\(/.test(bgShorthand)) {
-        // Use filter+join to preserve all url() layers, not just the first
-        val = splitBackgroundImage(bgShorthand).filter(p => /url\s*\(/.test(p)).join(', ') || val
-      }
+  // 1) Inline URL-bearing properties. The historical loop asks every shorthand/alias even on
+  // solid-colour nodes. Preserve this LATE observation point, but first ask the source longhands
+  // that can actually carry an image. If every one is empty, the shorthands cannot introduce an
+  // independent source and the full loop is provably inert. The false arm restores the exact old
+  // loop. Values read by the sentinel are cached for the slow path so an active node never pays
+  // the probe twice.
+  let liveSources = null
+  let hasLiveSource = true
+  let hasLiveMaskSource = true
+  if (options?.__backgroundUrlSentinel !== false) {
+    liveSources = new Map([['background-image', bgImage]])
+    const sourceProps = options?.__backgroundSourceBasis === false
+      ? COMPLETE_SOURCE_BASIS
+      : backgroundSourceBasis(srcNode.ownerDocument || document)
+    hasLiveSource = !!(bgImage && bgImage !== 'none')
+    hasLiveMaskSource = false
+    for (const prop of sourceProps) {
+      const val = style.getPropertyValue(prop)
+      liveSources.set(prop, val)
+      if (val && val !== 'none') hasLiveSource = true
+      if (prop !== 'border-image-source' && val && val !== 'none') hasLiveMaskSource = true
     }
-    if (!val || val === 'none') continue
-
-    // Split multiple layers (comma-separated)
-    const splits = splitBackgroundImage(val)
-
-    const inlined = await Promise.all(
-      splits.map(entry => inlineSingleBackgroundEntry(entry, options))
-    )
-
-    if (inlined.some(p => p && p !== 'none' && !/^url\(undefined/.test(p))) {
-      cloneNode.style.setProperty(prop, inlined.join(', '))
+    // #343: some engines/sites expose a url() only through the background shorthand even when
+    // background-image itself is empty/none. Keep that historical escape in the sentinel too.
+    if (!hasLiveSource && (!bgImage || bgImage === 'none')) {
+      const shorthand = readBgShorthand()
+      if (shorthand && /url\s*\(/.test(shorthand)) hasLiveSource = true
     }
   }
-  // 2) Copy mask layout longhands (position / size / repeat, etc.)
-  for (const prop of MASK_LAYOUT_PROPS) {
-    const val = read(prop)
-    // Skip empty/initial defaults to avoid bloating
-    if (!val || val === 'initial') continue
-    cloneNode.style.setProperty(prop, val)
+
+  if (hasLiveSource) {
+    for (const prop of URL_PROPS) {
+      if (skipBackground && prop === 'background-image') continue
+      let val = liveSources?.has(prop) ? liveSources.get(prop) : style.getPropertyValue(prop)
+      // Fallback: when background-image is none/empty, parse url() from background shorthand (#343)
+      if ((prop === 'background-image') && (!val || val === 'none')) {
+        const shorthand = readBgShorthand()
+        if (shorthand && /url\s*\(/.test(shorthand)) {
+          // Use filter+join to preserve all url() layers, not just the first
+          val = splitBackgroundImage(shorthand).filter(p => /url\s*\(/.test(p)).join(', ') || val
+        }
+      }
+      if (!val || val === 'none') continue
+
+      // Split multiple layers (comma-separated)
+      const splits = splitBackgroundImage(val)
+
+      const inlined = await Promise.all(
+        splits.map(entry => inlineSingleBackgroundEntry(entry, options))
+      )
+
+      if (inlined.some(p => p && p !== 'none' && !/^url\(undefined/.test(p))) {
+        cloneNode.style.setProperty(prop, inlined.join(', '))
+      }
+    }
+  }
+  // 2) Copy mask layout longhands (position / size / repeat, etc.). When the late BGS1 source
+  // sentinel is available, reuse its exact live answer: without a mask source these longhands
+  // are inert and need not be crossed through CSSOM/snapshot lookup at all. If the sentinel is
+  // disabled we fail closed to the historical unconditional copy.
+  const maskLayoutRepresented = !snap || MASK_LAYOUT_PROPS.some((prop) => prop in snap)
+  if (options?.__maskLayoutSourceGate !== true || !liveSources || hasLiveMaskSource || maskLayoutRepresented) {
+    // R7-MASKDEF1: in the font-relaxed overlay path an absent mask longhand is live-read per
+    // node. When the complete scan proves the document cannot author mask layout and this node
+    // carries no inline mask channel, the per-tag initial values are stable: capture them once
+    // per (document, tag) and reuse the exact strings. The false arm restores historical reads.
+    const maskInitials = snap && !strictSnap && !maskLayoutRepresented && !hasLiveMaskSource &&
+      options?.__maskLayoutInitialDefaults !== false
+      ? maskLayoutInitialValues(srcNode)
+      : null
+    for (const prop of MASK_LAYOUT_PROPS) {
+      let val
+      if (maskInitials) {
+        if (maskInitials.has(prop)) val = maskInitials.get(prop)
+        else { val = read(prop); maskInitials.set(prop, val) }
+      } else {
+        val = read(prop)
+      }
+      // Skip empty/initial defaults to avoid bloating
+      if (!val || val === 'initial') continue
+      cloneNode.style.setProperty(prop, val)
+    }
   }
   // 3) Copy border-image auxiliaries only if border-image is active
   if (hasBorderImage) {

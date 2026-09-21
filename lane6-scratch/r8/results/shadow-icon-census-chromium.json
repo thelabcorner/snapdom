@@ -1,0 +1,319 @@
+{
+  "probe": "R8-B1 offscreen shadow-icon census",
+  "candidate": "dist/snapdom.mjs",
+  "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F",
+  "browser": "chromium",
+  "n": 8,
+  "warmup": 2,
+  "icons": 40,
+  "gate": "src/core/prepare.js:99-130 requires offscreen root + open shadow host localName=calcite-icon + svg with empty path d + non-zero box",
+  "method": "public snapdom.toRaw; in-page native counters. Measurement evidence only; no promotion.",
+  "fixtures": {
+    "offscreen-icons": {
+      "cfg": {
+        "iconCount": 40,
+        "offscreen": true
+      },
+      "wallMs": {
+        "mean": 85.39999997615814,
+        "median": 86.04999995231628,
+        "min": 73,
+        "max": 99,
+        "cov": 0.09244760617302468
+      },
+      "bytes": 39608,
+      "medianCounters": {
+        "getComputedStyle": 331,
+        "getPropertyValue": 29715,
+        "getBoundingClientRect": 86,
+        "querySelectorAll": 188
+      },
+      "raw": [
+        {
+          "ms": 84.69999992847443,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 77.29999995231628,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 88.79999995231628,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 99,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 89.10000002384186,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 73,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 87.39999997615814,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        },
+        {
+          "ms": 83.89999997615814,
+          "bytes": 39608,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29715,
+            "getBoundingClientRect": 86,
+            "querySelectorAll": 188
+          }
+        }
+      ]
+    },
+    "offscreen-no-icons": {
+      "cfg": {
+        "iconCount": 0,
+        "offscreen": true
+      },
+      "wallMs": {
+        "mean": 14.637500002980232,
+        "median": 14.550000011920929,
+        "min": 12.799999952316284,
+        "max": 17.399999976158142,
+        "cov": 0.10347607451181891
+      },
+      "bytes": 26334,
+      "medianCounters": {
+        "getComputedStyle": 209,
+        "getPropertyValue": 1590,
+        "getBoundingClientRect": 5,
+        "querySelectorAll": 26
+      },
+      "raw": [
+        {
+          "ms": 14.600000023841858,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 12.799999952316284,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 14.100000023841858,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 17.399999976158142,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 14.5,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 12.799999952316284,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 15.300000071525574,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        },
+        {
+          "ms": 15.600000023841858,
+          "bytes": 26334,
+          "counters": {
+            "getComputedStyle": 209,
+            "getPropertyValue": 1590,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 26
+          }
+        }
+      ]
+    },
+    "onscreen-icons-control": {
+      "cfg": {
+        "iconCount": 40,
+        "offscreen": false
+      },
+      "wallMs": {
+        "mean": 65.92499999701977,
+        "median": 67.59999996423721,
+        "min": 59.199999928474426,
+        "max": 73,
+        "cov": 0.0713634125888424
+      },
+      "bytes": 39601,
+      "medianCounters": {
+        "getComputedStyle": 331,
+        "getPropertyValue": 29655,
+        "getBoundingClientRect": 5,
+        "querySelectorAll": 105
+      },
+      "raw": [
+        {
+          "ms": 68.60000002384186,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 73,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 67.39999997615814,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 61.200000047683716,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 68.5,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 61.700000047683716,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 67.79999995231628,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        },
+        {
+          "ms": 59.199999928474426,
+          "bytes": 39601,
+          "counters": {
+            "getComputedStyle": 331,
+            "getPropertyValue": 29655,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 105
+          }
+        }
+      ]
+    }
+  }
+}

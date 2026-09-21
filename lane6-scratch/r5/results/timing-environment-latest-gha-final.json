@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-09-16T22:19:14.641Z",
+  "host": {
+    "platform": "linux",
+    "release": "6.17.0-1022-azure",
+    "logicalCpus": 4
+  },
+  "method": "os.cpus tick deltas while gate process is otherwise idle",
+  "thresholds": {
+    "median": 10,
+    "mean": 12,
+    "max": 20
+  },
+  "samples": [
+    5.7644110275689275,
+    2.506265664160401,
+    0.497512437810943,
+    1.072386058981234,
+    0.24937655860348684,
+    0,
+    0,
+    0.497512437810943
+  ],
+  "summary": {
+    "mean": 1.323433023116992,
+    "median": 0.497512437810943,
+    "min": 0,
+    "max": 5.7644110275689275
+  },
+  "pass": true,
+  "command": [
+    "node",
+    "lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs",
+    "--candidate=dist/snapdom.mjs",
+    "--browser=chromium",
+    "--n=20",
+    "--batch=3",
+    "--warmup=3",
+    "--bootstrap=12000",
+    "--epsilon=0.02"
+  ]
+}

@@ -55,6 +55,15 @@ const CSS_RULE_SCAN_BUDGET = 1000
  * @returns {boolean}
  */
 function preflightWithFp(doc, sessionCache) {
+  // captureDOM pins the top document's stylesheet environment before any style snapshot is
+  // taken. Re-running the fingerprint after deepClone would both duplicate the document/sheet
+  // census and, worse, allow a mid-capture adopted-sheet edit to invalidate only the LATER
+  // phases while the clone still carries the earlier styles. Keep one coherent transaction.
+  // Direct/internal callers that did not establish a pin retain the historical recheck path.
+  if (sessionCache?.__pseudoEnvironmentPinnedDoc === doc &&
+      sessionCache.__pseudoPreflightFp !== undefined) {
+    return !!sessionCache.__pseudoPreflight
+  }
   const fp = styleFingerprint(doc)
   if (!sessionCache) {
     flushStyleInvalidations()
@@ -69,6 +78,20 @@ function preflightWithFp(doc, sessionCache) {
     sessionCache.__pseudoPreflightFp = fp
   }
   return !!sessionCache.__pseudoPreflight
+}
+
+/** Establish and pin the document's pseudo/style-sheet environment before any capture phase
+ * consumes epoch-scoped style data. Adopted stylesheet assignment/replaceSync emits no mutation
+ * record; historically this preflight discovered that only AFTER deepClone had snapshotted
+ * styles, then invalidateStyleCaches() made those brand-new snapshots stale before the
+ * background pass. The capture-boundary preflight makes one coherent style transaction: later
+ * pseudo work in the same session reuses this fingerprint instead of invalidating only the tail
+ * of an already-started capture. Direct/internal callers that never establish a pin retain the
+ * historical recheck behavior. */
+export function preparePseudoEnvironment(doc = document, sessionCache) {
+  const result = preflightWithFp(doc, sessionCache)
+  if (sessionCache) sessionCache.__pseudoEnvironmentPinnedDoc = doc
+  return result
 }
 /**
  * Safely returns cssRules for a stylesheet, or null when cross-origin/blocked.
@@ -541,18 +564,25 @@ function resolveQuoteKeywords(raw, node) {
  * continuous across siblings), the pseudo's own reset/increment, counter() expansion, then
  * token collapsing so `"..."` pieces join with no gap.
  * @param {Element} node
- * @param {'::before'|'::after'} pseudo
  * @param {{get:Function, getStack:Function}} baseCtx
  * @param {WeakMap<Element, Map<string, number>>} siblingCounters - per-parent overrides, on the session
- * @returns {{ text: string, incs: Array<{name:string,num:number|undefined}> }}
+ * @param {CSSStyleDeclaration} pseudoStyle - the already-probed pseudo style from the caller
+ * @returns {{ text: string, incs: Array<{name:string,num:number|undefined}>, derived: object|null }}
  */
-function resolvePseudoContentAndIncs(node, pseudo, baseCtx, siblingCounters) {
-  let ps
-  try { ps = getStyle(node, pseudo) } catch { }
+function resolvePseudoContentAndIncs(node, baseCtx, siblingCounters, ps) {
   let raw = ps?.content
-  if (!raw || raw === 'none' || raw === 'normal') return { text: '', incs: [] }
+  if (!raw || raw === 'none' || raw === 'normal') return { text: '', incs: [], derived: null }
   raw = stripContentAltText(raw)
   raw = resolveQuoteKeywords(raw, node)
+
+  const resolvesCounters = hasCounters(raw)
+  const increment = ps?.counterIncrement
+  // Literal content with no increment cannot affect sibling counter carry and does not need
+  // a derived counter context. counter-reset/set alone are irrelevant unless this pseudo's
+  // own content resolves a counter value.
+  if (!resolvesCounters && (!increment || increment === 'none')) {
+    return { text: collapseCssContent(raw), incs: [], derived: null }
+  }
 
   // 1) sibling overrides
   const baseWithSiblings = withSiblingOverrides(node, baseCtx, siblingCounters)
@@ -561,13 +591,13 @@ function resolvePseudoContentAndIncs(node, pseudo, baseCtx, siblingCounters) {
   const derived = deriveCounterCtxForPseudo(node, ps, baseWithSiblings)
 
   // 3) resolve counter()/counters()
-  let resolved = hasCounters(raw)
+  let resolved = resolvesCounters
     ? resolveCountersInContent(raw, node, derived)
     : raw
 
   // 4) collapse tokens (drops the gap between "1" and "." -> "1.")
   const text = collapseCssContent(resolved)
-  return { text, incs: derived.__incs || [] }
+  return { text, incs: derived.__incs || [], derived }
 }
 
 /**
@@ -605,13 +635,31 @@ function canSkipPseudoWalk(source, sessionCache) {
     if (gate === null) return false
     if (gate) sels.push(gate)
   }
-  if (!sels.length) return true
+  // Browsers synthesize open/close quotes on <q> without an author pseudo rule. Keep that
+  // semantic in the once-per-tree gate, but do not contaminate every per-node author selector
+  // with `q` (PQU1): the recursive path below handles <q> with a tag-name check instead.
+  sels.push('q')
   const sel = sels.join(',')
   try {
     return !source.matches(sel) && source.querySelector(sel) === null
   } catch {
     return false
   }
+}
+
+/** Per-node pseudo admission. PQU1 keeps the browser selector oracle for AUTHOR selectors but
+ * handles the fixed UA <q> quote semantic with a tag-name comparison. The false arm rebuilds
+ * the historical combined selector exactly enough for same-build deterministic counters. */
+function pseudoGateMatches(source, gate, pseudo, options) {
+  if (gate === null) return true
+  const quoteCapable = pseudo === '::before' || pseudo === '::after'
+  if (quoteCapable && options?.__pseudoUAQuoteGate === false) {
+    const historicalGate = gate ? `${gate},q` : 'q'
+    try { return source.matches(historicalGate) } catch { return true }
+  }
+  if (quoteCapable && source.localName === 'q') return true
+  if (gate === '') return false
+  try { return source.matches(gate) } catch { return true }
 }
 
 /**
@@ -683,12 +731,24 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
   if (gates.marker !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.marker, '::marker', MARKER_PROPS)
   if (gates.firstLine !== '') emitScopedPseudoRule(source, clone, sessionCache, gates.firstLine, '::first-line', FIRST_LINE_PROPS)
 
+  // The normal host declaration was already acquired by the element-style pipeline before
+  // this post-clone pseudo pass. Reuse that exact capture-local live declaration instead of
+  // crossing into getStyle()'s separate global memo on the first pseudo that needs host
+  // metrics/display. A missing/empty entry is not proof: fall back to the historical oracle.
+  // The explicit false arm restores that historical path for same-build causality probes.
+  let hostStyle = null
+  const host = () => {
+    if (hostStyle) return hostStyle
+    if (options?.__pseudoHostStyleReuse !== false) {
+      const cached = sessionCache.styleCache?.get?.(source)
+      if (cached?.length) hostStyle = cached
+    }
+    return hostStyle || (hostStyle = getStyle(source))
+  }
+
   for (const pseudo of ['::before', '::after', '::first-letter']) {
     const gate = gates[pseudo === '::before' ? 'before' : pseudo === '::after' ? 'after' : 'firstLetter']
-    if (gate !== null) {
-      if (gate === '') continue
-      try { if (!source.matches(gate)) continue } catch { /* unparsable at match time → probe */ }
-    }
+    if (!pseudoGateMatches(source, gate, pseudo, options)) continue
     try {
       const style = getStyle(source, pseudo)
       if (!style) continue
@@ -718,7 +778,7 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
       }
 
       if (pseudo === '::first-letter') {
-        const normal = getStyle(source)
+        const normal = host()
         // #406: wrapping the first letter in a <span> inside a flex/grid container
         // creates a new flex item; gap then inserts unwanted space (e.g. "S end Invite").
         const disp = (normal?.display || '').toLowerCase()
@@ -777,8 +837,8 @@ export async function inlinePseudoElements(source, clone, sessionCache, options,
       const rawContent = style.content ?? ''
 const isNoExplicitContent =
   rawContent === '' || rawContent === 'none' || rawContent === 'normal'
-const { text: cleanContent, incs } =
-  resolvePseudoContentAndIncs(source, pseudo, counterCtx, sessionCache.__siblingCounters)
+const { text: cleanContent, incs, derived: pseudoCounterCtx } =
+  resolvePseudoContentAndIncs(source, counterCtx, sessionCache.__siblingCounters, style)
 
       const bg = style.backgroundImage
       const bgColor = style.backgroundColor
@@ -831,9 +891,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
             if (!name) continue
             // Rebuild the final value from `derived` by asking for it again, using
             // withSiblingOverrides + derive so it stays consistent with the read above
-            const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-            const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
-            const finalVal = derived.get(source, name)
+            const finalVal = pseudoCounterCtx.get(source, name)
             map.set(name, finalVal)
           }
           sessionCache.__siblingCounters.set(source.parentElement, map)
@@ -852,9 +910,9 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       const isImageContent = cleanContent.startsWith('url(') || /^-?(?:webkit-)?image-set\(/i.test(cleanContent)
       let pinNowrap = false
       if (hasExplicitContent && !isIconFont2 && cleanContent.length > 1 && !isImageContent) {
-        const hostStyle = getStyle(source)
-        const fs = parseFloat(hostStyle.fontSize) || 16
-        let lh = parseFloat(hostStyle.lineHeight)
+        const normal = host()
+        const fs = parseFloat(normal.fontSize) || 16
+        let lh = parseFloat(normal.lineHeight)
         if (!Number.isFinite(lh)) lh = fs * 1.5
         const rect = source.getBoundingClientRect()
         if (rect.height < lh * 1.6) {
@@ -875,7 +933,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // kept verbatim, otherwise a blockified flex-item dot collapses to 0 and a
       // display:block dot stretches to the host width. The pseudo's parent box is the
       // host itself, so flex-item-ness comes from the host's display (#406: no floor).
-      const hostDisplay = (getStyle(source).display || '').toLowerCase()
+      const hostDisplay = (host().display || '').toLowerCase()
       const pseudoIsFlexItem = hostDisplay.includes('flex') || hostDisplay.includes('grid')
       if (pseudoIsFlexItem) {
         const mw = snapshot['min-width']
@@ -980,11 +1038,9 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // Before inserting: when the pseudo incremented anything, propagate the final value to siblings
       if (incs && incs.length && source.parentElement) {
         const map = sessionCache.__siblingCounters.get(source.parentElement) || new Map()
-        const baseWithSibs = withSiblingOverrides(source, counterCtx, sessionCache.__siblingCounters)
-        const derived = deriveCounterCtxForPseudo(source, getStyle(source, pseudo), baseWithSibs)
         for (const { name } of incs) {
           if (!name) continue
-          const finalVal = derived.get(source, name)
+          const finalVal = pseudoCounterCtx.get(source, name)
           map.set(name, finalVal)
         }
         sessionCache.__siblingCounters.set(source.parentElement, map)

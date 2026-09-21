@@ -40,6 +40,63 @@ describe('computePropertyUniverse', () => {
       anim.cancel()
     }
   })
+
+  it('separates auto-capable margins from percentage/calc layout instability', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    document.head.appendChild(style)
+
+    style.textContent = '.zz-m { margin-left: 10%; margin-right: calc(2px + 1%); }'
+    let scan = scanAuthorStyles(document)
+    expect(scan.marginUnstable).toBe(true)
+    expect(scan.marginMayBeAuto).toBe(false)
+
+    style.textContent = '.zz-m { margin-left: auto; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { --m: auto; margin-left: var(--m); }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { margin-left: inherit; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: inherit; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: revert; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(true)
+
+    style.textContent = '.zz-m { all: initial; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.marginMayBeAuto).toBe(false)
+  })
+
+  it('classifies only geometry-dependent inset declarations as unstable', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    document.head.appendChild(style)
+
+    style.textContent = '.zz-i { top: 14px; inset-inline-start: 2rem; }'
+    expect(scanAuthorStyles(document).insetUnstable).toBe(false)
+
+    for (const value of ['10%', 'calc(10% + 1px)', 'var(--offset)', '10cqh', 'inherit']) {
+      style.textContent = `.zz-i { top: ${value}; }`
+      expect(scanAuthorStyles(document).insetUnstable, value).toBe(true)
+    }
+
+    style.textContent = '.zz-i { inset-inline-start: 10cqw; }'
+    expect(scanAuthorStyles(document).insetUnstable).toBe(true)
+
+    // Modern anchor fallback can resolve otherwise-auto insets from available space.
+    style.textContent = '.zz-i { position-try-fallbacks: flip-block; }'
+    const positionTry = style.sheet?.cssRules?.[0]?.style?.getPropertyValue('position-try-fallbacks')
+    if (positionTry) expect(scanAuthorStyles(document).insetUnstable).toBe(true)
+  })
 })
 
 describe('pseudo selector gates', () => {
@@ -71,10 +128,10 @@ describe('pseudo selector gates', () => {
     expect(document.createElement('p').matches(gates.after)).toBe(false)
   })
 
-  it('always gates q in for before/after (UA open/close-quote has no author rule)', () => {
+  it('keeps UA q admission out of author pseudo selector gates', () => {
     const gates = gatesWith('.zz-none { color: red; }')
-    expect(document.createElement('q').matches(gates.before)).toBe(true)
-    expect(document.createElement('q').matches(gates.after)).toBe(true)
+    expect(gates.before).toBe('')
+    expect(gates.after).toBe('')
   })
 
   it('a pseudo rule added in the same tick as the capture is not dropped', async () => {

@@ -1,0 +1,145 @@
+{
+  "probe": "R8-J1 burst memo-hit",
+  "candidate": "dist/snapdom.mjs",
+  "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F",
+  "browser": "chromium",
+  "fixture": "cards400-safe",
+  "hits": 10,
+  "method": "one unchanged subtree, repeated snapdom.toRaw({burst:true}); capture 1 = miss, 2..N = memo. Measurement evidence only; no promotion.",
+  "results": {
+    "missFirst": {
+      "ms": 229.40000009536743,
+      "bytes": 165053,
+      "counters": {
+        "getComputedStyle": 1611,
+        "getPropertyValue": 9526,
+        "getBoundingClientRect": 5,
+        "querySelectorAll": 25
+      }
+    },
+    "memoHits": {
+      "count": 10,
+      "medianMs": 0.6000000238418579,
+      "minMs": 0.2999999523162842,
+      "maxMs": 0.8999999761581421,
+      "medianCounters": {
+        "getComputedStyle": 0,
+        "getPropertyValue": 0,
+        "getBoundingClientRect": 0,
+        "querySelectorAll": 0
+      },
+      "raw": [
+        {
+          "ms": 0.8999999761581421,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.3999999761581421,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.6000000238418579,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.7000000476837158,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.6000000238418579,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.5,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.3999999761581421,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.7999999523162842,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.6000000238418579,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        },
+        {
+          "ms": 0.2999999523162842,
+          "bytes": 165053,
+          "counters": {
+            "getComputedStyle": 0,
+            "getPropertyValue": 0,
+            "getBoundingClientRect": 0,
+            "querySelectorAll": 0
+          }
+        }
+      ]
+    },
+    "afterMutation": {
+      "ms": 24.5,
+      "bytes": 164788,
+      "counters": {
+        "getComputedStyle": 409,
+        "getPropertyValue": 1400,
+        "getBoundingClientRect": 4,
+        "querySelectorAll": 18
+      }
+    }
+  }
+}

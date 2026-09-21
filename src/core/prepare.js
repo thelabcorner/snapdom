@@ -21,6 +21,7 @@ import { stabilizeLayout, forceContentVisibility } from '../utils/prepare.helper
 import { prepareSelectionContext } from '../modules/selection.js'
 import { resolveClipRect, freezeViewportPositioned } from '../utils/capture.helpers.js'
 import { nextFrame } from '../utils/browser.js'
+import { canCarryScrollOffset } from '../utils/helpers.js'
 
 /** In-flight #488 reveals, `{ root, promise }`. A concurrent capture whose root contains or
  *  sits inside one of these waits for it instead of forcing the same styles twice. */
@@ -104,6 +105,19 @@ export async function prepareClone(element, options = {}) {
 
       const pendingIcons = []
       const collectPendingShadowIcons = () => {
+        // R8-B1 REJECTED — see the R8-B1 entry in lane6-scratch/r5/R5_ITERATION_LEDGER.md.
+        // A light-DOM `querySelector('calcite-icon')` precheck is UNSOUND: it cannot see a host
+        // nested inside a shadow root, and the #488 oracle
+        // (`visual.demos.3 > d488-offscreen-web-component`) regressed 1.91% (90 px) with the
+        // precheck enabled while passing on pristine parent d1290be. The historical walk is
+        // therefore unconditional in production; a sound precheck would have to traverse shadow
+        // roots, which is the very cost this was meant to avoid. The flag survives ONLY as the
+        // pre-registered counterfactual arm for that rejection evidence.
+        if (options.__calciteIconCensusPrecheck === true) {
+          const hasIconHost = element.localName === 'calcite-icon' ||
+            (element.querySelector && element.querySelector('calcite-icon') !== null)
+          if (!hasIconHost && !element.shadowRoot) return
+        }
         const roots = []
         if (element.shadowRoot) roots.push(element.shadowRoot)
         for (const child of element.querySelectorAll('*')) {
@@ -202,7 +216,11 @@ export async function prepareClone(element, options = {}) {
   // Clip mode prunes the walk to the window instead of skipping it: a clip rect far from the
   // real viewport lands on UNRENDERED cv:auto placeholders (blank bands in the capture),
   // while content outside the window still gets culled at its placeholder box.
-  const undoContentVisibility = forceContentVisibility(element, clipRect)
+  const undoContentVisibility = forceContentVisibility(
+    element,
+    clipRect,
+    options.__contentVisibilityStyleSeed === false ? null : sessionCache.styleCache,
+  )
 
   if (clipRect) {
     // Freeze the window in element-local coords NOW — after cv forcing (which can relayout),
@@ -243,7 +261,12 @@ export async function prepareClone(element, options = {}) {
   // removed) and shifted :first-child/nth-child matches while deepClone read computed
   // styles. The clone is detached; external refs are still resolved from the live document.
   try {
-    inlineExternalDefsAndSymbols(clone, undefined, element)
+    inlineExternalDefsAndSymbols(
+      clone,
+      undefined,
+      element,
+      options.__svgDefsStyleReuse === false ? null : sessionCache.styleCache,
+    )
   } catch (e) {
     console.warn('inlineExternal defs or symbol failed:', e)
   }
@@ -326,7 +349,13 @@ export async function prepareClone(element, options = {}) {
     // scroll — un-scrolling the root here would compensate twice (blank output when
     // capturing a scrolled documentElement).
     if (sessionCache.clip && originalNode === element) continue
-    wrapScrolledClone(cloneNode, originalNode)
+    wrapScrolledClone(
+      cloneNode,
+      originalNode,
+      sessionCache.styleCache,
+      options.__wrapScrolledSemanticGate !== false,
+      options.__recordScrollBaseline,
+    )
   }
   // The root clone is the foreignObject's content now, so whatever placed it in the page
   // (margin, inset offsets, float) is zeroed and its transform keeps scale/skew only. The
@@ -454,7 +483,12 @@ export function applyStyleClass(node, key, keyToClass) {
  * @param {Element} cloneNode
  * @param {Element} originalNode
  */
-export function wrapScrolledClone(cloneNode, originalNode) {
+export function wrapScrolledClone(
+  cloneNode, originalNode, styleCache = null, semanticGate = false, recordScroll = null
+) {
+  const cachedStyle = styleCache?.get?.(originalNode) || null
+  try { recordScroll?.(originalNode, cachedStyle) } catch { /* transaction telemetry only */ }
+  if (semanticGate && styleCache && !canCarryScrollOffset(originalNode, styleCache)) return
   const scrollX = originalNode.scrollLeft
   const scrollY = originalNode.scrollTop
   const hasScroll = scrollX || scrollY

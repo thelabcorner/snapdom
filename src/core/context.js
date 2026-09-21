@@ -156,6 +156,137 @@ export function createContext(options = {}) {
     cache: cachePolicy,
     // Internal: identity-share override (undefined = decide per capture in captureDOM).
     __styleShare: options.__styleShare,
+    // Internal focus-partition counterfactual: false restores the historical behavior where a
+    // relevant matching focus-state selector vetoes structural sharing for the whole capture.
+    __styleShareFocusPartition: options.__styleShareFocusPartition,
+    // Internal test/benchmark control: false keeps the historical document-level property
+    // universe while leaving the DOM, CSS and every other capture option unchanged.
+    __elementUniverse: options.__elementUniverse,
+    // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
+    // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
+    __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,
+    // Internal R5-D counterfactual/benchmark override: false forces R3's historical linear
+    // rule scan; true forces the compiled subject-key index; undefined uses the tiered router.
+    __elementRuleIndex: options.__elementRuleIndex,
+    // Internal R5-D3 counterfactual: false collapses exact data-* value keys back to the D2
+    // attribute-name condition while preserving the same selector scan and capture semantics.
+    __elementRuleAttrValueIndex: options.__elementRuleAttrValueIndex,
+    // Internal R5-D4 counterfactual: false preserves D3's fixed bucket-key priority. The default
+    // lets index compilation choose the least-populated necessary subject key; the full selector
+    // is still checked by matches(), so only candidate dispatch changes.
+    __elementRuleKeySelectivity: options.__elementRuleKeySelectivity,
+    // Internal R5-D5 counterfactual: false limits D4 planning to its exact-attribute alternative.
+    // Default behavior also considers additional direct class/ID conditions in the subject
+    // compound while preserving browser matches() as the final semantic oracle.
+    __elementRuleCompoundKeyPlanner: options.__elementRuleCompoundKeyPlanner,
+    // Internal R5-D6 control: false preserves one R3 interpreter entry per CSS rule; true forces
+    // exact-selector CSE; undefined uses the cheap production repetition scout. CSE runs only
+    // after candidate indexing/planning and unions declared property names for byte-identical
+    // selector strings. Browser matches() remains the semantic oracle.
+    __elementRuleSelectorCSE: options.__elementRuleSelectorCSE,
+    // Internal R5-SM2 counterfactual: production gates Typed-OM auto-margin restoration on a
+    // conservative stylesheet/inline/UA dependency proof. False forces the historical
+    // per-node probe for differential tests/benchmarks.
+    __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R8-D1 counterfactual: the document-level half of the SM2 auto-margin proof
+    // (author margin values that can compute to `auto`, running animations) is invariant per
+    // capture and may be cached on the session instead of re-read per node. False restores the
+    // historical per-node document scan for differential tests/benchmarks.
+    __autoMarginDocProofCache: options.__autoMarginDocProofCache,
+    __contentVisibilityStyleSeed: options.__contentVisibilityStyleSeed,
+    __lineClampStyleSeed: options.__lineClampStyleSeed,
+    // Internal R7-LCG1 counterfactual. Production skips the live truncation walk only when the
+    // complete document scan plus an immediate subtree inline/shadow census proves that neither
+    // line-clamp nor text-overflow can apply. False restores the unconditional historical pass.
+    __lineClampPassGate: options.__lineClampPassGate,
+    __parentStyleReuse: options.__parentStyleReuse,
+    __backdropStyleReuse: options.__backdropStyleReuse,
+    __pseudoHostStyleReuse: options.__pseudoHostStyleReuse,
+    // Internal R7-PQU1 counterfactual: production admits UA <q> before/after pseudos with a
+    // local tag-name check and leaves browser matches() to author selectors only. False
+    // reconstructs the historical `authorGate,q` selector for same-build causal probes.
+    __pseudoUAQuoteGate: options.__pseudoUAQuoteGate,
+    // Internal R7-ANIMR1 counterfactual. Share-safe structural twins reuse the first identity
+    // occurrence's computed animation-name rider; false restores one live read per element.
+    __animationNameShare: options.__animationNameShare,
+    // Internal R7-TXT2 research arm. On a conservative neutral-tag class, synthesize the six
+    // default text-decoration fallback values from the already-captured color instead of six
+    // named CSSOM reads. Default remains historical until exact parity is fully certified.
+    __snapshotDecorationSynthesis: options.__snapshotDecorationSynthesis,
+    // Internal R7-OFF1 counterfactual. Production re-reads shared-snapshot offsets only when
+    // stylesheet/inline evidence can make their used value geometry-dependent. False restores
+    // the historical unconditional top/right/bottom/left/inset-* rider set.
+    __styleShareInsetValueGate: options.__styleShareInsetValueGate,
+    // Internal R7-SO1 counterfactual: default/true stores identity twins as a tiny
+    // own-property overlay whose prototype is the immutable shared snapshot; false forces the
+    // historical full object spread for byte/timing counterfactuals.
+    __styleShareSnapshotOverlay: options.__styleShareSnapshotOverlay,
+    // Internal R7-GR1 counterfactual. Reuse exact gutter inputs already present in this node's
+    // style snapshot; false restores the historical duplicate live CSSOM reads.
+    __gutterSnapshotReuse: options.__gutterSnapshotReuse,
+    // Internal R7-MW1 counterfactual. `min-width` is mandatory in the element snapshot universe;
+    // flex/grid correction may reuse that exact same-capture value when present. False restores
+    // the historical duplicate live read, and excluded/missing snapshots always fall back.
+    __minWidthSnapshotReuse: options.__minWidthSnapshotReuse,
+    // Internal R7-BGS1 counterfactual. The late background pass first probes source longhands;
+    // if none can carry an image it skips the otherwise-inert URL shorthand/alias loop. False
+    // restores the historical unconditional URL_PROPS walk.
+    __backgroundUrlSentinel: options.__backgroundUrlSentinel,
+    // Internal R7-BGS2 counterfactual. Production narrows BGS1's late source sentinel to the
+    // source properties this engine can actually expose (plus compatibility aliases proven by
+    // the engine family). False restores BGS1's complete seven-source probe set.
+    __backgroundSourceBasis: options.__backgroundSourceBasis,
+    // Internal R7-BGSNAP1 counterfactual. Background inlining may retain a same-capture style
+    // snapshot across font-only environment epochs when its source/style stamp is unchanged and
+    // no relevant declaration can depend on font metrics. False restores full-env invalidation.
+    __backgroundFontEpochReuse: options.__backgroundFontEpochReuse,
+    // Internal R7-MASKLAY1 research arm. Explicit true gates mask-layout copying on the late
+    // source sentinel plus snapshot representation proof. Default remains historical because
+    // the hardened mechanism produced no standing browser-call reduction.
+    __maskLayoutSourceGate: options.__maskLayoutSourceGate,
+    // Internal R7-MASKDEF1 counterfactual. In the font-relaxed BGSNAP1 overlay path, when the
+    // complete scan proves the document and node have no mask channel, per-tag initial mask
+    // layout values are captured once and reused instead of live-read per node. False restores
+    // the historical per-node live reads.
+    __maskLayoutInitialDefaults: options.__maskLayoutInitialDefaults,
+    // Internal R7-BGSTATE1 counterfactual. Unique neutral HTML elements can skip the roughly
+    // ten-read background/mask/border-image admission probe only when the complete author scan
+    // and this node's inline/shadow state prove none of those non-inherited families can apply.
+    // False restores the historical probe unconditionally.
+    __backgroundStateProbeGate: options.__backgroundStateProbeGate,
+    __svgDefsStyleReuse: options.__svgDefsStyleReuse,
+    __imageStyleReuse: options.__imageStyleReuse,
+    __svgPaintStyleReuse: options.__svgPaintStyleReuse,
+    // Internal R7-BRST1 counterfactual. Production derives the burst scroll-watch set from
+    // exact overflow semantics already observed during capture, avoiding whole-tree
+    // scrollWidth/clientWidth/scrollHeight/clientHeight discovery. False restores the
+    // historical geometry census for deterministic A/B probes.
+    __burstSemanticScrollTracking: options.__burstSemanticScrollTracking,
+    // Internal R7-BRST2 counterfactual for clone scroll-compensation admission.
+    __wrapScrolledSemanticGate: options.__wrapScrolledSemanticGate,
+    // Internal R7-BRST3 counterfactual: first-capture scroll baseline comes from the exact
+    // source observations made while cloning instead of a broad pre-capture offset scan.
+    __burstCaptureScrollBaseline: options.__burstCaptureScrollBaseline,
+    // Internal R7-BSAFE1 counterfactual. Production lets an already-established burst state
+    // enter the transactional validator without re-running the expensive per-node frame-source
+    // classifier up front. The validator still performs one structural shadow-root census on
+    // every hit, and re-runs the complete historical classifier after any observed mutation or
+    // newly attached open shadow root. False restores the historical API-entry full scan.
+    __burstRetainedSafetyFastPath: options.__burstRetainedSafetyFastPath,
+    // Internal R7-BSAFE2 counterfactual. A clean established memo may inspect the retained
+    // element census for newly attached open shadow roots instead of issuing a fresh whole-tree
+    // selector query. Dirty state or a newly found root falls back to the full BSAFE1 census.
+    __burstRetainedShadowProbe: options.__burstRetainedShadowProbe,
+    // Internal R5 composition control. `true` forces R3's per-element property universe on
+    // every first-seen R2/R4 identity, `false` pins the historical R2-only counterfactual,
+    // and `undefined` uses the adaptive production router. Identity hits still reuse the
+    // stored snapshot and re-read the existing used-value list.
+    __styleShareElementUniverse: options.__styleShareElementUniverse,
+    // Internal R5 tuning knob for the adaptive composition router. Production behavior uses
+    // the module default; tests/benchmarks can move the first-seen-identity crossover without
+    // source edits. A value of N means the first N DISTINCT share misses stay on pure R2 and
+    // only later misses may use R3. Identity hits do not advance the counter.
+    __styleShareElementUniverseMinMisses: options.__styleShareElementUniverseMinMisses,
 
     // Network
     useProxy: typeof options.useProxy === 'string' ? options.useProxy : '',
