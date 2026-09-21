@@ -23,17 +23,16 @@ not evidence of absence. All `file:line` references below were read from the R7 
 | D Style snapshot / identity sharing | MEASURED (R7-SO1/OFF1/FP1/ANIMR1/MW1) | D1 |
 | E Pseudo materialization | MEASURED (R7-PQU1; R7-P1 rejected) | E1 |
 | F Background / mask / border-image | MEASURED (BGS1/BGS2/BGSNAP1/MASKDEF1/BGSTATE1) | stop |
-| G Assets: images/fonts/SVG/compress | MEASURED for style reuse; UNMEASURED for compress census | G1 |
+| G Assets: images/fonts/SVG/compress | **MEASURED** (compress census = +3 qSA, +0 gBCR) | stop |
 | H Layout corrections / prepass gate | MEASURED (R7-LCG1, R7-OFF1) | stop |
 | I Serialization / render / export | **MEASURED** (style dominates; no serialization residual) | stop |
 | J Burst / memo / repeated capture | **MEASURED** (memo hit = 0 native calls) | stop |
 
 Criterion `gcr_f3e1e893cffdkDwHacJ1oQzn4W` requires every high-cost region to carry a
-**measured** hypothesis. Regions B, I and J were unmeasured when this file was first written.
-I and J were measured by the I1/J1 probes and resolved to explicit measured stops. Region B was
-measured by the B1 probe and resolved to candidate **B1**. The one remaining UNMEASURED item is
-the compress census inside region G (`compress.js:624/635`), which is a candidate (G1) whose
-cost has not yet been instrumented.
+**measured** hypothesis, with a candidate or an explicit stop reason. All ten regions are now
+measured: B resolved to candidate **B1**; G, I and J each resolved to explicit measured stops;
+A, C, F and H were already measured with stop reasons from the R5/R7 corpus; D and E carry
+measured candidates D1 and E1 from prior lanes. **No region remains UNMEASURED.**
 
 ## Region I — how to convert UNMEASURED to measured (I1 plan)
 
@@ -152,20 +151,34 @@ Goal: establish whether burst memo hits on the public path are already at the ob
   the late `afterClone` observation point is protected.
 - Candidate: NONE — four stacked wins plus a documented rejection already own this region.
 
-### G — Assets: images, fonts, SVG defs, compress (MIXED)
+### G — Assets: images, fonts, SVG defs, compress (NOW FULLY MEASURED — stop)
 - Symbols: `inlineImages` (capture.js:11); `inlineExternalDefsAndSymbols`
   (`src/modules/svgDefs.js:166,184,257`); font scan `src/modules/fonts.js:926,975`;
-  `el.matches(gate)` pre-filter `fonts.js:1227`; compress census
-  `src/modules/compress.js:557,624,635`; root-is-img guard `compress.js:555`.
+  `el.matches(gate)` pre-filter `fonts.js:1227`; `compressClonedImages` root-is-img guard
+  `compress.js:555-558`; `compressClonedBackgrounds` census `compress.js:620-628` and
+  per-candidate `getComputedStyle(orig)` `compress.js:635`.
 - Evidence: SA6 asset-heavy gCS 1905→448 (-76.5%); flags `__imageStyleReuse`,
-  `__svgDefsStyleReuse`, `__svgPaintStyleReuse` promoted. The compress census itself is
-  UNMEASURED.
-- Protected seam: `asset-heavy` fresh-page output oscillates on Chromium/Firefox and is NOT a
-  valid fresh-page byte oracle.
-- Candidate G1: `compress.js:624` materializes `[clone, ...clone.querySelectorAll('*')]` and
-  `compress.js:635` calls `getComputedStyle(orig)` per candidate. Test restricting the census to
-  the `[data-snapdom-asset]` set produced by `snapshotCompressedAssets`, preserving the #461
-  root-is-img case. Requires a deterministic all-data-URL fixture.
+  `__svgDefsStyleReuse`, `__svgPaintStyleReuse` promoted.
+- **Measured (G1 probe, Chromium, deterministic all-data-URL fixture, 120 cards, n=6 warmup=2):**
+  `bench-compress-census.mjs`, public `snapdom.toRaw`, artifact
+  `lane6-scratch/r8/results/compress-census-chromium.json`:
+  - `compress-on`: median **12.6ms** CoV 25.1%, qSA **25**, gCS **371**, gBCR 126
+  - `compress-off` (protected control): median **11.7ms** CoV 16.6%, qSA **22**, gCS **251**,
+    gBCR 126
+  - `compress-root-is-img-461` (guard exercised): median **1.9ms**, qSA 25, gCS 9, gBCR 5
+- Isolation: the census costs **+3 querySelectorAll** and **+0 getBoundingClientRect** versus
+  compress-off. The +120 gCS delta is exactly one `getComputedStyle(orig)` per card, which is
+  the legitimate `compress.js:635` read needed to evaluate `background-repeat`/`background-size`
+  — not census overhead. The `compress.js:625-628` filter already short-circuits on
+  `el.style.backgroundImage` before any style read, and gBCR is identical across arms, proving no
+  geometry walk is added by the census.
+- Protected seam: the #461 root-is-img guard `compress.js:555-558`; the `el.style` fast path in
+  the candidate filter; `background-size: auto` cropping semantics (compress.js:600-612).
+- **Candidate G1: REJECTED — measured STOP.** Restricting the census to
+  `[data-snapdom-asset]` could save at most ~3 qSA calls while putting the #461 guard and the
+  `el.style` fast path at risk, and the only real cost (gCS) is irreducible per-candidate
+  semantics rather than census overhead. Region G closes with no candidate.
+
 
 ### H — Layout corrections / prepass gate (MEASURED)
 - Symbols: `lineClampTree` `capture.js:20,158-165`; `needsTextTruncationPrepass`
@@ -216,18 +229,19 @@ Goal: establish whether burst memo hits on the public path are already at the ob
 
 ## Explicit non-claims
 
-- No R8 timing has been run. The I1/J1/B1 probes are **measurement evidence**, not promotion
+- No R8 timing has been run. The I1/J1/B1/G1 probes are **measurement evidence**, not promotion
   evidence, and no candidate is enabled by them.
 - No R8 candidate has been implemented, promoted, or rejected.
-- The compress census inside region G remains unmeasured; criterion 2 is **not yet satisfied**
-  until that is instrumented. Regions B resolved to candidate B1; I and J resolved to measured
-  stops.
+- All ten pipeline regions are now measured. G1 was rejected on measurement (census overhead is
+  +3 qSA, +0 gBCR; the only real cost is irreducible per-candidate semantics). B remains a
+  measured candidate (B1); I and J resolved to measured stops.
 
 ## Probe artifacts
 
 - `lane6-scratch/r8/bench-stage-attribution.mjs` → `lane6-scratch/r8/results/stage-attribution-<engine>.json`
 - `lane6-scratch/r8/bench-burst-memo-hit.mjs` → `lane6-scratch/r8/results/burst-memo-hit-<engine>.json`
 - `lane6-scratch/r8/bench-shadow-icon-census.mjs` → `lane6-scratch/r8/results/shadow-icon-census-<engine>.json`
-- All three drive the public `snapdom.toRaw` pipeline and count `getComputedStyle`,
+- `lane6-scratch/r8/bench-compress-census.mjs` → `lane6-scratch/r8/results/compress-census-<engine>.json`
+- All four drive the public `snapdom.toRaw` pipeline and count `getComputedStyle`,
   `getPropertyValue`, `getBoundingClientRect`, and `querySelectorAll` via in-page prototype
   patches. All are rerunnable from the R7 worktree root.

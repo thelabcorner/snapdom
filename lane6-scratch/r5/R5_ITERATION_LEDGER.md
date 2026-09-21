@@ -106,6 +106,16 @@ Ground truth corrections:
   documented rejection for the naive skip.
 
 ### Region G — Assets: images, fonts, SVG defs, compress
+- MEASURED 2026-09-21 (R8-G1 probe, Chromium, deterministic all-data-URL fixture, 120 cards,
+  public `snapdom.toRaw`, n=6 warmup=2): `compress-on` 12.6ms CoV 25.1% with qSA 25 / gCS 371 /
+  gBCR 126; `compress-off` control 11.7ms CoV 16.6% with qSA 22 / gCS 251 / gBCR 126;
+  `compress-root-is-img-461` 1.9ms with gCS 9.
+- Isolation: the census (`compress.js:620-628`) costs **+3 querySelectorAll and +0
+  getBoundingClientRect**. The +120 gCS is exactly one `getComputedStyle(orig)` per card, which
+  is the legitimate `compress.js:635` read, not census overhead.
+- **REJECT G1 — measured stop.** Restricting the census to `[data-snapdom-asset]` could save at
+  most ~3 qSA while risking the #461 guard and the `el.style` fast path.
+- Artifact `lane6-scratch/r8/results/compress-census-chromium.json`.
 - Symbols: `inlineImages` (capture.js:11), `inlineExternalDefsAndSymbols`
   (`src/modules/svgDefs.js:166,184,257`), `font` scan `src/modules/fonts.js:926,975`,
   `el.matches(gate)` pre-filter `fonts.js:1227`, compress census

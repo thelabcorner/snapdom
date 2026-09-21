@@ -1,0 +1,285 @@
+{
+  "probe": "R8-G1 compress census",
+  "candidate": "dist/snapdom.mjs",
+  "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F",
+  "browser": "chromium",
+  "n": 6,
+  "warmup": 2,
+  "cards": 120,
+  "targets": [
+    "compress.js:624 candidates materialization",
+    "compress.js:625-628 style.backgroundImage filter",
+    "compress.js:635 getComputedStyle(orig)",
+    "compress.js:555-558 root-is-img guard"
+  ],
+  "method": "public snapdom.toRaw with compress on/off; in-page native counters. Measurement evidence only; no promotion.",
+  "fixtures": {
+    "compress-on": {
+      "cfg": {
+        "cards": 120,
+        "rootIsImg": false
+      },
+      "opts": {
+        "scale": 1,
+        "dpr": 1,
+        "embedFonts": false,
+        "cache": "disabled",
+        "compress": true
+      },
+      "wallMs": {
+        "mean": 14.083333353201548,
+        "median": 12.600000023841858,
+        "min": 11.899999976158142,
+        "max": 21.100000023841858,
+        "cov": 0.25073904285700394
+      },
+      "bytes": 24162,
+      "medianCounters": {
+        "getComputedStyle": 371,
+        "getPropertyValue": 2609,
+        "getBoundingClientRect": 126,
+        "querySelectorAll": 25
+      },
+      "raw": [
+        {
+          "ms": 14.200000047683716,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 11.899999976158142,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 21.100000023841858,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 12.100000023841858,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 12.600000023841858,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 12.600000023841858,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 371,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 25
+          }
+        }
+      ]
+    },
+    "compress-off-control": {
+      "cfg": {
+        "cards": 120,
+        "rootIsImg": false
+      },
+      "opts": {
+        "scale": 1,
+        "dpr": 1,
+        "embedFonts": false,
+        "cache": "disabled",
+        "compress": false
+      },
+      "wallMs": {
+        "mean": 11.400000035762787,
+        "median": 11.699999988079071,
+        "min": 9,
+        "max": 13.800000071525574,
+        "cov": 0.16634317679342447
+      },
+      "bytes": 24162,
+      "medianCounters": {
+        "getComputedStyle": 251,
+        "getPropertyValue": 2609,
+        "getBoundingClientRect": 126,
+        "querySelectorAll": 22
+      },
+      "raw": [
+        {
+          "ms": 13.800000071525574,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        },
+        {
+          "ms": 11.299999952316284,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        },
+        {
+          "ms": 9,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        },
+        {
+          "ms": 12.800000071525574,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        },
+        {
+          "ms": 9.400000095367432,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        },
+        {
+          "ms": 12.100000023841858,
+          "bytes": 24162,
+          "counters": {
+            "getComputedStyle": 251,
+            "getPropertyValue": 2609,
+            "getBoundingClientRect": 126,
+            "querySelectorAll": 22
+          }
+        }
+      ]
+    },
+    "compress-root-is-img-461": {
+      "cfg": {
+        "cards": 0,
+        "rootIsImg": true
+      },
+      "opts": {
+        "scale": 1,
+        "dpr": 1,
+        "embedFonts": false,
+        "cache": "disabled",
+        "compress": true
+      },
+      "wallMs": {
+        "mean": 2,
+        "median": 1.949999988079071,
+        "min": 1.7999999523162842,
+        "max": 2.200000047683716,
+        "cov": 0.08366602260093703
+      },
+      "bytes": 14899,
+      "medianCounters": {
+        "getComputedStyle": 9,
+        "getPropertyValue": 666,
+        "getBoundingClientRect": 5,
+        "querySelectorAll": 25
+      },
+      "raw": [
+        {
+          "ms": 1.899999976158142,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 2.200000047683716,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 2,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 2.200000047683716,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 1.899999976158142,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        },
+        {
+          "ms": 1.7999999523162842,
+          "bytes": 14899,
+          "counters": {
+            "getComputedStyle": 9,
+            "getPropertyValue": 666,
+            "getBoundingClientRect": 5,
+            "querySelectorAll": 25
+          }
+        }
+      ]
+    }
+  }
+}
