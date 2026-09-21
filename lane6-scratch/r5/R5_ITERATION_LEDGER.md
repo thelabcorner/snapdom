@@ -246,6 +246,28 @@ rerun will confirm. Cross-engine focused files: 126/129, same single test failin
 all looked promotable, and all collapsed to neutral at N=20. Scouts are triage only; never
 discuss promotion below N=20 with CoV < 15% and a clean null.
 
+## GHA final artifact: run 35156996888 / PR #1
+
+The public-fork `r7-timing.yml` workflow completed successfully on commit
+`c435e7cbff3d50449aca2a1ea996648900c05d36` and uploaded artifact
+`r7-timing-snapshot-overlay-chromium-n20`. Artifact JSON SHA256:
+`8645875509459642C46E86DBC0E2FFFB9FEA366C2867F807475CC585D3E1EFAF`.
+The quiet-runner gate passed: mean **1.32%**, median **0.50%**, peak **5.76%**.
+The exact current-run report is `r7-snapshot-overlay-controlled-gha-final.json`;
+the gate report is `timing-environment-latest-gha-final.json`.
+
+| fixture | parity | effect / 95% CI | null / 95% CI | CoV | verdict |
+|---|---|---|---|---:|---|
+| cards400-safe | PASS | -12.6% [-15.9,-9.7] | -1.2% [-4.9,2.3] | 12.6% | **claimable** |
+| cards400-neutral-unsafe | PASS | -8.5% [-13.8,-2.8] | -0.5% [-6.8,6.6] | 28.2% | inconclusive |
+| cards400-non-neutral | PASS | -2.4% [-8.9,8.0] | +2.6% [-0.7,8.5] | 65.7% | inconclusive |
+
+Only the safe fixture is claimable in this run; the other cells remain explicitly
+inconclusive. This is an independent quiet-runner confirmation of SO1 on the
+folded SO1+FP1 bundle, not a new promotion or a replacement for the earlier
+homelab claims. The workflow was also verified to upload only post-`r7_t0`
+artifacts, excluding committed historical probe JSONs.
+
 ## R7-SO1 PROMOTED 2026-09-16
 
 `perf/v3-r7-overlay-gutterfix` @ `356f3c1`, bundle `C4E4CCDA7195` (deterministic rebuild verified).
