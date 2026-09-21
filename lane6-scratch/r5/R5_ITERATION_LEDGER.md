@@ -1,5 +1,65 @@
 # R5 iteration ledger
 
+## R8-E1 — lazy pseudo reuse (P1 redesign): REJECTED — fixes pairs/triples, regresses quads (2026-09-21)
+
+### Provenance correction (important)
+
+The earlier P1 rejection was recorded against bundle `88CBE7A7B01D`. The lazy-gating design
+(`reuseReady`, occurrence-#4 admission at `pseudoSnapshotFor`) was NOT in that bundle: the
+lazy work landed later as commit `1307995 perf(pseudo): checkpoint lazy P1 reuse admission`,
+and lives on dedicated R8 branches (`perf/v3-r8-p1-lazy-current`, `...-proof-admission`,
+`...-split-admission`) — it is also present as an uncommitted modification in the
+`pseudo-overlay-clean` worktree and is absent from that branch's committed HEAD `1495130`.
+So "P1 was rejected" and "E1 was tested" are different facts about different bundles.
+
+### Mechanism (read in source, `perf/v3-r8-p1-lazy-current`)
+
+`src/modules/styles.js:2322-2326`: `repeated = rec.rr !== null` (true from occurrence #2),
+`reuseReady = repeated && rec.reuseReady === true` (set on the NEXT hit), then
+`useOverlay = overlayEnabled && reuseReady` and
+`cacheEligible = useKeyCache && !session.__pseudoStyleKeyCacheDisabled && reuseReady`.
+Net effect: occurrence #2 and #3 stay on the historical spread; overlay/signature/Map setup is
+paid only from occurrence #4. Pair-only and triple-only identities therefore cost zero.
+
+### E1 oracle + timing evidence (public fork, run 35482881215, head 2186eeb, gate PASS)
+
+Gate: mean 0.34%, median 0.12%, peak 1.75%. Baseline arm is the certified R7 bundle
+`ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F`. **All 14 cells
+parity=true** (cross-engine parity artifacts also exist for chromium/firefox/webkit).
+
+| cell | old P1 (88CBE7A7B01D) | lazy E1 (2186eeb) | verdict |
+|---|---|---|---|
+| pseudo-pairs-400 | **+8.2% REGRESSION** | **-1.70%** CI[-2.87,-0.47] CoV 2.7% | fixed |
+| pseudo-triples-unique-style-360 | **+7.0% REGRESSION** | **-0.44%** CI[-1.70,0.81] CoV 3.2% | fixed -> neutral |
+| pseudo-400 / flex-400 / percent-400 / state-veto-400 | — | -7.24% / -7.90% / -6.67% / -6.89%, all claim=PASS | wins |
+| **pseudo-quads-unique-style-400** | — | **+4.16% CI[2.93,5.37] CoV 2.3% claim=REGRESSION** | **NEW REGRESSION** |
+| pseudo-breaker-tail-152 | — | +1.66% CI[-0.70,4.13] | inconclusive |
+| no-pseudo-400 (protected) | — | +1.21% CI[-4.42,7.01] | neutral (CI spans 0) |
+| pseudo-entropy-400 (protected) | — | +0.83% CI[-0.38,2.02] | neutral (CI spans 0) |
+
+### Verdict: REJECT as a production default
+
+The lazy admission **succeeds at its design goal** — it removes the pair and triple regressions
+that killed P1, and it delivers four clean PASS cells plus neutral protected controls. But it
+introduces a **new, statistically solid regression at occurrence #4** (`pseudo-quads-unique`,
++4.16%, CoV 2.3%, clean null). Occurrence #4 is exactly where overlay/signature/Map setup is
+first paid, so the cost lands on the first identity that adopts the machinery and on
+unique-style quads it never recovers.
+
+Per the campaign rule ("reject candidates with clean regressions"), E1 cannot ship as-is.
+
+**Bounded follow-up if this is ever reopened (recorded, NOT attempted):** move admission from
+"#3 marks ready, #4 pays" to a cost-recovery test — e.g. require the observed reuse count to
+exceed a small break-even threshold before enabling overlay/signature/Map setup, so a
+quad-unique identity never pays setup it cannot amortize. Do not reopen without that design.
+
+**Do NOT re-run E1.** The kill cell is `pseudo-quads-unique-style-400`; the protected cells are
+`pseudo-pairs-400`, `pseudo-triples-unique-style-360`, `no-pseudo-400`, `pseudo-entropy-400`.
+
+Artifacts: `r8-p1-current-chromium-full.json` (run 35482881215) and
+`r8-p1-current-{chromium,firefox,webkit}-parity.json` on `perf/v3-r8-p1-lazy-current`.
+
+
 ## R8 candidate round 1 — B1 REJECTED, D1 oracles PASS (2026-09-21)
 
 ### R8-B1 — offscreen shadow-icon census precheck: REJECTED (visual counterexample)
