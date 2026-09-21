@@ -49,6 +49,45 @@ baseline 286,782 / 95,988 / 80,596. Brotli is 59 bytes SMALLER.
 **Status: oracles pass, NOT promoted, NOT timed.** Public-fork GHA decision timing is the next
 gate and has not been run.
 
+### R8-D1 — document-level auto-margin proof caching: REJECTED (no measurable effect)
+
+Mechanism: cache the document half of the R5-SM2 proof (`scan.marginMayBeAuto`,
+`scan.hasAnimations`) once per capture on the session instead of re-deriving per node. Flag
+`__autoMarginDocProofCache` (default on, `false` = historical per-node scan).
+
+**Oracles: PASS.** 12 cases x 3 engines = **36/36** exact raw-byte parity including all
+protected auto-margin controls (real `margin:auto`, `var()` auto, `<table align=center>`,
+`all:inherit`, `all:revert`, dialog/hr, inline auto, animation, shorthand auto, shadow-host) and
+the explicit false-flag fallback. Regression surface `core.prepare` + `api.exclude.unified` +
+`api.fromString` = **216/216** cross-engine.
+
+**Public-fork timing: INCONCLUSIVE -> REJECT.** Run `35558373587` (workflow_dispatch),
+head `c1ea53c`, candidate bundle SHA `002E31DFC15BC4B3`, flags confirmed in provenance
+(`base {"__autoMarginDocProofCache":false}` / `opt {"__autoMarginDocProofCache":true}`),
+ambient gate PASS (mean 0.80%, median 0.52%, peak 3.31%), **all parity PASS**:
+
+| fixture | effect | 95% CI | null | 95% CI | CoV | verdict |
+|---|---:|---|---:|---|---:|---|
+| cards400-safe | +1.69% | [-1.17, 5.57] | +0.54% | [-3.90, 5.28] | 16.4% | inconclusive |
+| cards400-neutral-unsafe | -0.21% | [-7.43, 7.88] | -1.26% | [-8.22, 6.43] | 43.1% | inconclusive |
+| cards400-non-neutral | +0.66% | [-0.62, 1.96] | +0.24% | [-0.75, 1.30] | 4.1% | inconclusive |
+
+No cell clears the -2.0% epsilon. The only low-CoV cell (`cards400-non-neutral`, 4.1%) shows
++0.66% with a CI spanning zero, and the `cards400-safe` point estimate leans slower. Hoisting the
+document half of the SM2 proof saves nothing measurable because the existing proof already
+resolves LAZILY at the first `0px` margin and short-circuits the loop.
+
+**Verdict: REJECT.** The optimization is correct but worthless on representative workloads.
+`__autoMarginDocProofCache` remains opt-in-for-evidence only; production default is the
+historical path. Artifacts: `lane6-scratch/r8/results/r8-d1-controlled-gha.json`
+(SHA256 `B58D5DEA178F61F3D2AEDFC7E70DFDB4F55FE61A0E9C098DED185FB703F116FB`) and
+`r8-d1-gate-gha.json`.
+
+**Campaign lesson (recorded):** like SA2/BRST/OFF1/LCG1 before it, D1 is another case where the
+lazy/negative-capability gate was ALREADY efficient, so "hoist the proof" had no residual left
+to remove. Before proposing a proof-hoisting candidate in future, measure the per-node cost of
+the existing gate first.
+
 ### Known pre-existing failure (unchanged, reproduced on control)
 
 `module.styles.sharePartition.test.js > tracks :focus-within across shadow boundaries when
