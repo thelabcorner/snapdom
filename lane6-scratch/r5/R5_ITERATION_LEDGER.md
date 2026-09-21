@@ -1,5 +1,179 @@
 # R5 iteration ledger
 
+## R8 PIPELINE INVENTORY 2026-09-21 (criterion gcr_f3e1e893cffdkDwHacJ1oQzn4W)
+
+Scope note: this inventory was built from direct reads of the certified R7 integration worktree
+(`perf/v3-r7-style-authority-integration`, parent `58b97b0`). A prior batch of automated audits
+returned no data because they were pointed at the repo-root `perf/juan-ready` tree, which does
+NOT contain `styleScan.js` or the R7 folds; treat any earlier "missing file" claim as a
+location error, not a finding. Every `file:line` below was read in this worktree.
+
+Ground truth corrections:
+- `src/modules/styleScan.js` EXISTS (986 lines) in the R7 worktree and is imported by
+  `src/modules/styles.js:23-29`. It is absent from the repo-root worktree.
+- FP1 is live at `src/core/capture.js:145` (`styleSharePlan(state.element,
+  options.__styleShareFocusPartition !== false)`).
+- SO1 is live at `src/modules/styles.js:2626` (`snap = Object.create(shared.snap)`) with
+  `shareLists(..., copyForSpread)` at `styles.js:2470`.
+
+### Region A — Public API and context boundary
+- Symbols: `main()` `src/api/snapdom.js:106`; `createContext` `src/core/context.js:108`;
+  `captureDOM` `src/core/capture.js:71`; `fromString` `src/api/snapdom.js:47`.
+- Measured: no per-node native calls. Setup cost only.
+- Protected seam: option normalization, plugin attach, `invalidate` epoch reset (`snapdom.js:118`).
+- Candidate: NONE — explicit stop reason. No per-node work exists here.
+
+### Region B — Preparation / clone orchestration
+- Symbols: `prepareClone` `src/core/prepare.js:42`; `flushStyleInvalidations` `prepare.js:46`;
+  `invalidateHoverChanges` `prepare.js:48`; offscreen shadow-icon warmup census
+  `prepare.js:99-130` (uses `querySelectorAll('*')` at `prepare.js:110` and
+  `getBoundingClientRect` at `prepare.js:121`).
+- Measured: the shadow-icon census runs `querySelectorAll('*')` plus a nested
+  `querySelectorAll('*')` per discovered shadow root. It is gated to offscreen roots that
+  contain unresolved shadow SVG, so cost is workload-specific and UNMEASURED in the current
+  ledger — no public-pipeline timing exists for it.
+- Protected seam: #488 icon warmup must not be skipped for a root that genuinely needs it;
+  concurrent-capture sharing at `prepare.js:84-98` is load-bearing.
+- Candidate hypothesis A1 (UNMEASURED, medium value): the `collectPendingShadowIcons` walk
+  allocates `[...roots]`/`[...paths]` and calls `getBoundingClientRect` per candidate SVG.
+  A same-bundle counterfactual could gate the whole census behind a cheap
+  `element.shadowRoot || querySelector('*')`-style precheck plus a document-level
+  "any calcite-icon present" test. Requires its own oracle; do not assume the current
+  no-icon common case is already free.
+
+### Region C — Style scan (property universe)
+- Symbols: `scanAuthorStyles`, `ALWAYS_PROPS` `src/modules/styleScan.js:42`,
+  `INHERITED_PROPS` `styleScan.js:86`, `MAX_SCAN_RULES = 20000` `styleScan.js:107`,
+  `UNSTABLE_LAYOUT_VALUE_RE` `styleScan.js:115`, `UNSTABLE_INSET_VALUE_RE` `styleScan.js:120`.
+- Measured: `styles.js:1-16` states the scan replaces ~400 props with the touchable subset and
+  records 8-9x faster reads at 45 props cross-engine. `R5-D1..D6` already own selector-rule
+  indexing (up to -82% at K1000). Do NOT re-propose D1-D6.
+- Protected seam: unreadable/cross-origin sheet → `null` → full reads; `MAX_SCAN_RULES` budget.
+- Candidate: NONE — explicit stop reason. Region already carries the D1-D6 + allow-list wins.
+
+### Region D — Style snapshot / identity sharing (highest precedent)
+- Symbols: `inlineAllStyles` `styles.js:2816` (entry); `getSnapshot` `styles.js:2561`;
+  identity-hit overlay `styles.js:2609-2657`; `shareLists` `styles.js:2461`;
+  `stripHeightForWrappers` `styles.js:3259`; signature memo `styles.js:2178`;
+  `snapshotKeyCache` cap 2000 `styles.js:76`.
+- Measured: `R7-SO1` = ~178k copied properties/capture removed, 1197/1202 share hits;
+  `R7-OFF1` = cards400 offset reads 4824→36; `R7-FP1` = focus gPV -43%..-75%;
+  `R7-ANIMR1` = animation-name 1202→5; `R7-MW1` = -1000 gPV at 1000 nodes.
+- Protected seam: overlay prototype safety (warm-lifetime rebuild both directions),
+  gutter injective-suffix repair (CORR1), tombstone-vs-`delete` semantics.
+- Candidate hypothesis D1 (UNMEASURED, high value): `styles.js:2662-2696` runs a Typed-OM
+  `computedStyleMap()` loop over `MARGIN_PROPS` on every non-overlay node whose margin is
+  `'0px'`; `R5-SM2` gated it but the loop still allocates `typed` and re-checks up to 8 props.
+  Measure whether the SM2 proof can be hoisted to once-per-capture (not once-per-node) when the
+  document scan proves no auto margin channel exists. Requires a protected auto-capable control.
+
+### Region E — Pseudo materialization
+- Symbols: `preparePseudoEnvironment` `src/modules/pseudo.js:91`; `preflightWithFp`
+  `pseudo.js:57`; `CSS_RULE_SCAN_BUDGET = 1000` `pseudo.js:48`; per-node `matches()` before
+  any `getComputedStyle` probe (`pseudo.js:16-17`).
+- Measured: `R7-PQU1` removed ~1202 `matches()`; `R7-P1` was REJECTED as a default
+  (pair/triple +7-8% regression, `R5_ITERATION_LEDGER.md` R7-P1 VERDICT) with the
+  lazy-#3 redesign recorded as an unimplemented follow-up hypothesis.
+- Protected seam: the P1 rejection must stand unless a redesign clears pair/triple controls.
+- Candidate hypothesis E1 (recorded, NOT implemented, medium value): the lazy-#3 overlay
+  allocation already documented in the P1 verdict — allocate only at occurrence #3 so pair
+  scenes cost zero. This is explicitly the pre-registered follow-up, so it may be attempted
+  as an isolated R8 spike with the pseudo-pairs-400 and pseudo-triples-unique-style-360
+  regression cells as the acceptance controls.
+
+### Region F — Background / mask / border-image
+- Symbols: `inlineBackgroundForNode` `src/modules/background.js:63`; snapshot `read` closure
+  `background.js:85-89`; `backgroundSourceBasis` `background.js:34`;
+  live URL reads deliberately kept at `background.js:100-110`.
+- Measured: BGS1 -1604 gPV; BGS2 engine-narrowed basis; BGSNAP1 font-epoch overlay;
+  MASKDEF1 -5355 gPV identical on 3 engines; BGSTATE1 -5213 gPV on entropy.
+- Protected seam: URL-bearing values must stay LIVE (snapshot rewrites remote url() to `none`);
+  late `afterClone` observation point is protected (BGAD1 rejection).
+- Candidate: NONE — explicit stop reason. This region already has four stacked wins and a
+  documented rejection for the naive skip.
+
+### Region G — Assets: images, fonts, SVG defs, compress
+- Symbols: `inlineImages` (capture.js:11), `inlineExternalDefsAndSymbols`
+  (`src/modules/svgDefs.js:166,184,257`), `font` scan `src/modules/fonts.js:926,975`,
+  `el.matches(gate)` pre-filter `fonts.js:1227`, compress census
+  `src/modules/compress.js:557,624,635`.
+- Measured: SA6 removed asset-heavy gCS 1905→448 (-76.5%); `__imageStyleReuse`,
+  `__svgDefsStyleReuse`, `__svgPaintStyleReuse` are promoted.
+- Protected seam: mixed `asset-heavy` fresh-page output oscillates on Chromium/Firefox
+  (documented fixture nondeterminism) — it is NOT a valid fresh-page byte oracle.
+- Candidate hypothesis G1 (UNMEASURED, medium value): `compress.js:624` builds
+  `[clone, ...clone.querySelectorAll('*')]` (a full subtree array + spread) and
+  `compress.js:635` calls `getComputedStyle(orig)` per candidate. A same-bundle counterfactual
+  could restrict the census to the `[data-snapdom-asset]` attribute set already produced by
+  `snapshotCompressedAssets`. Must preserve the #461 root-is-img case (`compress.js:555`) and
+  the visual-compression parity. Requires a deterministic all-data-URL fixture, not asset-heavy.
+
+### Region H — Layout corrections and prepass gate
+- Symbols: `lineClampTree` (capture.js:20,158-165); `needsTextTruncationPrepass`
+  (capture.js:22,158); `styleSharePlan` `styles.js:810`; `stripHeightForWrappers`
+  `styles.js:3259`; `autoContentHeight` `styles.js:3234`.
+- Measured: LCG1 clamp gPV 1204→2; `R7-LCG1` provisional-keep; OFF1 offsets.
+- Protected seam: the LCG1 proof must not be generalized to `content-visibility` (distinct
+  mutation seam, explicitly recorded).
+- Candidate: NONE — explicit stop reason; LCG1 already owns the pass-elimination win and its
+  remaining gate is bundle + clean wall timing, not a new mechanism.
+
+### Region I — Serialization / render / export
+- Symbols: `composeAndSerialize` (`src/engines/svg.js`, imported capture.js:27);
+  `sanitizeCloneForXHTML`, `shrinkAutoSizeBoxes`, `assembleCaptureCSS`
+  (`src/utils/capture.helpers.js`, capture.js:28-36); exporters under `src/exporters/`.
+- Measured: UNMEASURED in the R7 ledger. `R5-P2` measured 400 nodes 52.2→668.6ms from
+  0→15k rules but that was the selector path, not serialization. No public-pipeline timing
+  exists for the serialize/export stage after the R7 folds.
+- Protected seam: XHTML sanitization and root geometry neutralization are correctness-critical;
+  `R7-SO1` byte parity depends on this stage.
+- Candidate hypothesis I1 (UNMEASURED, high value): serialize/export is now the largest
+  UNMEASURED region because every prior lane measured style/CSSOM work. Before proposing any
+  mechanism, run a stage-attribution probe (public `toRaw` with markers per stage) to establish
+  whether cloning+serialization or style snapshotting dominates on the standing fixtures. This
+  is a measurement task, not yet a hypothesis.
+
+### Region J — Burst / memo / repeated capture
+- Symbols: invalidation matrix `src/core/burst.js:7-54`; `knownFrameDriven` `burst.js:79`;
+  `tryDiffCapture` (`src/core/diff.js`, imported burst.js:68).
+- Measured: BRST1/2/3 removed the scroll census (cards400 16830→20) but were wall-neutral;
+  BSAFE1 1202→0 style reads on memo hit; BSAFE2 1→0 qSA (retained-census, memory-bounded);
+  R6-SCROLL-OBS REJECTED on wall time.
+- Protected seam: `attachShadow()` produces no MutationRecord — the census may never be removed
+  (explicitly recorded). Closed roots need `invalidate: true`.
+- Candidate: NONE — explicit stop reason. BRST/BSAFE are memo-path optimizations that the
+  cards-fixture public pipeline never exercises; a dedicated memo-hit benchmark is required
+  before any further work, which is a measurement task (J1), not a mechanism.
+
+### Cross-region conclusion
+Highest-value UNMEASURED regions are I (serialization/render) and J (memo-hit), because every
+prior lane measured CSSOM/style work and those two were never stage-attributed on the public
+pipeline. D1, E1, G1, A1 are code-level hypotheses with existing flags or pre-registered
+designs. Nothing in this inventory is a promotion; no timing has been run for R8 candidates.
+
+## R8 BASELINE FREEZE 2026-09-21
+
+R8 parent is the certified R7 integration head `58b97b02abf97de0551530860ceb07dd760532cf`,
+which equals `origin/perf/v3-r7-style-authority-integration` and PR #1 head at freeze time.
+The compiled bundle is deterministic: `dist/snapdom.mjs` SHA256
+`ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F`, 286,782 bytes,
+95,988 gzip bytes, 80,596 Brotli bytes; legacy `dist/snapdom.js` SHA256
+`EFE09DB4BB5703CAAD2475EB6D45F83BCDA3B081CE9E73398B0F3A729507F032`, 286,459 bytes,
+95,857 gzip bytes, 80,422 Brotli bytes. Toolchain: Node v22.23.2, npm 10.9.8,
+Playwright 1.62.1, package Vitest 3.2.7. Public-fork run `35555255332` completed
+successfully on Linux Azure 4 logical CPUs with the quiet gate mean 0.95%, median 0.38%,
+peak 4.51%; artifact `r7-timing-snapshot-overlay-chromium-n20` was downloaded and copied
+as `results/r8-baseline-r7-so1-gha.json` (SHA256
+`829BA053479A59E37DF332AD7966EEBA2101A54EEF2103C28C9726752DED20E5`) plus
+`results/r8-baseline-gate-gha.json`. Exact command:
+`node lane6-scratch/r5/run-with-timing-gate.mjs -- node lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs --candidate=dist/snapdom.mjs --browser=chromium --n=20 --batch=3 --warmup=3 --bootstrap=12000 --epsilon=0.02`.
+Workload baseline includes `cards400-safe`, `cards400-neutral-unsafe`, and
+`cards400-non-neutral`; same-bundle overlay historical/candidate arms, fresh-page
+crossover, symmetric warmup, paired log ratios, seeded bootstrap, exact raw parity,
+and full-copy historical/historical null are the standing R8 timing protocol. The
+R7 SO1/FP1/P1 decisions remain frozen; this baseline is evidence only and does not
+promote or reopen any prior candidate.
+
 ## Campaign state
 
 - Frozen baseline: official SnapDOM v3 release.
