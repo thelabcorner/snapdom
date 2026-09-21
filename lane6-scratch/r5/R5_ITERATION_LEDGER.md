@@ -41,6 +41,19 @@ Ground truth corrections:
   "any calcite-icon present" test. Requires its own oracle; do not assume the current
   no-icon common case is already free.
 
+### Region B — Preparation / clone orchestration
+- MEASURED 2026-09-21 (R8-B1 probe, Chromium, dedicated offscreen calcite-icon fixture,
+  public `snapdom.toRaw`, n=8 warmup=2): `offscreen-icons` 86.0ms CoV 9.2% with qSA 188 /
+  gBCR 86; `offscreen-no-icons` 14.6ms qSA 26 / gBCR 5; `onscreen-icons` protected control
+  67.6ms qSA 105 / gBCR 5, proving the `offscreen` gate is what triggers the census.
+  The census (`src/core/prepare.js:99-130`) accounts for **+162 qSA and +81 gBCR** versus the
+  no-icon tree.
+- **Candidate B1 (measured, medium value):** the outer `element.querySelectorAll('*')` at
+  `prepare.js:110` and nested `root.querySelectorAll('*')` at `prepare.js:116` walk the full
+  tree before any icon test. A cheap "any calcite-icon present" precheck could skip the walk on
+  trees with no such host, while retaining the gBCR liveness test for genuine pending icons.
+- Artifact `lane6-scratch/r8/results/shadow-icon-census-chromium.json`.
+
 ### Region C — Style scan (property universe)
 - Symbols: `scanAuthorStyles`, `ALWAYS_PROPS` `src/modules/styleScan.js:42`,
   `INHERITED_PROPS` `styleScan.js:86`, `MAX_SCAN_RULES = 20000` `styleScan.js:107`,
