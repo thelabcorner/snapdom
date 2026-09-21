@@ -1,5 +1,62 @@
 # R5 iteration ledger
 
+## R8 candidate round 1 — B1 REJECTED, D1 oracles PASS (2026-09-21)
+
+### R8-B1 — offscreen shadow-icon census precheck: REJECTED (visual counterexample)
+
+Mechanism attempted: a `querySelector('calcite-icon')` precheck at `src/core/prepare.js:113`
+before the whole-tree `querySelectorAll('*')` shadow-root census, on the theory that only a
+`calcite-icon` host can produce `pendingIcons`.
+
+**Counterexample (deterministic, reproduced):**
+- With the precheck enabled: `__tests__/visual.demos.3.test.js > d488-offscreen-web-component`
+  fails at **1.91% mismatch (90 px)**.
+- Same test on pristine parent `d1290be` (precheck absent): **PASSES**.
+- Same test with the precheck defaulted off: **PASSES** again.
+
+**Root cause:** the precheck is unsound. A light-DOM `querySelector` cannot see a
+`calcite-icon` host nested inside a shadow root, so the census was skipped for a subtree that
+genuinely needed #488 warmup. A sound precheck would have to traverse shadow roots — i.e. pay
+the cost the optimization existed to avoid.
+
+**Verdict: REJECT.** The census stays unconditional in production. The
+`__calciteIconCensusPrecheck:true` flag is retained ONLY as the pre-registered counterfactual
+arm for this rejection evidence; production behavior is byte-identical to parent.
+
+Oracle suite retained: `__tests__/core.prepare.shadowIconCensusPrecheck.b1.test.js`, 9 cases,
+**27/27 cross-engine (Chromium/Firefox/WebKit)** — exact raw parity on ordinary trees, onscreen
+trees, clip mode, nested non-icon shadow roots, root-is-host, and both calcite-icon shapes.
+
+### R8-D1 — document-level auto-margin proof caching: ORACLES PASS (not yet timed)
+
+Mechanism: the document half of the R5-SM2 negative-capability proof (`scan.marginMayBeAuto`,
+`scan.hasAnimations`) is invariant per capture and is now cached once on the session instead of
+re-derived per node; the per-node half (UA tags, presentational hints, inline regexes) is
+unchanged. Flag `__autoMarginDocProofCache` (default on, `false` = historical).
+
+Oracle suite: `__tests__/module.styles.autoMarginDocProof.d1.test.js`, 12 cases, **36/36
+cross-engine**, exact raw-byte parity on every case including the protected auto-margin controls:
+real `margin:auto`, `var(--m)` auto, `<table align=center>` presentational hint, `all:inherit`,
+`all:revert`, `dialog`/`hr` UA tags, inline auto, running animation, shorthand auto, shadow-host
+subtree, and the explicit false-flag fallback.
+
+Regression surface: `core.prepare`, `api.exclude.unified`, `api.fromString` —
+**216/216 across three engines**.
+
+Bundle (D1 + the inert B1 flag together), ESM: **+526 raw / +165 gzip / -59 Brotli** vs
+baseline 286,782 / 95,988 / 80,596. Brotli is 59 bytes SMALLER.
+
+**Status: oracles pass, NOT promoted, NOT timed.** Public-fork GHA decision timing is the next
+gate and has not been run.
+
+### Known pre-existing failure (unchanged, reproduced on control)
+
+`module.styles.sharePartition.test.js > tracks :focus-within across shadow boundaries when
+internal focus moves` fails on Chromium/Firefox/WebKit. Reproduced identically on the pristine
+FP1 branch `a047f45` with none of this round's changes applied. Environmental, not an R8
+regression.
+
+
 ## R8 PIPELINE INVENTORY 2026-09-21 (criterion gcr_f3e1e893cffdkDwHacJ1oQzn4W)
 
 Scope note: this inventory was built from direct reads of the certified R7 integration worktree

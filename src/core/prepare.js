@@ -105,6 +105,19 @@ export async function prepareClone(element, options = {}) {
 
       const pendingIcons = []
       const collectPendingShadowIcons = () => {
+        // R8-B1 REJECTED — see the R8-B1 entry in lane6-scratch/r5/R5_ITERATION_LEDGER.md.
+        // A light-DOM `querySelector('calcite-icon')` precheck is UNSOUND: it cannot see a host
+        // nested inside a shadow root, and the #488 oracle
+        // (`visual.demos.3 > d488-offscreen-web-component`) regressed 1.91% (90 px) with the
+        // precheck enabled while passing on pristine parent d1290be. The historical walk is
+        // therefore unconditional in production; a sound precheck would have to traverse shadow
+        // roots, which is the very cost this was meant to avoid. The flag survives ONLY as the
+        // pre-registered counterfactual arm for that rejection evidence.
+        if (options.__calciteIconCensusPrecheck === true) {
+          const hasIconHost = element.localName === 'calcite-icon' ||
+            (element.querySelector && element.querySelector('calcite-icon') !== null)
+          if (!hasIconHost && !element.shadowRoot) return
+        }
         const roots = []
         if (element.shadowRoot) roots.push(element.shadowRoot)
         for (const child of element.querySelectorAll('*')) {

@@ -2702,6 +2702,20 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     const gateAutoMargin = options?.__autoMarginProbeGate !== false
     let gateResolved = !gateAutoMargin
     let probeAutoMargin = true
+    // R8-D1: the DOCUMENT-level half of the SM2 negative-capability proof (author margin
+    // values that can compute to `auto`, and running animations) is invariant for a given
+    // document within one capture. Cache it on the session so the classifier's scanFor and
+    // hasAnimations reads are paid once per capture instead of once per node. The per-node
+    // half (UA tags, presentational hints, inline regexes) stays exactly where it was.
+    let docProof = null
+    if (gateAutoMargin && options?.__autoMarginDocProofCache !== false && options.__session) {
+      if (!options.__session.__autoMarginDocProof) {
+        const doc = el.ownerDocument || document
+        const scan = scanFor(doc)
+        options.__session.__autoMarginDocProof = { mayBeAuto: !!scan.marginMayBeAuto, hasAnimations: !!scan.hasAnimations }
+      }
+      docProof = options.__session.__autoMarginDocProof
+    }
     for (const prop of MARGIN_PROPS) {
       if (snap[prop] !== '0px') continue
       // Resolve the semantic admission proof lazily at the first margin Typed OM could
@@ -2716,7 +2730,8 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
         if (!outsideDocumentScan) {
           const scan = scanFor(doc)
           const inline = el.getAttribute?.('style') || ''
-          probeAutoMargin = !!scan.marginMayBeAuto || !!scan.hasAnimations ||
+          probeAutoMargin = (docProof ? docProof.mayBeAuto : !!scan.marginMayBeAuto) ||
+            (docProof ? docProof.hasAnimations : !!scan.hasAnimations) ||
             UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
             AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)
         }

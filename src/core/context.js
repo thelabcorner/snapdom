@@ -188,6 +188,11 @@ export function createContext(options = {}) {
     // conservative stylesheet/inline/UA dependency proof. False forces the historical
     // per-node probe for differential tests/benchmarks.
     __autoMarginProbeGate: options.__autoMarginProbeGate,
+    // Internal R8-D1 counterfactual: the document-level half of the SM2 auto-margin proof
+    // (author margin values that can compute to `auto`, running animations) is invariant per
+    // capture and may be cached on the session instead of re-read per node. False restores the
+    // historical per-node document scan for differential tests/benchmarks.
+    __autoMarginDocProofCache: options.__autoMarginDocProofCache,
     __contentVisibilityStyleSeed: options.__contentVisibilityStyleSeed,
     __lineClampStyleSeed: options.__lineClampStyleSeed,
     // Internal R7-LCG1 counterfactual. Production skips the live truncation walk only when the
