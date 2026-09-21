@@ -25,12 +25,13 @@ not evidence of absence. All `file:line` references below were read from the R7 
 | F Background / mask / border-image | MEASURED (BGS1/BGS2/BGSNAP1/MASKDEF1/BGSTATE1) | stop |
 | G Assets: images/fonts/SVG/compress | MEASURED for style reuse; UNMEASURED for compress census | G1 |
 | H Layout corrections / prepass gate | MEASURED (R7-LCG1, R7-OFF1) | stop |
-| I Serialization / render / export | **UNMEASURED** | I1 (measurement task) |
-| J Burst / memo / repeated capture | **UNMEASURED on the public path** | J1 (measurement task) |
+| I Serialization / render / export | **MEASURED** (style dominates; no serialization residual) | stop |
+| J Burst / memo / repeated capture | **MEASURED** (memo hit = 0 native calls) | stop |
 
 Criterion `gcr_f3e1e893cffdkDwHacJ1oQzn4W` requires every high-cost region to carry a
-**measured** hypothesis. Regions I and J do not, so **this criterion is NOT satisfied** and is
-tracked as pending. This file records that honestly rather than presenting the map as complete.
+**measured** hypothesis. Regions B, I and J were unmeasured when this file was first written;
+I and J are now measured by the I1 and J1 probes and both resolved to explicit measured **stop**
+reasons. Region B remains UNMEASURED and is the only outstanding gap for criterion 2.
 
 ## Region I — how to convert UNMEASURED to measured (I1 plan)
 
@@ -155,27 +156,57 @@ Goal: establish whether burst memo hits on the public path are already at the ob
 - Protected seam: the LCG1 proof must not be generalized to `content-visibility`.
 - Candidate: NONE — LCG1 owns the pass elimination; its remaining gate is bundle + clean wall.
 
-### I — Serialization / render / export (UNMEASURED — see I1 plan above)
+### I — Serialization / render / export (NOW MEASURED — stop reason recorded)
 - Symbols: `composeAndSerialize` (`src/engines/svg.js`, imported `capture.js:27`);
   `sanitizeCloneForXHTML`, `shrinkAutoSizeBoxes`, `assembleCaptureCSS`
   (`src/utils/capture.helpers.js`, imported `capture.js:28-36`); `src/exporters/*`.
-- Evidence: no R7 ledger row measures this stage. R5-P2 measured the selector path only.
+- **Measured (I1 probe, commit `f3a2c19`):** `bench-stage-attribution.mjs`, Chromium,
+  public `snapdom.toRaw`, n=5 warmup=2, artifact
+  `lane6-scratch/r8/results/stage-attribution-chromium.json`:
+  - `cards400-safe`: median **144.6ms**, CoV 8.6%; per capture **gCS 1611, gPV 9526,
+    gBCR 5, qSA 25**, 165,053 bytes.
+  - `entropy-400`: median **59.4ms**, CoV 4.2%; per capture **gCS 818, gPV 27402,
+    gBCR 406, qSA 25**, 46,124 bytes.
+- Interpretation: the gPV/gCS counts dominate and match the R7 ledger's style-path findings
+  (cards400 total gPV ~20184 pre-OFF1), while serialization contributes no native-call signal.
+  Clone+serialize is NOT the residual giant on these fixtures; the style path still is.
 - Protected seam: XHTML sanitization and root geometry neutralization are correctness-critical;
   R7-SO1 byte parity depends on this stage.
-- Candidate I1: measurement first (see plan). No mechanism may be proposed before the stage
-  attribution exists.
+- **Candidate: NONE — measured STOP.** Serialization has no measured residual to attack on the
+  standing workload matrix. Reopen only if a fixture with a large serialization/wall share and a
+  small style share is demonstrated; the entropy scene (46KB, 59ms) is the closest and still
+  shows style domination.
 
-### J — Burst / memo / repeated capture (UNMEASURED on the public path — see J1 plan above)
+### J — Burst / memo / repeated capture (NOW MEASURED — hypothesis falsified, stop recorded)
 - Symbols: invalidation matrix `src/core/burst.js:7-54`; `knownFrameDriven` `burst.js:79`;
   `tryDiffCapture` (`src/core/diff.js`, imported `burst.js:68`).
-- Evidence: ledger rows R7-BRST1/2/3 (scroll census removed, wall-neutral), R7-BSAFE1 (1202→0
-  style reads on memo hit), R7-BSAFE2 (1→0 qSA), R6-SCROLL-OBS (REJECTED on wall time).
+- **Measured (J1 probe, commit `f3a2c19`):** `bench-burst-memo-hit.mjs`, Chromium, one unchanged
+  400-card subtree, n=10 hits, artifact
+  `lane6-scratch/r8/results/burst-memo-hit-chromium.json`:
+  - capture 1 (miss): **229.4ms**, gCS 1611, gPV 9526, qSA 25
+  - captures 2..10 (memo): median **0.6ms**, with **gCS 0, gPV 0, gBCR 0, qSA 0**
+  - after a real DOM mutation: **24.5ms**, gCS 409 → correctly a fresh capture, not a stale memo
+- Interpretation: the hypothesis under test was that the memo path might still walk the tree.
+  It does not — memo serves perform **zero** instrumented native calls. R7-BSAFE1/BSAFE2 already
+  reached the bound.
 - Protected seam: `attachShadow()` emits no MutationRecord, so the shadow-root census may never
   be removed; closed roots require `invalidate: true`.
-- Candidate J1: measurement first (see plan).
+- **Candidate: NONE — measured STOP.** There is no residual memo-hit work left to remove on this
+  workload; a "memo optimization" here would be optimizing an already-zero path.
+
 
 ## Explicit non-claims
 
-- No R8 timing has been run.
+- No R8 timing has been run. The I1/J1 probes are **measurement evidence**, not promotion
+  evidence, and no candidate is enabled by them.
 - No R8 candidate has been implemented, promoted, or rejected.
-- Regions I and J are unmeasured, and criterion 2 is therefore not satisfied by this file.
+- Region B is still unmeasured; criterion 2 is therefore **not yet satisfied by this file**.
+  Regions I and J are now measured and both resolved to explicit stops.
+
+## Probe artifacts
+
+- `lane6-scratch/r8/bench-stage-attribution.mjs` → `lane6-scratch/r8/results/stage-attribution-<engine>.json`
+- `lane6-scratch/r8/bench-burst-memo-hit.mjs` → `lane6-scratch/r8/results/burst-memo-hit-<engine>.json`
+- Both drive the public `snapdom.toRaw` pipeline and count `getComputedStyle`,
+  `getPropertyValue`, `getBoundingClientRect`, and `querySelectorAll` via in-page prototype
+  patches. Both are rerunnable from the R7 worktree root.

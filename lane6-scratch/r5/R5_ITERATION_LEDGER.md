@@ -119,31 +119,20 @@ Ground truth corrections:
   remaining gate is bundle + clean wall timing, not a new mechanism.
 
 ### Region I — Serialization / render / export
-- Symbols: `composeAndSerialize` (`src/engines/svg.js`, imported capture.js:27);
-  `sanitizeCloneForXHTML`, `shrinkAutoSizeBoxes`, `assembleCaptureCSS`
-  (`src/utils/capture.helpers.js`, capture.js:28-36); exporters under `src/exporters/`.
-- Measured: UNMEASURED in the R7 ledger. `R5-P2` measured 400 nodes 52.2→668.6ms from
-  0→15k rules but that was the selector path, not serialization. No public-pipeline timing
-  exists for the serialize/export stage after the R7 folds.
-- Protected seam: XHTML sanitization and root geometry neutralization are correctness-critical;
-  `R7-SO1` byte parity depends on this stage.
-- Candidate hypothesis I1 (UNMEASURED, high value): serialize/export is now the largest
-  UNMEASURED region because every prior lane measured style/CSSOM work. Before proposing any
-  mechanism, run a stage-attribution probe (public `toRaw` with markers per stage) to establish
-  whether cloning+serialization or style snapshotting dominates on the standing fixtures. This
-  is a measurement task, not yet a hypothesis.
+- MEASURED 2026-09-21 (R8-I1 probe, Chromium, public `snapdom.toRaw`): `cards400-safe`
+  median 144.6ms CoV 8.6% with per-capture gCS 1611 / gPV 9526 / gBCR 5 / qSA 25;
+  `entropy-400` median 59.4ms CoV 4.2% with gCS 818 / gPV 27402 / gBCR 406 / qSA 25.
+  Style-path calls dominate; serialization shows no residual native-call signal.
+- **STOP — measured.** No serialization candidate on the standing workload matrix.
+  Artifact `lane6-scratch/r8/results/stage-attribution-chromium.json`.
 
 ### Region J — Burst / memo / repeated capture
-- Symbols: invalidation matrix `src/core/burst.js:7-54`; `knownFrameDriven` `burst.js:79`;
-  `tryDiffCapture` (`src/core/diff.js`, imported burst.js:68).
-- Measured: BRST1/2/3 removed the scroll census (cards400 16830→20) but were wall-neutral;
-  BSAFE1 1202→0 style reads on memo hit; BSAFE2 1→0 qSA (retained-census, memory-bounded);
-  R6-SCROLL-OBS REJECTED on wall time.
-- Protected seam: `attachShadow()` produces no MutationRecord — the census may never be removed
-  (explicitly recorded). Closed roots need `invalidate: true`.
-- Candidate: NONE — explicit stop reason. BRST/BSAFE are memo-path optimizations that the
-  cards-fixture public pipeline never exercises; a dedicated memo-hit benchmark is required
-  before any further work, which is a measurement task (J1), not a mechanism.
+- MEASURED 2026-09-21 (R8-J1 probe, Chromium, one unchanged 400-card subtree): miss 229.4ms
+  (gCS 1611 / gPV 9526 / qSA 25) versus memo-hit median 0.6ms with gCS 0 / gPV 0 / gBCR 0 /
+  qSA 0; after a real DOM mutation 24.5ms with gCS 409, correctly a fresh capture.
+- **STOP — measured, hypothesis falsified.** Memo serves perform zero instrumented native
+  calls; R7-BSAFE1/BSAFE2 already reached the bound. Artifact
+  `lane6-scratch/r8/results/burst-memo-hit-chromium.json`.
 
 ### Cross-region conclusion
 Highest-value UNMEASURED regions are I (serialization/render) and J (memo-hit), because every
