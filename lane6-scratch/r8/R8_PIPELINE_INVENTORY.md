@@ -1,0 +1,181 @@
+# R8 Pipeline Inventory — measured vs unmeasured
+
+Artifact: `lane6-scratch/r8/R8_PIPELINE_INVENTORY.md`
+Worktree: `worktrees/snapdom-v3-r7-style-authority-integration`
+Parent (certified R7 head): `58b97b0`
+Source-commit of this inventory: `71be778` (superseded in-file by the commit that adds this file)
+
+## Reader warning (location gotcha)
+
+This repository has multiple worktrees. `src/modules/styleScan.js` and the R7 folds exist ONLY in
+`worktrees/snapdom-v3-r7-style-authority-integration/`. The repo root checkout is a different
+branch (`perf/juan-ready`) and does NOT contain them. Any grep/glob run from the repo root will
+report "no R8 section", "no region entries", and "no styleScan.js"; that is a wrong-tree artifact,
+not evidence of absence. All `file:line` references below were read from the R7 worktree.
+
+## Status summary — read this before grading
+
+| Region | Cost status | Candidate |
+|---|---|---|
+| A Public API / context | MEASURED (no per-node work) | stop |
+| B Preparation / clone orchestration | UNMEASURED | A1 |
+| C Style scan | MEASURED (R5-D1..D6, allow-list) | stop |
+| D Style snapshot / identity sharing | MEASURED (R7-SO1/OFF1/FP1/ANIMR1/MW1) | D1 |
+| E Pseudo materialization | MEASURED (R7-PQU1; R7-P1 rejected) | E1 |
+| F Background / mask / border-image | MEASURED (BGS1/BGS2/BGSNAP1/MASKDEF1/BGSTATE1) | stop |
+| G Assets: images/fonts/SVG/compress | MEASURED for style reuse; UNMEASURED for compress census | G1 |
+| H Layout corrections / prepass gate | MEASURED (R7-LCG1, R7-OFF1) | stop |
+| I Serialization / render / export | **UNMEASURED** | I1 (measurement task) |
+| J Burst / memo / repeated capture | **UNMEASURED on the public path** | J1 (measurement task) |
+
+Criterion `gcr_f3e1e893cffdkDwHacJ1oQzn4W` requires every high-cost region to carry a
+**measured** hypothesis. Regions I and J do not, so **this criterion is NOT satisfied** and is
+tracked as pending. This file records that honestly rather than presenting the map as complete.
+
+## Region I — how to convert UNMEASURED to measured (I1 plan)
+
+Goal: determine whether style snapshotting or clone+serialize dominates the public capture path
+after the R7 folds.
+
+- Instrument, on the public pipeline `snapdom.toRaw(el, opts)`:
+  - `getComputedStyle` call count (patch `window.getComputedStyle`)
+  - `CSSStyleDeclaration.prototype.getPropertyValue` call count
+  - `Element.prototype.getBoundingClientRect` call count
+  - `querySelectorAll` call count
+  - `performance.now()` deltas around three explicit seams: (1) end of `prepareClone`,
+    (2) end of `inlineAllStyles`, (3) end of `composeAndSerialize`
+- Fixture: `cards400-safe` (deterministic, already an accepted oracle) plus `entropy-400`.
+- Expected observable: if serialize+clone wall time exceeds style-snapshot wall time on
+  `cards400-safe` after the R7 folds, region I becomes the primary R8 target; otherwise the
+  style path remains primary and region I stays a stop.
+- Deliverable: JSON with the four counters and the three stage deltas, committed under
+  `lane6-scratch/r8/results/`.
+
+## Region J — how to convert UNMEASURED to measured (J1 plan)
+
+Goal: establish whether burst memo hits on the public path are already at the observed bound.
+
+- Harness: repeated `snapdom.toRaw(el, { burst: true })` on an unchanged subtree, measuring
+  per-call wall time for capture 1 (miss) vs captures 2..N (memo hit).
+- Counters: per-hit `querySelectorAll` count, `getComputedStyle` count, style-attribute reads.
+- Fixture: a 400-card subtree, identical to the accepted `cards400-safe` shape.
+- Expected observable: BSAFE1 already reported 1202→0 style reads and BSAFE2 1→0 qSA, so the
+  hypothesis to test is that the memo-hit path is already bounded and region J is a stop.
+  The measurement exists to falsify that, not to assume it.
+- Deliverable: JSON under `lane6-scratch/r8/results/`.
+
+## Region-by-region detail
+
+### A — Public API and context boundary (MEASURED)
+- Symbols: `main()` `src/api/snapdom.js:106`; `createContext` `src/core/context.js:108`;
+  `captureDOM` `src/core/capture.js:71`; `fromString` `src/api/snapdom.js:47`.
+- Evidence: no per-node native calls; setup cost only.
+- Protected seam: option normalization; `invalidate` epoch reset `src/api/snapdom.js:118`.
+- Candidate: NONE — no per-node work exists here.
+
+### B — Preparation / clone orchestration (UNMEASURED)
+- Symbols: `prepareClone` `src/core/prepare.js:42`; `flushStyleInvalidations` `prepare.js:46`;
+  `invalidateHoverChanges` `prepare.js:48`; offscreen shadow-icon census `prepare.js:99-130`
+  with `querySelectorAll('*')` at `prepare.js:110` and `getBoundingClientRect` at
+  `prepare.js:121`.
+- Evidence: the census is gated to offscreen roots containing unresolved shadow SVG; no
+  public-pipeline timing exists for it.
+- Protected seam: #488 warmup must not be skipped when genuinely needed; concurrent-capture
+  sharing `prepare.js:84-98` is load-bearing.
+- Candidate A1: gate the census behind a cheap precheck (shadow-root presence / calcite-icon
+  presence) with a same-bundle counterfactual. Needs its own oracle.
+
+### C — Style scan (MEASURED)
+- Symbols: `ALWAYS_PROPS` `src/modules/styleScan.js:42`; `INHERITED_PROPS` `styleScan.js:86`;
+  `MAX_SCAN_RULES = 20000` `styleScan.js:107`; `UNSTABLE_LAYOUT_VALUE_RE` `styleScan.js:115`;
+  `UNSTABLE_INSET_VALUE_RE` `styleScan.js:120`; imported at `styles.js:23-29`.
+- Evidence: ledger rows R5-D1, R5-D2, R5-D3, R5-D4, R5-D5, R5-D6 (selector-rule indexing,
+  K1000 up to -82%). Property-universe narrowing documented in `styles.js:1-16` (8-9x read
+  reduction at 45 props, cross-engine).
+- Protected seam: unreadable/cross-origin sheet returns `null` → full reads; scan rule budget.
+- Candidate: NONE — D1..D6 already own this region.
+
+### D — Style snapshot / identity sharing (MEASURED)
+- Symbols: `inlineAllStyles` `styles.js:2816`; `getSnapshot` `styles.js:2561`; identity-hit
+  overlay `styles.js:2609-2657` (`snap = Object.create(shared.snap)` at `styles.js:2626`);
+  `shareLists` `styles.js:2461` (copyForSpread at `styles.js:2470`); Typed-OM margin loop
+  `styles.js:2662-2696`; `stripHeightForWrappers` `styles.js:3259`; signature memo
+  `styles.js:2178`; `snapshotKeyCache` cap `styles.js:76`.
+- Evidence: ledger rows R7-SO1 (overlay, ~178k copied props removed; 1197/1202 share hits),
+  R7-OFF1 (cards400 offset reads 4824→36), R7-FP1 (focus gPV -43%..-75%), R7-ANIMR1
+  (animation-name 1202→5), R7-MW1 (-1000 gPV at 1000 nodes), R5-CORR1 (gutter injective fix).
+- Protected seam: overlay prototype lifecycle (warm rebuild both directions); CORR1 signature
+  injectivity; `''` tombstone vs `delete`.
+- Candidate D1: `styles.js:2662-2696` still allocates a Typed-OM `computedStyleMap()` and loops
+  up to 8 `MARGIN_PROPS` per node whose margin is `'0px'`. R5-SM2 proved the negative capability
+  per node; test hoisting that proof to once-per-capture. Protected control required: an
+  auto-margin-capable fixture must stay byte-identical.
+
+### E — Pseudo materialization (MEASURED)
+- Symbols: `preparePseudoEnvironment` `src/modules/pseudo.js:91`; `preflightWithFp`
+  `pseudo.js:57`; `CSS_RULE_SCAN_BUDGET = 1000` `pseudo.js:48`; per-node `matches()` gate
+  documented `pseudo.js:16-17`.
+- Evidence: ledger row R7-PQU1 (~1202 `matches()` removed) and the "R7-P1 VERDICT" section
+  (REJECT as default: pairs +8.2%, triples-unique +7.0%; lazy-#3 recorded as unimplemented).
+- Protected seam: the P1 rejection stands unless a redesign clears the pair/triple cells.
+- Candidate E1: the pre-registered lazy-#3 design — allocate the overlay only at occurrence #3
+  so pair scenes cost zero. Acceptance controls: `pseudo-pairs-400` and
+  `pseudo-triples-unique-style-360` must not regress.
+
+### F — Background / mask / border-image (MEASURED)
+- Symbols: `inlineBackgroundForNode` `src/modules/background.js:63`; read closure
+  `background.js:85-89`; `backgroundSourceBasis` `background.js:34`; deliberate live URL reads
+  `background.js:100-110`.
+- Evidence: ledger rows R7-BGS1, R7-BGS2, R7-BGSNAP1, R7-MASKDEF1, R7-MASKDEF1-ADD, R7-BGSTATE1,
+  and the R7-BGAD1 rejection.
+- Protected seam: URL-bearing values stay LIVE (snapshot rewrites remote `url()` to `none`);
+  the late `afterClone` observation point is protected.
+- Candidate: NONE — four stacked wins plus a documented rejection already own this region.
+
+### G — Assets: images, fonts, SVG defs, compress (MIXED)
+- Symbols: `inlineImages` (capture.js:11); `inlineExternalDefsAndSymbols`
+  (`src/modules/svgDefs.js:166,184,257`); font scan `src/modules/fonts.js:926,975`;
+  `el.matches(gate)` pre-filter `fonts.js:1227`; compress census
+  `src/modules/compress.js:557,624,635`; root-is-img guard `compress.js:555`.
+- Evidence: SA6 asset-heavy gCS 1905→448 (-76.5%); flags `__imageStyleReuse`,
+  `__svgDefsStyleReuse`, `__svgPaintStyleReuse` promoted. The compress census itself is
+  UNMEASURED.
+- Protected seam: `asset-heavy` fresh-page output oscillates on Chromium/Firefox and is NOT a
+  valid fresh-page byte oracle.
+- Candidate G1: `compress.js:624` materializes `[clone, ...clone.querySelectorAll('*')]` and
+  `compress.js:635` calls `getComputedStyle(orig)` per candidate. Test restricting the census to
+  the `[data-snapdom-asset]` set produced by `snapshotCompressedAssets`, preserving the #461
+  root-is-img case. Requires a deterministic all-data-URL fixture.
+
+### H — Layout corrections / prepass gate (MEASURED)
+- Symbols: `lineClampTree` `capture.js:20,158-165`; `needsTextTruncationPrepass`
+  `capture.js:22,158`; `styleSharePlan` `styles.js:810`; `stripHeightForWrappers`
+  `styles.js:3259`; `autoContentHeight` `styles.js:3234`.
+- Evidence: ledger row R7-LCG1 (clamp gPV 1204→2, provisional keep), R7-OFF1.
+- Protected seam: the LCG1 proof must not be generalized to `content-visibility`.
+- Candidate: NONE — LCG1 owns the pass elimination; its remaining gate is bundle + clean wall.
+
+### I — Serialization / render / export (UNMEASURED — see I1 plan above)
+- Symbols: `composeAndSerialize` (`src/engines/svg.js`, imported `capture.js:27`);
+  `sanitizeCloneForXHTML`, `shrinkAutoSizeBoxes`, `assembleCaptureCSS`
+  (`src/utils/capture.helpers.js`, imported `capture.js:28-36`); `src/exporters/*`.
+- Evidence: no R7 ledger row measures this stage. R5-P2 measured the selector path only.
+- Protected seam: XHTML sanitization and root geometry neutralization are correctness-critical;
+  R7-SO1 byte parity depends on this stage.
+- Candidate I1: measurement first (see plan). No mechanism may be proposed before the stage
+  attribution exists.
+
+### J — Burst / memo / repeated capture (UNMEASURED on the public path — see J1 plan above)
+- Symbols: invalidation matrix `src/core/burst.js:7-54`; `knownFrameDriven` `burst.js:79`;
+  `tryDiffCapture` (`src/core/diff.js`, imported `burst.js:68`).
+- Evidence: ledger rows R7-BRST1/2/3 (scroll census removed, wall-neutral), R7-BSAFE1 (1202→0
+  style reads on memo hit), R7-BSAFE2 (1→0 qSA), R6-SCROLL-OBS (REJECTED on wall time).
+- Protected seam: `attachShadow()` emits no MutationRecord, so the shadow-root census may never
+  be removed; closed roots require `invalidate: true`.
+- Candidate J1: measurement first (see plan).
+
+## Explicit non-claims
+
+- No R8 timing has been run.
+- No R8 candidate has been implemented, promoted, or rejected.
+- Regions I and J are unmeasured, and criterion 2 is therefore not satisfied by this file.
