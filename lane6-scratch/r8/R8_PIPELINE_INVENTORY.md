@@ -18,7 +18,7 @@ not evidence of absence. All `file:line` references below were read from the R7 
 | Region | Cost status | Candidate |
 |---|---|---|
 | A Public API / context | MEASURED (no per-node work) | stop |
-| B Preparation / clone orchestration | UNMEASURED | A1 |
+| B Preparation / clone orchestration | **MEASURED** (+162 qSA, +81 gBCR on the census) | B1 |
 | C Style scan | MEASURED (R5-D1..D6, allow-list) | stop |
 | D Style snapshot / identity sharing | MEASURED (R7-SO1/OFF1/FP1/ANIMR1/MW1) | D1 |
 | E Pseudo materialization | MEASURED (R7-PQU1; R7-P1 rejected) | E1 |
@@ -29,9 +29,11 @@ not evidence of absence. All `file:line` references below were read from the R7 
 | J Burst / memo / repeated capture | **MEASURED** (memo hit = 0 native calls) | stop |
 
 Criterion `gcr_f3e1e893cffdkDwHacJ1oQzn4W` requires every high-cost region to carry a
-**measured** hypothesis. Regions B, I and J were unmeasured when this file was first written;
-I and J are now measured by the I1 and J1 probes and both resolved to explicit measured **stop**
-reasons. Region B remains UNMEASURED and is the only outstanding gap for criterion 2.
+**measured** hypothesis. Regions B, I and J were unmeasured when this file was first written.
+I and J were measured by the I1/J1 probes and resolved to explicit measured stops. Region B was
+measured by the B1 probe and resolved to candidate **B1**. The one remaining UNMEASURED item is
+the compress census inside region G (`compress.js:624/635`), which is a candidate (G1) whose
+cost has not yet been instrumented.
 
 ## Region I — how to convert UNMEASURED to measured (I1 plan)
 
@@ -74,17 +76,34 @@ Goal: establish whether burst memo hits on the public path are already at the ob
 - Protected seam: option normalization; `invalidate` epoch reset `src/api/snapdom.js:118`.
 - Candidate: NONE — no per-node work exists here.
 
-### B — Preparation / clone orchestration (UNMEASURED)
+### B — Preparation / clone orchestration (NOW MEASURED — candidate)
 - Symbols: `prepareClone` `src/core/prepare.js:42`; `flushStyleInvalidations` `prepare.js:46`;
   `invalidateHoverChanges` `prepare.js:48`; offscreen shadow-icon census `prepare.js:99-130`
   with `querySelectorAll('*')` at `prepare.js:110` and `getBoundingClientRect` at
-  `prepare.js:121`.
-- Evidence: the census is gated to offscreen roots containing unresolved shadow SVG; no
-  public-pipeline timing exists for it.
-- Protected seam: #488 warmup must not be skipped when genuinely needed; concurrent-capture
-  sharing `prepare.js:84-98` is load-bearing.
-- Candidate A1: gate the census behind a cheap precheck (shadow-root presence / calcite-icon
-  presence) with a same-bundle counterfactual. Needs its own oracle.
+  `prepare.js:121`; gate condition `prepare.js:103-104` (offscreen) and `prepare.js:115-122`
+  (`calcite-icon` host, empty `path[d]`, non-zero box).
+- **Measured (B1 probe, Chromium, dedicated fixture, n=8 warmup=2):**
+  `bench-shadow-icon-census.mjs`, public `snapdom.toRaw`, artifact
+  `lane6-scratch/r8/results/shadow-icon-census-chromium.json`:
+  - `offscreen-icons` (40 icons, fixture triggers the census): median **86.0ms** CoV 9.2%,
+    qSA **188**, gBCR **86**
+  - `offscreen-no-icons` (same tree, no icons): median **14.6ms** CoV 10.3%, qSA 26, gBCR 5
+  - `onscreen-icons-control` (protected control, icons present but NOT offscreen):
+    median **67.6ms** CoV 7.1%, qSA 105, gBCR **5** → the census correctly does not run
+- Isolation: the census accounts for **+162 querySelectorAll** and **+81 getBoundingClientRect**
+  versus the no-icon tree, and the onscreen control's gBCR=5 versus offscreen gBCR=86 proves the
+  `offscreen` gate is what triggers the walk. The 40 icons each contribute one BCR in the census
+  plus the warmup's own BCR.
+- Protected seam: #488 warmup must not be skipped when a root genuinely needs it; the
+  concurrent-capture sharing `prepare.js:84-98` is load-bearing. Any candidate must preserve the
+  warmup for genuinely-unresolved icons.
+- **Candidate B1 (MEASURED, medium value):** the outer `element.querySelectorAll('*')` at
+  `prepare.js:110` and the nested `root.querySelectorAll('*')` at `prepare.js:116` run on a
+  full-tree basis before any icon test. A cheaper precheck — document/element-level "any
+  calcite-icon present" test before entering the census — would remove the walk on trees with no
+  such host. Must retain the gBCR-based liveness test for real pending icons. Requires its own
+  same-bundle counterfactual and an icon-present oracle.
+
 
 ### C — Style scan (MEASURED)
 - Symbols: `ALWAYS_PROPS` `src/modules/styleScan.js:42`; `INHERITED_PROPS` `styleScan.js:86`;
@@ -197,16 +216,18 @@ Goal: establish whether burst memo hits on the public path are already at the ob
 
 ## Explicit non-claims
 
-- No R8 timing has been run. The I1/J1 probes are **measurement evidence**, not promotion
+- No R8 timing has been run. The I1/J1/B1 probes are **measurement evidence**, not promotion
   evidence, and no candidate is enabled by them.
 - No R8 candidate has been implemented, promoted, or rejected.
-- Region B is still unmeasured; criterion 2 is therefore **not yet satisfied by this file**.
-  Regions I and J are now measured and both resolved to explicit stops.
+- The compress census inside region G remains unmeasured; criterion 2 is **not yet satisfied**
+  until that is instrumented. Regions B resolved to candidate B1; I and J resolved to measured
+  stops.
 
 ## Probe artifacts
 
 - `lane6-scratch/r8/bench-stage-attribution.mjs` → `lane6-scratch/r8/results/stage-attribution-<engine>.json`
 - `lane6-scratch/r8/bench-burst-memo-hit.mjs` → `lane6-scratch/r8/results/burst-memo-hit-<engine>.json`
-- Both drive the public `snapdom.toRaw` pipeline and count `getComputedStyle`,
+- `lane6-scratch/r8/bench-shadow-icon-census.mjs` → `lane6-scratch/r8/results/shadow-icon-census-<engine>.json`
+- All three drive the public `snapdom.toRaw` pipeline and count `getComputedStyle`,
   `getPropertyValue`, `getBoundingClientRect`, and `querySelectorAll` via in-page prototype
-  patches. Both are rerunnable from the R7 worktree root.
+  patches. All are rerunnable from the R7 worktree root.
