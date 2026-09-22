@@ -38,7 +38,7 @@ import {
   counterPairs
 } from '../modules/counter.js'
 import { snapFetch } from './snapFetch.js'
-import { pseudoGatesFor, pseudoUniverseFor, pseudoSnapshotFor, flushStyleInvalidations, invalidateStyleCaches } from './styles.js'
+import { pseudoGatesFor, pseudoUniverseFor, pseudoSnapshotFor, pseudoStyleKeyForSnapshot, extendSnapshotSignature, flushStyleInvalidations, invalidateStyleCaches } from './styles.js'
 
 /** Weak memo for per-document preflight results keyed by a cheap style fingerprint */
 const __preflightMemo = new WeakMap()
@@ -937,9 +937,16 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       const pseudoIsFlexItem = hostDisplay.includes('flex') || hostDisplay.includes('grid')
       if (pseudoIsFlexItem) {
         const mw = snapshot['min-width']
-        if (!mw || mw === 'auto' || mw === '0px') snapshot['min-width'] = '0px'
+        if (!mw || mw === 'auto' || mw === '0px') {
+          if (snapshot['min-width'] !== '0px') {
+            snapshot['min-width'] = '0px'
+            extendSnapshotSignature(snapshot, 'pm\u0001min-width\u00010px')
+          }
+        }
       }
-      const key = getStyleKey(snapshot, 'span', hasExplicitContent, pseudoIsFlexItem)
+      const key = options?.__styleSharePseudoKeyCache === true
+        ? pseudoStyleKeyForSnapshot(snapshot, hasExplicitContent, pseudoIsFlexItem, sessionCache)
+        : getStyleKey(snapshot, 'span', hasExplicitContent, pseudoIsFlexItem)
       sessionCache.styleMap.set(pseudoEl, key)
 
       // ---- Content handling (icon-font glyphs / url() / text) ----

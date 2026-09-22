@@ -31,12 +31,13 @@ on:
         default: snapshot-overlay
         type: choice
         options:
-          - snapshot-overlay
-          - style-cache-handoff
-          - burst-scroll
-          - focus-partition
-          - pseudo-stage1
-          - option-pair
+      - snapshot-overlay
+      - style-cache-handoff
+      - burst-scroll
+      - focus-partition
+      - pseudo-stage1
+      - pseudo-e2
+      - option-pair
       browser:
         description: Engine
         required: true
@@ -107,6 +108,7 @@ jobs:
             burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
             focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
             pseudo-stage1) BENCH=lane6-scratch/r5/bench-r7-pseudo-stage1.mjs ;;
+            pseudo-e2) BENCH=lane6-scratch/r5/bench-r7-pseudo-stage1.mjs ;;
             option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
           esac
           touch "$RUNNER_TEMP/r7_t0"

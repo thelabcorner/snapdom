@@ -35,6 +35,9 @@ const FIXTURES = [
   ['pseudo-pairs-400', 400, 200, 'both'],
   ['pseudo-pairs-unique-style-400', 400, 200, 'pairUnique'],
   ['pseudo-triples-unique-style-360', 360, 120, 'tripleUnique'],
+  ['pseudo-quads-unique-style-400', 400, 100, 'quadUnique'],
+  ['pseudo-fives-unique-style-400', 400, 80, 'fiveUnique'],
+  ['pseudo-sixes-unique-style-400', 420, 70, 'sixUnique'],
   ['pseudo-entropy-400', 400, 400, 'both'],
   ['pseudo-before-only-400', 400, 1, 'before'],
   ['pseudo-flex-400', 400, 1, 'flex'],
@@ -66,7 +69,7 @@ function build(nodes, cardinality, mode){
   if(mode==='flex') css+='.r7p-row{display:flex;align-items:center}'
   if(mode==='percent') css+='.r7p-row{width:var(--w)}.r7p-row::before{width:50%}'
   if(mode==='stateVeto') css+='.r7p-row:not(:hover)::before{outline-offset:0px}'
-  if(mode==='pairUnique'||mode==='tripleUnique'){
+  if(mode==='pairUnique'||mode==='tripleUnique'||mode==='quadUnique'||mode==='fiveUnique'||mode==='sixUnique'){
     for(let i=0;i<cardinality;i++){
       css+='.r7p-row.g'+i+'::before{color:'+color(i,11)+'}.r7p-row.g'+i+'::after{color:'+color(i,29)+'}'
     }
