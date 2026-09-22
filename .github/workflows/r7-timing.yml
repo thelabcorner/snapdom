@@ -31,13 +31,13 @@ on:
         default: snapshot-overlay
         type: choice
         options:
-      - snapshot-overlay
-      - style-cache-handoff
-      - burst-scroll
-      - focus-partition
-      - pseudo-stage1
-      - pseudo-e2
-      - option-pair
+          - snapshot-overlay
+          - style-cache-handoff
+          - burst-scroll
+          - focus-partition
+          - pseudo-stage1
+          - pseudo-e2
+          - option-pair
       browser:
         description: Engine
         required: true
