@@ -6,9 +6,9 @@ name: R7 decision-quality timing (scout-grade)
 # selection") for the acceptance rules: exact raw parity, null CI spans zero,
 # CoV < 15%, candidate CI clears the practical epsilon.
 #
-# Shared GHA runners are noisier than a quiet dedicated host, so results here are
-# DIRECTIONAL SCOUTS: a claim=PASS here still needs a gated PASS rerun on a quiet
-# runner before any promotion. INCONCLUSIVE/REGRESSION signals are real either way.
+# Performance decisions are made from this gated GitHub Actions environment, not from
+# developer-machine timing. A promotion still requires exact parity, a valid null control,
+# CoV < 15% and a candidate CI that clears the practical epsilon; noisy runs are inconclusive.
 # This workflow never commits, never rewrites baselines, never pushes — it only
 # uploads JSON artifacts and a job summary (Juan §3).
 
@@ -21,6 +21,7 @@ on:
       - lane6-scratch/r5/bench-r7-*.mjs
       - lane6-scratch/r5/run-with-timing-gate.mjs
       - lane6-scratch/atlas/profiler/fixtures.mjs
+      - lane6-scratch/r8/bench-p1-current.mjs
       - src/**/*.js
       - .github/workflows/r7-timing.yml
   workflow_dispatch:
@@ -36,6 +37,7 @@ on:
           - burst-scroll
           - focus-partition
           - pseudo-stage1
+          - p1-bundle
           - option-pair
       browser:
         description: Engine
@@ -77,6 +79,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -88,18 +92,30 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Install Playwright browser
-        run: npx playwright install --with-deps ${{ inputs.browser }}
+        run: |
+          BROWSER='${{ inputs.browser }}'
+          BROWSER=${BROWSER:-chromium}
+          npx playwright install --with-deps "$BROWSER"
 
       - name: Compile candidate bundle
         run: |
           npm run compile
           node -e "const fs=require('fs'),crypto=require('crypto');const b=fs.readFileSync('dist/snapdom.mjs');console.log('dist/snapdom.mjs', b.length, 'bytes sha256', crypto.createHash('sha256').update(b).digest('hex').toUpperCase().slice(0,12))"
 
+      - name: Compile P1 frozen baseline
+        if: ${{ inputs.bench == 'p1-bundle' || github.head_ref == 'perf/v3-r8-p1-lazy-current' }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/p1-base" c435e7cbff3d50449aca2a1ea996648900c05d36
+          npm --prefix "$RUNNER_TEMP/p1-base" ci --no-audit --no-fund
+          npm --prefix "$RUNNER_TEMP/p1-base" run compile
+          node -e "const fs=require('fs'),crypto=require('crypto');const b=fs.readFileSync(process.env.RUNNER_TEMP+'/p1-base/dist/snapdom.mjs');console.log('P1 baseline', b.length, 'bytes sha256', crypto.createHash('sha256').update(b).digest('hex').toUpperCase().slice(0,12))"
+
       - name: Run gated timing
         id: bench
         run: |
           # inputs.* are empty on pull_request events — fall back to full defaults there.
           BENCH_INPUT='${{ inputs.bench }}'
+          if [ -z "$BENCH_INPUT" ] && [ '${{ github.head_ref }}' = 'perf/v3-r8-p1-lazy-current' ]; then BENCH_INPUT=p1-bundle; fi
           BENCH_INPUT=${BENCH_INPUT:-snapshot-overlay}
           BENCH=lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs
           case "$BENCH_INPUT" in
@@ -107,14 +123,18 @@ jobs:
             burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
             focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
             pseudo-stage1) BENCH=lane6-scratch/r5/bench-r7-pseudo-stage1.mjs ;;
+            p1-bundle) BENCH=lane6-scratch/r8/bench-p1-current.mjs ;;
             option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
           esac
           touch "$RUNNER_TEMP/r7_t0"
           BROWSER='${{ inputs.browser }}'; BROWSER=${BROWSER:-chromium}
           N='${{ inputs.n }}'; N=${N:-20}
           BATCH='${{ inputs.batch }}'; BATCH=${BATCH:-3}
-          ARGS="--candidate=dist/snapdom.mjs --browser=$BROWSER --n=$N --batch=$BATCH --warmup=3 --bootstrap=12000 --epsilon=0.02"
+          ENGINE_ARG="--browser=$BROWSER"
+          if [ "$BENCH_INPUT" = 'p1-bundle' ]; then ENGINE_ARG="--engine=$BROWSER"; fi
+          ARGS="--candidate=dist/snapdom.mjs $ENGINE_ARG --n=$N --batch=$BATCH --warmup=3 --bootstrap=12000 --epsilon=0.02"
           if [ -n '${{ inputs.only }}' ]; then ARGS="$ARGS --only=${{ inputs.only }}"; fi
+          if [ "$BENCH_INPUT" = 'p1-bundle' ]; then ARGS="$ARGS --base=$RUNNER_TEMP/p1-base/dist/snapdom.mjs"; fi
           if [ "$BENCH_INPUT" = 'option-pair' ]; then ARGS="$ARGS ${{ inputs.extra }}"; fi
           set +e
           # shellcheck disable=SC2086
@@ -137,17 +157,19 @@ jobs:
           node -e "
             const fs = require('fs');
             const path = require('path');
-            const { execSync } = require('child_process');
-            const fresh = execSync('find lane6-scratch/r5/results -name \"*.json\" -newer \"$RUNNER_TEMP/r7_t0\" -print', { encoding: 'utf8' }).split('\n').filter(Boolean).map((p) => path.basename(p));
-            if (!fresh.includes('timing-environment-latest.json')) { console.log('no result artifacts (bench never ran)'); process.exit(0); }
-            const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
+            const marker = fs.statSync(process.env.RUNNER_TEMP + '/r7_t0').mtimeMs;
+            const roots = ['lane6-scratch/r5/results', 'lane6-scratch/r8/results'];
+            const fresh = roots.flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root).filter((name) => name.endsWith('.json')).map((name) => path.join(root, name)) : []).filter((p) => fs.statSync(p).mtimeMs > marker);
+            const gatePath = fresh.find((p) => path.basename(p) === 'timing-environment-latest.json');
+            if (!gatePath) { console.log('no result artifacts (bench never ran)'); process.exit(0); }
+            const gate = JSON.parse(fs.readFileSync(gatePath, 'utf8'));
             console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
-            for (const f of fresh.filter((x) => x !== 'timing-environment-latest.json')) {
+            for (const f of fresh.filter((x) => path.basename(x) !== 'timing-environment-latest.json')) {
               let r;
-              try { r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8')); } catch { console.log('## ' + f + ' (unparseable, skipped)'); continue; }
+              try { r = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { console.log('## ' + path.basename(f) + ' (unparseable, skipped)'); continue; }
               if (!r || typeof r !== 'object' || !r.fixtures || typeof r.fixtures !== 'object') { console.log('## ' + f + ' (not a bench report, skipped)'); continue; }
-              const prov = r.provenance || { sha256: r.sha || r.candidate || 'unknown', browser: r.browser || '?', n: r.n };
-              console.log('## ' + f, String(prov.sha256).slice(0, 12), prov.browser, 'N=' + prov.n);
+              const prov = r.provenance || { sha256: r.sha || r.candidate?.sha256 || r.candidate || 'unknown', browser: r.browser || r.engine || '?', n: r.n };
+              console.log('## ' + path.basename(f), String(prov.sha256).slice(0, 12), prov.browser || r.engine || '?', 'N=' + (prov.n || r.n));
               for (const [name, fx] of Object.entries(r.fixtures)) {
                 if (fx.pairs) {
                   console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'));
@@ -163,7 +185,7 @@ jobs:
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/r7out"
-          find lane6-scratch/r5/results -name "*.json" -newer "$RUNNER_TEMP/r7_t0" -exec cp {} "$RUNNER_TEMP/r7out/" \;
+          find lane6-scratch/r5/results lane6-scratch/r8/results -name "*.json" -newer "$RUNNER_TEMP/r7_t0" -exec cp {} "$RUNNER_TEMP/r7out/" \; 2>/dev/null || true
           ls "$RUNNER_TEMP/r7out" || true
 
       - name: Upload artifacts

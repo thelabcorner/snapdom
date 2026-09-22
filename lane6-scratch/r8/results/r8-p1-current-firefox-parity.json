@@ -1,0 +1,349 @@
+{
+  "generatedAt": "2026-09-20T01:43:26.923Z",
+  "engine": "firefox",
+  "base": {
+    "path": "../snapdom-v3-r8-p1-base/dist/snapdom.mjs",
+    "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F"
+  },
+  "candidate": {
+    "path": "dist/snapdom.mjs",
+    "sha256": "B0444FE5601525527FE921C7D57EC1E21ABB37F17B328A4A9BCA730E456D46E6"
+  },
+  "mode": "parity-only",
+  "n": 20,
+  "batch": 3,
+  "warmup": 3,
+  "bootstrap": 10000,
+  "fixtures": {
+    "pseudo-20": {
+      "parity": true
+    },
+    "pseudo-400": {
+      "parity": true
+    },
+    "pseudo-mixed-400": {
+      "parity": true
+    },
+    "pseudo-pairs-400": {
+      "parity": true
+    },
+    "pseudo-pairs-unique-style-400": {
+      "parity": true
+    },
+    "pseudo-triples-unique-style-360": {
+      "parity": true
+    },
+    "pseudo-quads-unique-style-400": {
+      "parity": true
+    },
+    "pseudo-breaker-tail-152": {
+      "parity": true
+    },
+    "pseudo-entropy-400": {
+      "parity": true
+    },
+    "pseudo-before-only-400": {
+      "parity": true
+    },
+    "pseudo-flex-400": {
+      "parity": true
+    },
+    "pseudo-percent-400": {
+      "parity": true
+    },
+    "pseudo-state-veto-400": {
+      "parity": true
+    },
+    "no-pseudo-400": {
+      "parity": true
+    }
+  },
+  "layouts": {
+    "cf": {
+      "pseudo-20": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 20614,
+          "bBytes": 20614
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154299,
+          "bBytes": 154299
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154499,
+          "bBytes": 154499
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154879,
+          "bBytes": 154879
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 228288,
+          "bBytes": 228288
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-triples-unique-style-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 184764,
+          "bBytes": 184764
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-quads-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 191622,
+          "bBytes": 191622
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-breaker-tail-152": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 74735,
+          "bBytes": 74735
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154989,
+          "bBytes": 154989
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-before-only-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 97320,
+          "bBytes": 97320
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-flex-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154310,
+          "bBytes": 154310
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-percent-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 163636,
+          "bBytes": 163636
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-state-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154299,
+          "bBytes": 154299
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 38266,
+          "bBytes": 38266
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "cr": {
+      "pseudo-20": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 20614,
+          "bBytes": 20614
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154299,
+          "bBytes": 154299
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154499,
+          "bBytes": 154499
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154879,
+          "bBytes": 154879
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 228288,
+          "bBytes": 228288
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-triples-unique-style-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 184764,
+          "bBytes": 184764
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-quads-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 191622,
+          "bBytes": 191622
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-breaker-tail-152": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 74735,
+          "bBytes": 74735
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154989,
+          "bBytes": 154989
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-before-only-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 97320,
+          "bBytes": 97320
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-flex-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154310,
+          "bBytes": 154310
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-percent-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 163636,
+          "bBytes": 163636
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-state-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 154299,
+          "bBytes": 154299
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 38266,
+          "bBytes": 38266
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "zf": null,
+    "zr": null
+  }
+}

@@ -620,3 +620,41 @@ non-neutral point -9.3% but CoV 60.9% (not claimed). Bundle vs `456ca8f`: **+331
 +154 gzip / +88 Brotli bytes**. Lint + `tsc --noEmit` clean. Verdict: **PROMOTE** as the
 shared-snapshot overlay representation; third-fixture noise does not outweigh two clean claims
 with consistent point estimates.
+
+
+## R8-P1 LAZY #4 CHECKPOINT — 2026-09-19
+
+Current-stack port on `c435e7c` (`perf/v3-r8-p1-lazy-current`) moves both pseudo snapshot
+overlay and generated-key reuse to the first occurrence that can actually amortize setup:
+#2 builds the historical re-read plan, #3 only proves repetition, and #4+ may enter the
+optimized representation/cache path. A capture-local 16-consecutive-miss breaker protects the
+key cache and can reopen only after repeated post-breaker evidence from one identity.
+
+Correctness/certification at this checkpoint: dedicated twin-share **8/8 Chromium + 8/8
+Firefox + 8/8 WebKit**; production-bundle oracle **14/14 on each engine (42/42 total)** against
+base bundle `ABB8360C0EDA...`, candidate `B0444FE56015...`; compile/lint/types clean. Full
+Chromium: **241 files passed + 2 skipped, 1 failed; 1877 tests passed + 5 skipped, 1 failed**.
+The sole failure is `sharePartition > tracks :focus-within across shadow boundaries when
+internal focus moves`, reproduced identically on untouched `c435e7c`, so it is not attributed to
+P1. Bundle delta vs `c435e7c`: **+1473 raw / +520 gzip / +441 Brotli bytes**.
+
+Deterministic mechanism census: repeated 400-row/two-pseudo scene goes **800 -> 8
+`getStyleKey` calls**, with **792 hits / 2 misses**, **794 overlays / 4 spreads**. Entropy,
+pair-only and triple-only identities have **zero cache eligibility and zero overlays**, restoring
+the protected historical path that the rejected R7 P1 taxed. Quad-same gets 198/200 cache hits;
+five-same gets 318/320. Breaker-then-homogeneous-tail fires the breaker once, then recovers for
+**150 hits**, and the next capture starts fresh with 792 hits again.
+
+New negative result: quad-only **unique-style** identities are the first remaining low-reuse
+boundary. They get **0 key hits / 16 misses before breaker**, keep all 800 historical
+`getStyleKey` calls, yet #4 admission still creates **200 overlays**. Exact bytes remain equal,
+but this representation work has no demonstrated compensating mechanism win. Do not hide this
+behind the repeated-scene result.
+
+Wall timing is intentionally not consumed while the workstation timing gate is far outside its
+12/10/20% mean/median/peak limits (latest observed roughly 61.6/61.4/70.9%). The next falsifiable
+hypothesis is **split admission**: allow global generated-key reuse at #4, where cross-identity
+signature collisions can already hit, but delay copy-on-write overlay allocation until #5, which
+requires stronger local repetition evidence. This should make quad-unique pay zero overlay cost
+while retaining quad-same global key reuse. Test this as a separate checkpoint before any clean
+timing run.
