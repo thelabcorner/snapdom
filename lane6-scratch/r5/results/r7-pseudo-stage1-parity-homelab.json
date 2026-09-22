@@ -1,0 +1,298 @@
+{
+  "generatedAt": "2026-09-16T22:06:33.653Z",
+  "candidate": {
+    "path": "candidates/pseudo-overlay-clean.mjs",
+    "sha256": "88CBE7A7B01DA41DAF54A8318A3A46A3EAB72B3E31F975A9B41877470115FA43"
+  },
+  "mode": "parity-only",
+  "n": 20,
+  "batch": 3,
+  "warmup": 3,
+  "bootstrap": 10000,
+  "fixtures": {
+    "pseudo-20": {
+      "parity": true
+    },
+    "pseudo-400": {
+      "parity": true
+    },
+    "pseudo-mixed-400": {
+      "parity": true
+    },
+    "pseudo-pairs-400": {
+      "parity": true
+    },
+    "pseudo-pairs-unique-style-400": {
+      "parity": true
+    },
+    "pseudo-triples-unique-style-360": {
+      "parity": true
+    },
+    "pseudo-entropy-400": {
+      "parity": true
+    },
+    "pseudo-before-only-400": {
+      "parity": true
+    },
+    "pseudo-flex-400": {
+      "parity": true
+    },
+    "pseudo-percent-400": {
+      "parity": true
+    },
+    "pseudo-state-veto-400": {
+      "parity": true
+    },
+    "no-pseudo-400": {
+      "parity": true
+    }
+  },
+  "layouts": {
+    "cf": {
+      "pseudo-20": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 22323,
+          "bBytes": 22323
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156008,
+          "bBytes": 156008
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156208,
+          "bBytes": 156208
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156588,
+          "bBytes": 156588
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 257061,
+          "bBytes": 257061
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-triples-unique-style-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 202657,
+          "bBytes": 202657
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156698,
+          "bBytes": 156698
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-before-only-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98961,
+          "bBytes": 98961
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-flex-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156019,
+          "bBytes": 156019
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-percent-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 165547,
+          "bBytes": 165547
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-state-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156008,
+          "bBytes": 156008
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 39839,
+          "bBytes": 39839
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "cr": {
+      "pseudo-20": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 22323,
+          "bBytes": 22323
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156008,
+          "bBytes": 156008
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156208,
+          "bBytes": 156208
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156588,
+          "bBytes": 156588
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-pairs-unique-style-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 257061,
+          "bBytes": 257061
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-triples-unique-style-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 202657,
+          "bBytes": 202657
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156698,
+          "bBytes": 156698
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-before-only-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98961,
+          "bBytes": 98961
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-flex-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156019,
+          "bBytes": 156019
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-percent-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 165547,
+          "bBytes": 165547
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "pseudo-state-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 156008,
+          "bBytes": 156008
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 39839,
+          "bBytes": 39839
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "zf": null,
+    "zr": null
+  }
+}

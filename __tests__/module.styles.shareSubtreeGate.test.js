@@ -69,7 +69,7 @@ describe('identity share — subtree gate', () => {
     expect(on.n).toBeLessThan(off.n / 2)
   })
 
-  it('a splitting selector that matches INSIDE the root turns the share off', async () => {
+  it('a structural selector that matches INSIDE the root partitions twins without changing bytes', async () => {
     mountCSS('.btn:hover{color:red} tr:first-child td{color:rgb(1,2,3)}')
     const a = mountTable()
     await settle()
@@ -79,12 +79,12 @@ describe('identity share — subtree gate', () => {
     await settle()
     const off = await readsOf(b, { __styleShare: false })
     expect(on.url).toBe(off.url)
-    // Not the ~4x collapse the share produces: the full-read path ran in both arms (the
-    // arms differ by a handful of once-per-capture reads, hence a ratio, not equality).
-    expect(on.n).toBeGreaterThan(off.n * 0.9)
+    // R2 partitions the otherwise-identical identities by the first-child match bit instead
+    // of disabling sharing for the whole capture.
+    expect(on.n).toBeLessThan(off.n / 2)
   })
 
-  it('the root itself is part of the question', async () => {
+  it('the root itself is part of the partition question', async () => {
     mountCSS('div.root-g:first-child{color:rgb(1,2,3)}')
     const wrap = document.createElement('div')
     wrap.innerHTML = '<div class="root-g"><span>a</span><span>a</span></div>'
@@ -98,6 +98,26 @@ describe('identity share — subtree gate', () => {
     mounted.push(wrap2)
     await settle()
     const off = await readsOf(wrap2.firstElementChild, { __styleShare: false })
-    expect(on.n).toBeGreaterThan(off.n * 0.9)
+    expect(on.url).toBe(off.url)
+    expect(on.n).toBeLessThan(off.n * 0.9)
+  })
+
+  it('keeps direct-attribute subject keys visible to structural share partitioning', async () => {
+    mountCSS('[data-share-state="hot"]:first-child{color:rgb(201,22,33)}')
+    const make = () => {
+      const root = document.createElement('div')
+      root.innerHTML = '<span data-share-state="hot">same</span><span data-share-state="hot">same</span>'
+      document.body.appendChild(root)
+      mounted.push(root)
+      return root
+    }
+    const a = make()
+    await settle()
+    const on = await readsOf(a, {})
+    a.remove()
+    const b = make()
+    await settle()
+    const off = await readsOf(b, { __styleShare: false })
+    expect(on.url).toBe(off.url)
   })
 })

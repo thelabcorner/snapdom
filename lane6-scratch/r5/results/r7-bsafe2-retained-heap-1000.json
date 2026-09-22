@@ -1,0 +1,155 @@
+{
+  "generatedAt": "2026-09-15T22:31:22.653Z",
+  "candidate": {
+    "path": "dist/snapdom.mjs",
+    "sha256": "A2063DAF3136191CCDBE70C7F6C28F8B9702EC0552D42140D07A2FD6377403C2",
+    "bytes": 283569
+  },
+  "cards": 1000,
+  "elements": 3002,
+  "method": "fresh page/arm; first memo + clean hit; source/result retained; forced GC; Runtime.getHeapUsage; no timing",
+  "historical": {
+    "n": 7,
+    "mean": 3854796,
+    "median": 3854776,
+    "min": 3854744,
+    "max": 3854900
+  },
+  "retained": {
+    "n": 7,
+    "mean": 3888887.4285714286,
+    "median": 3888916,
+    "min": 3888732,
+    "max": 3888932
+  },
+  "medianDeltaBytes": 34140,
+  "memoIdentity": true,
+  "rows": [
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081512,
+      "retainedDelta": 3854840
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115604,
+      "retainedDelta": 3888932
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115404,
+      "retainedDelta": 3888732
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081448,
+      "retainedDelta": 3854776
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081416,
+      "retainedDelta": 3854744
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115540,
+      "retainedDelta": 3888868
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115588,
+      "retainedDelta": 3888916
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081432,
+      "retainedDelta": 3854760
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081572,
+      "retainedDelta": 3854900
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115588,
+      "retainedDelta": 3888916
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115604,
+      "retainedDelta": 3888932
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081416,
+      "retainedDelta": 3854744
+    },
+    {
+      "retain": false,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5081480,
+      "retainedDelta": 3854808
+    },
+    {
+      "retain": true,
+      "sameMemo": true,
+      "elements": 3002,
+      "urlBytes": 177284,
+      "usedBefore": 1226672,
+      "usedAfter": 5115588,
+      "retainedDelta": 3888916
+    }
+  ]
+}

@@ -25,8 +25,10 @@ import { isSVGEl } from '../utils/helpers.js'
  * @param {Element} element - the clone: an <svg>, or a container holding one or more
  * @param {Document|ParentNode} [lookupRoot] - where the external defs are searched (element.ownerDocument by default)
  * @param {Element} [htmlSource] - the LIVE capture root, for references made through CSS
+ * @param {WeakMap<Element, CSSStyleDeclaration>|null} [styleCache] - exact capture-local
+ *   source declarations when available; missing/empty entries fall back to live CSSOM
  */
-export function inlineExternalDefsAndSymbols(element, lookupRoot, htmlSource) {
+export function inlineExternalDefsAndSymbols(element, lookupRoot, htmlSource, styleCache = null) {
   if (!element || (element?.nodeType !== 1)) return
 
   const doc = element.ownerDocument || document
@@ -170,7 +172,9 @@ export function inlineExternalDefsAndSymbols(element, lookupRoot, htmlSource) {
     const scan = (el) => {
       if (isSVGEl(el)) return // the SVG walk above already covers these
       let cs
-      try { cs = getComputedStyle(el) } catch { return }
+      const cached = styleCache?.get?.(el)
+      if (cached?.length) cs = cached
+      else try { cs = getComputedStyle(el) } catch { return }
       for (const prop of CSS_URL_PROPS) {
         const v = cs[prop]
         if (v && v.includes('url(')) addUrlIdsFromValue(v)

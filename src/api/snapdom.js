@@ -142,7 +142,10 @@ async function main(element, userOptions) {
     typeof context.excludeStyleProps === 'function' || typeof context.fallbackURL === 'function'
   const memoEligible = rendersPixels && !context.captureSelection &&
     context.burst !== false && pluginAllowsMemo && !hasCaptureCallbacks
-  const burst = memoEligible && isAutoBurstSafe(element)
+  const burst = memoEligible && isAutoBurstSafe(
+    element,
+    context.__burstRetainedSafetyFastPath !== false,
+  )
   if (burst) noteCapture(element, userOptions)
 
   if (!context.snap) {

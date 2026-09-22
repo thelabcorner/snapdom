@@ -1,0 +1,17 @@
+{
+ "engine": "chromium",
+ "fixtures": {
+  "late-mutation": {
+   "onReads": 115,
+   "offReads": 115,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  },
+  "crossorigin": {
+   "onReads": 178,
+   "offReads": 178,
+   "raw": "EQ",
+   "lastMask": "13px 7px"
+  }
+ }
+}
