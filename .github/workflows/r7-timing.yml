@@ -1,0 +1,177 @@
+name: R7 decision-quality timing (scout-grade)
+
+# Same-bundle option-only crossovers with fresh-page slot crossover, symmetric
+# warmup, paired log ratios, full-copy null control, seeded bootstrap and no
+# outlier deletion. See lane6-scratch/r5/R5_ITERATION_LEDGER.md ("Current adaptive
+# selection") for the acceptance rules: exact raw parity, null CI spans zero,
+# CoV < 15%, candidate CI clears the practical epsilon.
+#
+# Shared GHA runners are noisier than a quiet dedicated host, so results here are
+# DIRECTIONAL SCOUTS: a claim=PASS here still needs a gated PASS rerun on a quiet
+# runner before any promotion. INCONCLUSIVE/REGRESSION signals are real either way.
+# This workflow never commits, never rewrites baselines, never pushes — it only
+# uploads JSON artifacts and a job summary (Juan §3).
+
+on:
+  # Runs from the PR branch's own file, so no main-branch copy is needed.
+  # Draft-PR CI vehicle: open a draft PR from the perf branch and every push
+  # gets a gated decision-quality run on the merge ref.
+  pull_request:
+    paths:
+      - lane6-scratch/r5/bench-r7-*.mjs
+      - lane6-scratch/r5/run-with-timing-gate.mjs
+      - lane6-scratch/atlas/profiler/fixtures.mjs
+      - src/**/*.js
+      - .github/workflows/r7-timing.yml
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: Which harness to run
+        required: true
+        default: snapshot-overlay
+        type: choice
+        options:
+      - snapshot-overlay
+      - style-cache-handoff
+      - burst-scroll
+      - focus-partition
+      - pseudo-stage1
+      - pseudo-e2
+      - option-pair
+      browser:
+        description: Engine
+        required: true
+        default: chromium
+        type: choice
+        options:
+          - chromium
+          - firefox
+          - webkit
+      n:
+        description: Paired observations per layout
+        required: false
+        default: '20'
+      batch:
+        description: Captures averaged per observation
+        required: false
+        default: '3'
+      only:
+        description: Fixture subset (empty = harness default)
+        required: false
+        default: ''
+      extra:
+        description: Extra args for option-pair (e.g. --base=__a=false --opt=__a=true --out=r7-x.json --label=R7-X)
+        required: false
+        default: ''
+
+concurrency:
+  group: r7-timing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps ${{ inputs.browser }}
+
+      - name: Compile candidate bundle
+        run: |
+          npm run compile
+          node -e "const fs=require('fs'),crypto=require('crypto');const b=fs.readFileSync('dist/snapdom.mjs');console.log('dist/snapdom.mjs', b.length, 'bytes sha256', crypto.createHash('sha256').update(b).digest('hex').toUpperCase().slice(0,12))"
+
+      - name: Run gated timing
+        id: bench
+        run: |
+          # inputs.* are empty on pull_request events — fall back to full defaults there.
+          BENCH_INPUT='${{ inputs.bench }}'
+          BENCH_INPUT=${BENCH_INPUT:-snapshot-overlay}
+          BENCH=lane6-scratch/r5/bench-r7-snapshot-overlay-controlled.mjs
+          case "$BENCH_INPUT" in
+            style-cache-handoff) BENCH=lane6-scratch/r5/bench-r7-style-cache-handoff-controlled.mjs ;;
+            burst-scroll) BENCH=lane6-scratch/r5/bench-r7-burst-scroll-controlled.mjs ;;
+            focus-partition) BENCH=lane6-scratch/r5/bench-r7-focus-partition-controlled.mjs ;;
+            pseudo-stage1) BENCH=lane6-scratch/r5/bench-r7-pseudo-stage1.mjs ;;
+            pseudo-e2) BENCH=lane6-scratch/r5/bench-r7-pseudo-stage1.mjs ;;
+            option-pair) BENCH=lane6-scratch/r5/bench-r7-option-pair-controlled.mjs ;;
+          esac
+          touch "$RUNNER_TEMP/r7_t0"
+          BROWSER='${{ inputs.browser }}'; BROWSER=${BROWSER:-chromium}
+          N='${{ inputs.n }}'; N=${N:-20}
+          BATCH='${{ inputs.batch }}'; BATCH=${BATCH:-3}
+          ARGS="--candidate=dist/snapdom.mjs --browser=$BROWSER --n=$N --batch=$BATCH --warmup=3 --bootstrap=12000 --epsilon=0.02"
+          if [ -n '${{ inputs.only }}' ]; then ARGS="$ARGS --only=${{ inputs.only }}"; fi
+          if [ "$BENCH_INPUT" = 'option-pair' ]; then ARGS="$ARGS ${{ inputs.extra }}"; fi
+          set +e
+          # shellcheck disable=SC2086
+          node lane6-scratch/r5/run-with-timing-gate.mjs -- node "$BENCH" $ARGS
+          CODE=$?
+          echo "exit=$CODE"
+          # exit 3 = ambient gate BLOCKED (no timing consumed: neutral, rerun later);
+          # anything else nonzero = real failure.
+          if [ "$CODE" -eq 3 ]; then
+            echo "ambient gate blocked: no timing consumed; rerun later"
+            exit 0
+          fi
+          exit "$CODE"
+
+      - name: Summarize
+        if: always()
+        run: |
+          # Only this run's outputs: the branch carries committed probe JSONs with
+          # unrelated schemas, so scope by mtime (marker touched just before the gate).
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            const { execSync } = require('child_process');
+            const fresh = execSync('find lane6-scratch/r5/results -name \"*.json\" -newer \"$RUNNER_TEMP/r7_t0\" -print', { encoding: 'utf8' }).split('\n').filter(Boolean).map((p) => path.basename(p));
+            if (!fresh.includes('timing-environment-latest.json')) { console.log('no result artifacts (bench never ran)'); process.exit(0); }
+            const gate = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/timing-environment-latest.json', 'utf8'));
+            console.log('ambient gate:', 'mean=' + gate.summary.mean.toFixed(1) + '% median=' + gate.summary.median.toFixed(1) + '% peak=' + gate.summary.max.toFixed(1) + '% => ' + (gate.pass ? 'PASS' : 'BLOCK'));
+            for (const f of fresh.filter((x) => x !== 'timing-environment-latest.json')) {
+              let r;
+              try { r = JSON.parse(fs.readFileSync('lane6-scratch/r5/results/' + f, 'utf8')); } catch { console.log('## ' + f + ' (unparseable, skipped)'); continue; }
+              if (!r || typeof r !== 'object' || !r.fixtures || typeof r.fixtures !== 'object') { console.log('## ' + f + ' (not a bench report, skipped)'); continue; }
+              const prov = r.provenance || { sha256: r.sha || r.candidate || 'unknown', browser: r.browser || '?', n: r.n };
+              console.log('## ' + f, String(prov.sha256).slice(0, 12), prov.browser, 'N=' + prov.n);
+              for (const [name, fx] of Object.entries(r.fixtures)) {
+                if (fx.pairs) {
+                  console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'));
+                  for (const [pid, p] of Object.entries(fx.pairs)) console.log('   ' + pid, p.candidate.pct.toFixed(1) + '% CI[' + p.candidate.ci95.map((v) => v.toFixed(1)).join(', ') + '] CoV=' + (p.maxCov * 100).toFixed(1) + '% claim=' + (p.claimable ? 'PASS' : p.regression ? 'REGRESSION' : 'INCONCLUSIVE'));
+                } else {
+                  console.log(' ' + name, 'parity=' + (fx.parity ? 'PASS' : 'FAIL'), 'effect ' + fx.candidate.pct.toFixed(1) + '% CI[' + fx.candidate.ci95.map((v) => v.toFixed(1)).join(', ') + '] null ' + fx.control.pct.toFixed(1) + '% CI[' + fx.control.ci95.map((v) => v.toFixed(1)).join(', ') + '] CoV=' + (fx.maxCov * 100).toFixed(1) + '% claim=' + (fx.claimable ? 'PASS' : fx.regression ? 'REGRESSION' : 'INCONCLUSIVE'));
+                }
+              }
+            }
+          " >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect run artifacts
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/r7out"
+          find lane6-scratch/r5/results -name "*.json" -newer "$RUNNER_TEMP/r7_t0" -exec cp {} "$RUNNER_TEMP/r7out/" \;
+          ls "$RUNNER_TEMP/r7out" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r7-timing-${{ inputs.bench || 'snapshot-overlay' }}-${{ inputs.browser || 'chromium' }}-n${{ inputs.n || '20' }}
+          path: ${{ runner.temp }}/r7out/*.json
+          if-no-files-found: warn
