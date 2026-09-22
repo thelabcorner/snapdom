@@ -2295,6 +2295,25 @@ const UNSTABLE_INSET_INLINE_RE = /(?:^|;)\s*(?:top|right|bottom|left|inset(?:-[a
 const INLINE_POSITION_TRY_RE = /(?:^|;)\s*(?:position-area|inset-area|position-anchor|position-try(?:-[a-z-]+)?)\s*:/i
 const AUTO_MARGIN_INLINE_RE = /margin[a-z-]*\s*:[^;]*(\bauto\b|var\(|attr\(|\binherit\b|\brevert(?:-layer)?\b)/i
 const AUTO_MARGIN_INLINE_ALL_RE = /(?:^|;)\s*all\s*:\s*(?:inherit|revert(?:-layer)?)(?:\s*!important)?\s*(?:;|$)/i
+// PWH1 inline container exposure: keep the raw-string token check as a cheap prefilter, then
+// interrogate CSSOM by declaration. Property NAMES and VALUES must stay separate: searching the
+// whole serialized cssText made inert names such as `--acqw-token` look like a `cqw` unit and
+// needlessly closed the gate. CSSOM canonicalization also normalizes escaped/case variants.
+const INLINE_CONTAINER_MAYBE_RE = /cq|container/i
+const INLINE_CONTAINER_PROP_RE = /^container(?:-type|-name)?$/
+const INLINE_CQ_UNIT_RE = /cq(?:w|h|i|b|min|max)\b/i
+const INLINE_CONTAINER_FALLBACK_RE = /(?:^|;)\s*container(?:-type|-name)?\s*:|cq(?:w|h|i|b|min|max)\b/i
+
+function inlineStyleHasContainerExposure(el, raw) {
+  if (!raw || !INLINE_CONTAINER_MAYBE_RE.test(raw)) return false
+  const style = el.style
+  if (!style) return INLINE_CONTAINER_FALLBACK_RE.test(raw)
+  for (let i = 0; i < style.length; i++) {
+    const prop = style[i]
+    if (INLINE_CONTAINER_PROP_RE.test(prop) || INLINE_CQ_UNIT_RE.test(style.getPropertyValue(prop))) return true
+  }
+  return false
+}
 const UA_AUTO_MARGIN_TAGS = new Set(['DIALOG', 'HR'])
 
 // Legacy HTML presentational hints live outside author stylesheets and inline CSS, so styleScan
@@ -2466,8 +2485,11 @@ function identityFor(el, st, selectors = null) {
  *  @param {boolean} [copyForSpread=true] materialize the historical spread-optimized base.
  *    Snapshot overlays never spread the base, so they can build the lists/signature directly
  *    from the canonical object and avoid this one full-object copy per reused identity.
+ *  @param {boolean} [omitInlineWh=false] omit width/height from this record's rider plan.
+ *    PWH1 uses this only for a capture-local pseudo record already proven to expose invariant
+ *    specified values for those two properties; element records always leave it false.
  *  @returns {string[]} the re-read list, also stored on `rec.rr` */
-function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
+function shareLists(rec, el, insetValueGate = true, copyForSpread = true, omitInlineWh = false) {
   // Historical copy path: the identity's own object is built by keyed stores (dictionary mode
   // in V8), and twins that spread it clone faster from a spread-made object. R7 overlays do not
   // spread the base at all, so paying this copy would be pure setup overhead.
@@ -2496,6 +2518,7 @@ function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
   const rrT = stored.transform !== undefined && stored.transform !== 'none'
   const rrList = []
   for (const k in stored) {
+    if (omitInlineWh && (k === 'width' || k === 'height')) continue
     if (LAYOUT_ALWAYS_RE.test(k) ||
         (rrI && LAYOUT_INSET_RE.test(k)) ||
         (rrG && (k === 'grid-template-columns' || k === 'grid-template-rows')) ||
@@ -2513,6 +2536,49 @@ function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
   return rrList
 }
 
+/** PWH1: value classes whose read on a non-replaced inline pseudo could stop being the
+ *  SPECIFIED token on some engine — a resolved used length would let identity twins diverge.
+ *  Percentages, absolute-ish lengths and `auto` are pinned specified-and-invariant by the
+ *  premise probe on all three engines; functional (`calc()`, `var()`, `min()`), container
+ *  relative and explicit-inheritance values keep the historical per-twin read. */
+const PSEUDO_UNCERTAIN_LENGTH_RE = /\(|cq|var|env|attr|inherit|unset|revert|fit-content|min-content|max-content|stretch/i
+
+/** PWH1 gate: may this pseudo identity drop `width`/`height` from its twin re-read riders?
+ *  Only a NON-REPLACED pseudo whose computed display is exactly `inline`: width/height do not
+ *  apply there and CSSOM returns the SPECIFIED value (Chromium/Firefox/WebKit probe), which
+ *  the identity proof already fixes — the per-twin read can only reproduce it. Replaced content
+ *  (url()/image-set()/-moz-element()/paint()) and every other computed display resolve
+ *  width/height to a used, box-derived length. Container units resolve to a used length
+ *  even here (all three engines), and var()/env() can hide one — the document scan owns
+ *  that channel (pseudoLengthUnstable), so it and shadow content fail closed too, as do
+ *  missing `content` (e.g. UA-generated) and uncertain value classes. */
+function pseudoInlineWhReusable(snap, source, st) {
+  if (!snap || snap.display !== 'inline') return false
+  const c = snap.content
+  if (c === undefined || c === '' || c === 'none' || c === 'normal') return false
+  if (/(?:url|image-set|element|paint)\(/i.test(c)) return false
+  // Inline container exposure is not represented by the document stylesheet scan. Check only
+  // this identity's captured ancestor chain, lazily on its first TWIN: an unrelated sibling
+  // container cannot affect this pseudo, and scanning every inline style during identityFor()
+  // made unique/no-pseudo captures pay for a proof they could never reuse. `st.ids` also gives
+  // us the capture boundary for free — the first parent without an id is outside the subtree and
+  // therefore common context for every identity in this capture.
+  for (let el = source; el; el = el.parentElement) {
+    if (st && st.ids.get(el) === undefined) break
+    const raw = el.getAttribute?.('style') || ''
+    if (inlineStyleHasContainerExposure(el, raw)) return false
+  }
+  const doc = source.ownerDocument || document
+  if (source.getRootNode && source.getRootNode() !== doc) return false
+  const scan = scanFor(doc)
+  // pseudoContainerUnstable covers sheet @container rules, container declarations and cq units
+  // in any declaration; pseudoLengthUnstable keeps the width/height var()/env() channel.
+  if (scan.pseudoLengthUnstable || scan.pseudoContainerUnstable) return false
+  const w = snap.width === undefined ? 'auto' : snap.width
+  const h = snap.height === undefined ? 'auto' : snap.height
+  return !PSEUDO_UNCERTAIN_LENGTH_RE.test(w) && !PSEUDO_UNCERTAIN_LENGTH_RE.test(h)
+}
+
 /**
  * A pseudo-element's snapshot, shared between identity twins the way the element's is. The
  * identity interned for `source` during the clone walk (same tag, attributes and ancestor
@@ -2523,6 +2589,9 @@ function shareLists(rec, el, insetValueGate = true, copyForSpread = true) {
  * under the root, animations, an unreadable scan, shadow content) or the walk refused this
  * node an identity. Deep tree with a `::before` on every leaf (1,936 pseudos), bare page:
  * pruned reads alone 272 ms; shared 190 ms; without the rule 125.
+ * PWH1 narrows the per-twin riders further: for a proven non-replaced inline pseudo the
+ * width/height entries leaving `shareLists` are dropped (pseudoInlineWhReusable), unless
+ * `__pseudoInlineWhRiderReuse:false` restores the historical read for same-build causality.
  * @param {Element} source
  * @param {string} pseudo '::before' | '::after'
  * @param {CSSStyleDeclaration} style getComputedStyle(source, pseudo)
@@ -2541,11 +2610,27 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const rec = snaps.get(key)
   if (rec) {
     const snap = { ...rec.snap }
-    const rr = rec.rr || shareLists(rec, source, options?.__styleShareInsetValueGate !== false)
+    // PWH1 specializes the capture-local rider plan once, on the first identity hit. A proven
+    // non-replaced inline pseudo never inserts width/height into that plan, so later twins avoid
+    // both CSSOM reads AND the previous per-rider skip branch. The false arm never sets rec.wh,
+    // therefore shareLists materializes the exact historical plan there.
+    // Do not prove PWH1 on the first occurrence: there is no read to save until this first twin
+    // arrives. This keeps high-entropy/unique pseudo scenes on the exact historical miss path.
+    if (rec.wh === undefined && options?.__pseudoInlineWhRiderReuse !== false) {
+      rec.wh = pseudoInlineWhReusable(rec.snap, source, st)
+    }
+    const rr = rec.rr || shareLists(
+      rec,
+      source,
+      options?.__styleShareInsetValueGate !== false,
+      true,
+      rec.wh === true,
+    )
     for (let i = 0; i < rr.length; i++) {
-      const v = style.getPropertyValue(rr[i])
-      if (v) snap[rr[i]] = v
-      else delete snap[rr[i]]
+      const p = rr[i]
+      const v = style.getPropertyValue(p)
+      if (v) snap[p] = v
+      else delete snap[p]
     }
     return snap
   }
@@ -2554,7 +2639,10 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   // pseudo was paid on the deep tree for 1,936 identities that never had a twin. The one
   // write the pass makes afterwards (a flex-item min-width floor) depends on the host's
   // display, identical for twins.
-  snaps.set(key, { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap })
+  const recNew = { snap, rr: null, sig: null, h: 'height' in snap, b: 'block-size' in snap }
+  // PWH1 stays undecided until the first identity twin. A one-off pseudo cannot amortize gate
+  // work and therefore remains on the historical miss path.
+  snaps.set(key, recNew)
   return snap
 }
 

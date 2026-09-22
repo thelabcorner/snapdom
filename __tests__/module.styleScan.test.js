@@ -97,6 +97,30 @@ describe('computePropertyUniverse', () => {
     const positionTry = style.sheet?.cssRules?.[0]?.style?.getPropertyValue('position-try-fallbacks')
     if (positionTry) expect(scanAuthorStyles(document).insetUnstable).toBe(true)
   })
+
+  it('pins PWH1 container proof through canonical property names and serialized cq units', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-scan-test', '')
+    document.head.appendChild(style)
+
+    style.textContent = '.zz-p { CONTAINER-TYPE: inline-size; }'
+    let scan = scanAuthorStyles(document)
+    expect(scan.pseudoContainerUnstable).toBe(true)
+
+    // CSSOM canonicalizes the escaped cq unit before scanRules sees style.cssText.
+    style.textContent = String.raw`.zz-p { font-size: 2c\71 w; }`
+    scan = scanAuthorStyles(document)
+    expect(scan.pseudoContainerUnstable).toBe(true)
+
+    style.textContent = '.zz-p::before { content: ""; width: var(--w); }'
+    scan = scanAuthorStyles(document)
+    expect(scan.pseudoLengthUnstable).toBe(true)
+
+    style.textContent = '.zz-p { color: red; }'
+    scan = scanAuthorStyles(document)
+    expect(scan.pseudoContainerUnstable).toBe(false)
+    expect(scan.pseudoLengthUnstable).toBe(false)
+  })
 })
 
 describe('pseudo selector gates', () => {

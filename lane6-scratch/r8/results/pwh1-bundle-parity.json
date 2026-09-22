@@ -1,0 +1,325 @@
+{
+  "generatedAt": "2026-09-20T01:35:51.672Z",
+  "base": {
+    "path": "../snapdom-v3-r7-style-authority-integration/dist/snapdom.mjs",
+    "sha256": "ABB8360C0EDAE2C220E38B9926B942AF5FF11ECFEBC44C642A52FCFA7824AA2F"
+  },
+  "candidate": {
+    "path": "dist/snapdom.mjs",
+    "sha256": "4132D4793021806A850CD4C47717251347A4752B15D8E5F2B4A240A39052E19B"
+  },
+  "mode": "parity-only",
+  "n": 20,
+  "batch": 3,
+  "warmup": 3,
+  "bootstrap": 10000,
+  "fixtures": {
+    "inline-before-400": {
+      "parity": true
+    },
+    "inline-both-400": {
+      "parity": true
+    },
+    "inline-inert-token-400": {
+      "parity": true
+    },
+    "inline-unrelated-container-400": {
+      "parity": true
+    },
+    "inline-mixed-400": {
+      "parity": true
+    },
+    "inline-pairs-400": {
+      "parity": true
+    },
+    "inline-triples-360": {
+      "parity": true
+    },
+    "inline-entropy-400": {
+      "parity": true
+    },
+    "inline-block-400": {
+      "parity": true
+    },
+    "block-400": {
+      "parity": true
+    },
+    "container-veto-400": {
+      "parity": true
+    },
+    "no-pseudo-400": {
+      "parity": true
+    },
+    "no-pseudo-many-rules-400": {
+      "parity": true
+    }
+  },
+  "layouts": {
+    "cf": {
+      "inline-before-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98833,
+          "bBytes": 98833
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-both-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 155768,
+          "bBytes": 155768
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-inert-token-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 107719,
+          "bBytes": 107719
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-unrelated-container-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 99134,
+          "bBytes": 99134
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 101845,
+          "bBytes": 101845
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 127271,
+          "bBytes": 127271
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-triples-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 107519,
+          "bBytes": 107519
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 135145,
+          "bBytes": 135145
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-block-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98877,
+          "bBytes": 98877
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "block-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98857,
+          "bBytes": 98857
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "container-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98834,
+          "bBytes": 98834
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 39824,
+          "bBytes": 39824
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-many-rules-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 228227,
+          "bBytes": 228227
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "cr": {
+      "inline-before-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98833,
+          "bBytes": 98833
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-both-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 155768,
+          "bBytes": 155768
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-inert-token-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 107719,
+          "bBytes": 107719
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-unrelated-container-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 99134,
+          "bBytes": 99134
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-mixed-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 101845,
+          "bBytes": 101845
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-pairs-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 127271,
+          "bBytes": 127271
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-triples-360": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 107519,
+          "bBytes": 107519
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-entropy-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 135145,
+          "bBytes": 135145
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "inline-block-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98877,
+          "bBytes": 98877
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "block-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98857,
+          "bBytes": 98857
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "container-veto-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 98834,
+          "bBytes": 98834
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 39824,
+          "bBytes": 39824
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      },
+      "no-pseudo-many-rules-400": {
+        "oracle": {
+          "parity": true,
+          "aBytes": 228227,
+          "bBytes": 228227
+        },
+        "rows": [],
+        "s1": null,
+        "s2": null
+      }
+    },
+    "zf": null,
+    "zr": null
+  }
+}
