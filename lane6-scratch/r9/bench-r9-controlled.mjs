@@ -53,12 +53,26 @@ const SEED = Math.floor(numberArg('seed', 0x9a31))
 const ONLY = new Set(String(arg('only', '')).split(',').map((x) => x.trim()).filter(Boolean))
 const LABEL = arg('label', 'R9 controlled A/B')
 const OUT_NAME = arg('out', 'r9-controlled.json')
-const EXPECT = arg('expect', 'improvement')
+const EXPECT = arg('expect', '')
+const EXPECTATION = String(arg('expectation', '') || EXPECT).toUpperCase()
+const PHASE = arg('phase', 'unscoped')
+const REPLICATE = Number(arg('replicate', '-1'))
+const POLICY_SHA = arg('policy-sha256', '')
+const MANIFEST_SHA = arg('manifest-sha256', '')
+const MEASURED_SHA = arg('measured-sha', '')
+const MEASURED_REF = arg('measured-ref', '')
 const EXPECTED_PLAYWRIGHT = arg('playwright-version', '1.55.1')
 
 if (!['bundle-diff', 'option-pair'].includes(MODE)) throw new Error(`unsupported --mode=${MODE}`)
 if (!['standing', 'focus', 'pseudo'].includes(SUITE)) throw new Error(`unsupported --suite=${SUITE}`)
-if (!['improvement', 'equivalence', 'explore'].includes(EXPECT)) throw new Error(`unsupported --expect=${EXPECT}`)
+// The harness measures raw effects and controls; it never adjudicates. The expectation vocabulary
+// is a closed set, so an unrecognised intent cannot be measured at all and every interpretation
+// happens exactly once, at the runner-level aggregate. Legacy lowercase spellings stay accepted so
+// the dedicated self-null calibration lane keeps working unmodified.
+const EXPECTATIONS = ['CALIBRATION', 'IMPROVEMENT', 'EQUIVALENCE', 'NONREGRESSION']
+if (!EXPECTATIONS.includes(EXPECTATION)) {
+  throw new Error('unsupported --expectation=' + (EXPECTATION || '(missing)') + '; allowed: ' + EXPECTATIONS.join(', '))
+}
 
 const basePath = path.resolve(ROOT, BASE_REL)
 const candPath = path.resolve(ROOT, CAND_REL)
@@ -467,6 +481,7 @@ if (playwrightVersion !== EXPECTED_PLAYWRIGHT) {
 const harnessPath = path.resolve(process.argv[1])
 const protocolPath = path.resolve(ROOT, 'lane6-scratch/r9/protocol.mjs')
 const fixtureSourcePath = path.resolve(ROOT, 'lane6-scratch/atlas/profiler/fixtures.mjs')
+const governorPath = path.resolve(ROOT, 'lane6-scratch/r9/governor.mjs')
 const report = {
   schema: 'snapdom-r9-hosted-bench-v1',
   provenance: hostedProvenance({
@@ -474,7 +489,9 @@ const report = {
       mode: MODE,
       suite: SUITE,
       label: LABEL,
-      expectation: EXPECT,
+      expectation: EXPECTATION,
+      phase: PHASE,
+      replicate: REPLICATE,
       n: N,
       batch: BATCH,
       warmup: WARM,
@@ -506,11 +523,17 @@ const report = {
         path: 'lane6-scratch/atlas/profiler/fixtures.mjs',
         sha256: sha256File(fixtureSourcePath),
       },
-      manifestSha256: process.env.SNAPDOM_BENCH_MANIFEST_SHA256 || null,
+      governor: {
+        path: 'lane6-scratch/r9/governor.mjs',
+        sha256: sha256File(governorPath),
+      },
+      manifestSha256: MANIFEST_SHA || process.env.SNAPDOM_BENCH_MANIFEST_SHA256 || null,
+      policySha256: POLICY_SHA || process.env.SNAPDOM_BENCH_POLICY_SHA256 || null,
     },
     git: {
-      candidateSha: process.env.SNAPDOM_CANDIDATE_GIT_SHA || process.env.GITHUB_SHA || null,
+      candidateSha: MEASURED_SHA || process.env.SNAPDOM_MEASURED_SHA || process.env.GITHUB_SHA || null,
       baselineSha: process.env.SNAPDOM_BASELINE_GIT_SHA || null,
+      measuredRef: MEASURED_REF || process.env.SNAPDOM_MEASURED_REF || process.env.GITHUB_REF || null,
     },
     bundles: {
       baseline: { path: BASE_REL, sha256: baselineSha },

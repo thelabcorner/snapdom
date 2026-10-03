@@ -1,18 +1,37 @@
 #!/usr/bin/env node
+/**
+ * Runner-level aggregation — the primary and only inference stage.
+ *
+ * One number per fresh runner crosses the runner boundary (its log-effect point estimate). Raw
+ * samples stay runner-local. Every preregistered cell is mandatory: a single missing or unusable
+ * cell yields INCOMPLETE_EVIDENCE, never a partial claim.
+ *
+ * When the promotion policy is not frozen this stage still runs and still validates evidence, but
+ * it is structurally incapable of returning PROMOTABLE — it returns NO_CLAIM with the list of
+ * unfrozen slots. No provisional threshold is ever substituted.
+ */
+
 import fs from 'node:fs'
 import path from 'node:path'
-import { arg, ciWithin, pctFromLog, stats } from './protocol.mjs'
+import { arg } from './protocol.mjs'
+import {
+  GovernorRefusal,
+  PLAN_SCHEMA,
+  aggregatePhase,
+  cellKey,
+  loadPolicy,
+  promotionFrozen,
+  readJson,
+  validatePolicy,
+} from './governor.mjs'
 
 const ROOT = process.cwd()
 const PLAN_PATH = path.resolve(ROOT, 'lane6-scratch/r9/resolved-plan.json')
+const POLICY_PATH = path.resolve(ROOT, 'lane6-scratch/r9/POLICY.json')
 const PHASE = arg('phase', 'confirm')
 const INPUT_DIR = path.resolve(ROOT, arg('input-dir', 'lane6-scratch/r9/aggregate-input'))
 const OUT_PATH = path.resolve(ROOT, arg('out', 'lane6-scratch/r9/decisions/aggregate-confirm.json'))
 
-function fail(message) {
-  console.error(`R9 aggregate infrastructure failure: ${message}`)
-  process.exit(1)
-}
 function appendSummary(text) {
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, text + '\n')
 }
@@ -28,171 +47,120 @@ function walk(dir, out = []) {
   }
   return out
 }
-function tCritical95(df) {
-  const table = {
-    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
-    15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
-  }
-  return table[Math.min(20, Math.max(1, df))] ?? 1.96
+
+if (!fs.existsSync(PLAN_PATH)) {
+  console.error('R9 aggregate infrastructure failure: resolved plan missing')
+  process.exit(1)
 }
-function runnerCi(logPoints) {
-  const s = stats(logPoints)
-  if (logPoints.length < 2) return { logPoint: s.mean, pct: pctFromLog(s.mean), ci95: [-Infinity, Infinity] }
-  const half = tCritical95(logPoints.length - 1) * s.sd / Math.sqrt(logPoints.length)
-  return {
-    logPoint: s.mean,
-    pct: pctFromLog(s.mean),
-    ci95: [pctFromLog(s.mean - half), pctFromLog(s.mean + half)],
-    runnerSdLog: s.sd,
-  }
+if (!['confirm', 'engineGuard'].includes(PHASE)) {
+  console.error('R9 aggregate infrastructure failure: aggregate supports confirm or engineGuard only')
+  process.exit(1)
 }
 
-if (!fs.existsSync(PLAN_PATH)) fail('resolved plan missing')
-if (!['confirm', 'engineGuard'].includes(PHASE)) fail('aggregate supports confirm or engineGuard')
+const policyProblems = validatePolicy(readJson(POLICY_PATH))
+if (policyProblems.length) {
+  console.error('R9 aggregate infrastructure failure: invalid governor policy\n  - ' + policyProblems.join('\n  - '))
+  process.exit(1)
+}
+const policy = readJson(POLICY_PATH)
+
 const plan = JSON.parse(fs.readFileSync(PLAN_PATH, 'utf8'))
-const candidate = plan.candidate
-const phase = candidate.phases[PHASE]
-if (!phase) fail(`phase ${PHASE} is not registered`)
+if (plan.schema !== PLAN_SCHEMA) {
+  console.error('R9 aggregate infrastructure failure: resolved-plan schema mismatch')
+  process.exit(1)
+}
 
-const docs = []
+const decisions = []
 for (const file of walk(INPUT_DIR)) {
   try {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'))
-    if (value?.schema === 'snapdom-r9-run-decision-v1' && value.phase === PHASE) docs.push({ file, value })
+    if (value?.schema === 'snapdom-r9-run-decision-v2' && value.phase === PHASE) decisions.push(value)
   } catch {}
 }
-const expected = phase.replicates * phase.browsers.length
-if (docs.length !== expected) {
-  fail(`expected ${expected} per-run decisions for ${PHASE}, found ${docs.length}`)
+
+const seen = new Set()
+for (const decision of decisions) {
+  const key = cellKey(decision.browser, decision.replicate)
+  if (seen.has(key)) {
+    console.error('R9 aggregate infrastructure failure: duplicate decision ' + key)
+    process.exit(1)
+  }
+  seen.add(key)
 }
 
-const keys = new Set()
-for (const { value } of docs) {
-  if (value.candidateId !== candidate.id) fail('candidate id mismatch across decisions')
-  if (value.manifestSha256 !== plan.candidateManifestSha256) fail('manifest hash mismatch across decisions')
-  const key = `${value.browser}:${value.replicate}`
-  if (keys.has(key)) fail(`duplicate decision ${key}`)
-  keys.add(key)
-}
-
-const expectedKeys = []
-for (const browser of phase.browsers) {
-  for (let r = 0; r < phase.replicates; r++) expectedKeys.push(`${browser}:${r}`)
-}
-for (const key of expectedKeys) if (!keys.has(key)) fail(`missing decision ${key}`)
-
-const hardFailures = docs.filter(({ value }) => value.hardFailure)
-if (hardFailures.length) fail(`${hardFailures.length} replicate decisions contain hard infrastructure/provenance failures`)
-
-const expectedFixtures = [...candidate.primaryFixtures, ...candidate.guardFixtures]
-const byBrowser = {}
-for (const browser of phase.browsers) {
-  const reps = docs.filter(({ value }) => value.browser === browser)
-    .sort((a, b) => a.value.replicate - b.value.replicate)
-  const fixtures = {}
-  for (const name of expectedFixtures) {
-    const points = reps.map(({ value }) => value.fixtures?.[name]?.logPoint)
-    if (points.some((x) => !Number.isFinite(x))) fail(`missing logPoint for ${browser}/${name}`)
-    const aggregate = reps.length === 1
-      ? {
-          logPoint: points[0],
-          pct: reps[0].value.fixtures[name].pct,
-          ci95: reps[0].value.fixtures[name].ci95,
-          runnerSdLog: null,
-        }
-      : runnerCi(points)
-    fixtures[name] = {
-      ...aggregate,
-      replicatePointsPct: reps.map(({ value }) => value.fixtures[name].pct),
-      replicateCi95: reps.map(({ value }) => value.fixtures[name].ci95),
-      allIndividualEligible: reps.every(({ value }) => value.eligible),
-      anyIndividualRegression: reps.some(({ value }) => value.fixtures[name].candidateRegression),
-      allIndividualEquivalent: reps.every(({ value }) => value.fixtures[name].candidateEquivalent),
+let aggregate
+try {
+  aggregate = aggregatePhase({ plan, policy, phase: PHASE, decisions })
+} catch (error) {
+  if (error instanceof GovernorRefusal) {
+    // aggregatePhase handles intentionally-unfrozen policy slots itself. Reaching this catch means
+    // the governor refused malformed/incoherent evidence. Preserve immutable identity so closeout
+    // can still verify and fail closed rather than receiving an anonymous artifact.
+    aggregate = {
+      schema: 'snapdom-r9-aggregate-decision-v2',
+      candidateId: plan.candidateId,
+      manifestSha256: plan.candidateManifestSha256,
+      policySha256: plan.policySha256,
+      measuredSha: plan.measuredSha,
+      measuredRef: plan.measuredRef,
+      verdict: 'INCOMPLETE_EVIDENCE',
+      promotable: false,
+      expectation: plan.phaseExpectations[PHASE],
+      phase: PHASE,
+      reasons: [error.message],
+      blockers: ['GOVERNOR_REFUSAL'],
+      browsers: {},
+      evidenceCells: { expected: 0, observed: decisions.length, usable: 0 },
     }
+  } else {
+    throw error
   }
-  byBrowser[browser] = {
-    replicates: reps.map(({ value }) => ({
-      replicate: value.replicate,
-      state: value.state,
-      eligible: value.eligible,
-      reportSha256: value.reportSha256,
-      provenance: value.provenance,
-    })),
-    fixtures,
-  }
-}
-
-const reasons = []
-const expectation = phase.expect || candidate.expect
-for (const browser of phase.browsers) {
-  const group = byBrowser[browser]
-  if (!group.replicates.every((r) => r.eligible)) reasons.push(`${browser}: one or more runner-level decisions did not clear gates`)
-  for (const name of expectedFixtures) {
-    const fx = group.fixtures[name]
-    if (expectation === 'equivalence') {
-      if (!ciWithin(fx.ci95, phase.equivalenceBand)) {
-        reasons.push(`${browser}/${name}: runner-level CI is outside ±${(phase.equivalenceBand * 100).toFixed(1)}% equivalence band`)
-      }
-      if (!fx.allIndividualEquivalent) reasons.push(`${browser}/${name}: at least one fresh runner failed equivalence`)
-    } else if (expectation === 'improvement') {
-      if (candidate.primaryFixtures.includes(name) && !(fx.ci95[1] < -(phase.epsilon * 100))) {
-        reasons.push(`${browser}/${name}: aggregate CI does not clear improvement epsilon`)
-      }
-      if (candidate.guardFixtures.includes(name) && (fx.ci95[0] > phase.epsilon * 100 || fx.anyIndividualRegression)) {
-        reasons.push(`${browser}/${name}: guard regression`)
-      }
-    } else if (expectation === 'explore') {
-      if (candidate.guardFixtures.includes(name) && (fx.ci95[0] > phase.epsilon * 100 || fx.anyIndividualRegression)) {
-        reasons.push(`${browser}/${name}: exploratory guard regression`)
-      }
-    }
-  }
-}
-
-const eligible = reasons.length === 0
-const decision = {
-  schema: 'snapdom-r9-aggregate-decision-v1',
-  candidateId: candidate.id,
-  manifestSha256: plan.candidateManifestSha256,
-  phase: PHASE,
-  expectation,
-  state: eligible ? 'GATES_CLEARED' : 'NO_CLAIM',
-  eligible,
-  reasons,
-  policy: {
-    freshRunnerReplicates: phase.replicates,
-    browsers: phase.browsers,
-    epsilon: phase.epsilon,
-    equivalenceBand: phase.equivalenceBand,
-    method: 'Student-t 95% CI across fresh-runner log-effect point estimates; raw samples remain runner-local',
-  },
-  browsers: byBrowser,
 }
 
 fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true })
-fs.writeFileSync(OUT_PATH, JSON.stringify(decision, null, 2) + '\n')
-writeOutput('eligible', eligible ? 'true' : 'false')
-writeOutput('state', decision.state)
+fs.writeFileSync(OUT_PATH, JSON.stringify(aggregate, null, 2) + '\n')
+writeOutput('verdict', aggregate.verdict)
+writeOutput('promotable', aggregate.promotable ? 'true' : 'false')
+writeOutput('evidence_usable', aggregate.verdict !== 'INCOMPLETE_EVIDENCE' && aggregate.verdict !== 'PROVENANCE_FAILURE' ? 'true' : 'false')
 writeOutput('decision_path', path.relative(ROOT, OUT_PATH).replaceAll('\\', '/'))
 
 const rows = []
-for (const [browser, group] of Object.entries(byBrowser)) {
-  for (const [name, fx] of Object.entries(group.fixtures)) {
-    rows.push(`| ${browser} | ${name} | ${fx.pct.toFixed(2)}% | [${fx.ci95.map((v) => Number.isFinite(v) ? v.toFixed(2) : String(v)).join(', ')}]% |`)
+for (const [browser, group] of Object.entries(aggregate.browsers || {})) {
+  for (const [name, fx] of Object.entries(group.fixtures || {})) {
+    const ci = Array.isArray(fx.ci95)
+      ? '[' + fx.ci95.map((v) => (Number.isFinite(v) ? v.toFixed(2) : String(v))).join(', ') + ']%'
+      : 'unavailable'
+    rows.push('| ' + browser + ' | ' + name + ' | ' +
+      (Number.isFinite(fx.pct) ? fx.pct.toFixed(2) + '%' : 'n/a') + ' | ' + ci + ' | ' +
+      (fx.primary ? 'primary' : fx.guard ? 'guard' : 'fixture') + ' |')
   }
 }
+
 appendSummary([
-  `### R9 aggregate · ${candidate.id} · ${PHASE}`,
+  '### R9 runner-level aggregate · ' + plan.candidateId + ' · ' + PHASE,
   '',
-  `**${decision.state}** — eligible: **${eligible ? 'yes' : 'no'}**`,
+  '**' + aggregate.verdict + '** — promotable: **' + (aggregate.promotable ? 'yes' : 'no') + '**',
   '',
-  '| browser | fixture | runner-mean effect | 95% runner-level CI |',
-  '|---|---|---:|---:|',
+  'Method: Student-t 95% CI across fresh-runner log-effect point estimates; raw samples remain runner-local',
+  '',
+  '| browser | fixture | runner-mean effect | 95% runner-level CI | role |',
+  '|---|---|---:|---:|---|',
   ...rows,
   '',
-  ...reasons.map((x) => `- ${x}`),
+  ...(aggregate.reasons || []).map((x) => '- ' + x),
   '',
-].join('\n'))
+  aggregate.frozen
+    ? ''
+    : '- promotion policy is NOT frozen; unfrozen slots: `' + (aggregate.unfrozenSlots || []).join('`, `') + '`',
+  '',
+].filter((line) => line !== '').join('\n'))
 
-console.log(JSON.stringify(decision, null, 2))
+console.log(JSON.stringify(aggregate, null, 2))
+
+// Fail closed on identity/integrity failures and on incomplete preregistered evidence. A clean
+// NO_CLAIM is a valid green run; INCOMPLETE_EVIDENCE and PROVENANCE_FAILURE are not.
+if (aggregate.verdict === 'PROVENANCE_FAILURE' || aggregate.verdict === 'INCOMPLETE_EVIDENCE') {
+  process.exit(1)
+}
+void loadPolicy
+void promotionFrozen

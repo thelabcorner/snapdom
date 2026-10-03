@@ -1,0 +1,174 @@
+{
+  "schema": "snapdom-r9-governor-policy-v2",
+  "policyId": "r9-hosted-promotion-policy",
+  "repository": "thelabcorner/snapdom",
+  "nodeVersion": "22.21.1",
+  "playwrightVersion": "1.55.1",
+  "governor": "lane6-scratch/r9/governor.mjs",
+  "note": "This policy owns every candidate threshold, band, replicate count and acquisition shape. Candidate manifests carry identity, intent and fixture selection only. See lane6-scratch/r9/README.md.",
+
+  "runner": {
+    "os": "Linux",
+    "image": "ubuntu-24.04",
+    "requireHostedImageProvenance": true
+  },
+
+  "gate": {
+    "script": "lane6-scratch/r5/run-with-timing-gate.mjs",
+    "samples": 8,
+    "intervalMs": 1000,
+    "maxMedianPct": 10,
+    "maxMeanPct": 12,
+    "maxPeakPct": 20,
+    "settle": {
+      "intervalMs": 1000,
+      "maxWaitMs": 30000,
+      "consecutive": 3,
+      "maxCpuPercent": 20
+    }
+  },
+
+  "expectations": [
+    "CALIBRATION",
+    "IMPROVEMENT",
+    "EQUIVALENCE",
+    "NONREGRESSION"
+  ],
+
+  "phases": {
+    "scout": {
+      "browsers": ["chromium"],
+      "role": "kill-only",
+      "promotable": false,
+      "mandatory": false,
+      "replicates": 1,
+      "killOn": [
+        "PROVENANCE_FAILURE",
+        "INCOMPLETE_EVIDENCE"
+      ],
+      "comment": "Scout may kill. Scout has no threshold vocabulary at all: it may only stop the lane on provenance, identity or evidence-completeness faults. Scout can never produce or contribute to a promotion verdict."
+    },
+    "confirm": {
+      "browsers": ["chromium"],
+      "role": "inference",
+      "promotable": true,
+      "mandatory": true,
+      "replicates": null
+    },
+    "engineGuard": {
+      "browsers": ["firefox", "webkit"],
+      "role": "guard",
+      "promotable": false,
+      "mandatory": true,
+      "replicates": null
+    }
+  },
+
+  "acquisition": {
+    "scout": {
+      "n": 24,
+      "warmup": 5,
+      "bootstrap": 12000,
+      "batch": null,
+      "seed": 39457
+    },
+    "confirm": {
+      "n": 30,
+      "warmup": 6,
+      "bootstrap": 20000,
+      "batch": null,
+      "seed": 78731
+    },
+    "engineGuard": {
+      "n": 18,
+      "warmup": 4,
+      "bootstrap": 8000,
+      "batch": null,
+      "seed": 118087
+    }
+  },
+
+  "suites": {
+    "standing": {
+      "fixtures": [
+        "light-20cards",
+        "cards400-safe",
+        "cards400-neutral-unsafe",
+        "cards400-non-neutral"
+      ],
+      "knownNoOpFixtures": []
+    },
+    "focus": {
+      "fixtures": [
+        "focus-20",
+        "focus-400",
+        "focus-1000",
+        "focus-within-400",
+        "mixed-focus-400",
+        "focus-plus-hover-veto-400",
+        "no-focus-400"
+      ],
+      "knownNoOpFixtures": [
+        "focus-plus-hover-veto-400",
+        "no-focus-400"
+      ]
+    },
+    "pseudo": {
+      "fixtures": [
+        "pseudo-20",
+        "pseudo-400",
+        "pseudo-mixed-400",
+        "pseudo-pairs-400",
+        "pseudo-pairs-unique-style-400",
+        "pseudo-triples-unique-style-360",
+        "pseudo-quads-unique-style-400",
+        "pseudo-fives-unique-style-400",
+        "pseudo-sixes-unique-style-420",
+        "pseudo-entropy-400",
+        "pseudo-before-only-400",
+        "pseudo-flex-400",
+        "pseudo-percent-400",
+        "pseudo-state-veto-400",
+        "no-pseudo-400"
+      ],
+      "knownNoOpFixtures": [
+        "pseudo-state-veto-400",
+        "no-pseudo-400"
+      ]
+    }
+  },
+
+  "improvement": {
+    "minGuardFixtures": 1,
+    "minKnownNoOpFixtures": 1
+  },
+
+  "promotion": {
+    "frozen": false,
+    "frozenBy": null,
+    "frozenAt": null,
+    "owner": {
+      "lane": "lane6-scratch/r9-calibration",
+      "workflow": ".github/workflows/r9-calibration.yml",
+      "runId": "37090104263",
+      "artifact": "r9-calibration-summary-37090104263"
+    },
+    "unfrozenSlots": [
+      "phases.confirm.replicates",
+      "phases.engineGuard.replicates",
+      "acquisition.scout.batch",
+      "acquisition.confirm.batch",
+      "acquisition.engineGuard.batch",
+      "promotion.epsilon",
+      "promotion.equivalenceBand",
+      "promotion.nonRegressionBand",
+      "promotion.controlBand",
+      "promotion.maxPairLogSd"
+    ],
+    "epsilon": null,
+    "equivalenceBand": null,
+    "nonRegressionBand": null,
+    "controlBand": null,
+    "maxPairLogSd": null
+  }
+}

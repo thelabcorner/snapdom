@@ -1,7 +1,28 @@
 #!/usr/bin/env node
+/**
+ * Adjudicates exactly one fresh-runner cell.
+ *
+ * A run decision establishes evidence validity only. It can never carry a promotion verdict:
+ * `promotableEver` is structurally false on every run decision, and the aggregate refuses any
+ * input where that invariant is violated.
+ *
+ * Terminal outcomes:
+ *   PROVENANCE_FAILURE    an identity did not verify                       -> red
+ *   INCOMPLETE_EVIDENCE   required evidence missing or unusable            -> red
+ *   EVIDENCE_VALID        the cell is admissible as runner-level input      -> green
+ */
+
 import fs from 'node:fs'
 import path from 'node:path'
 import { arg, sha256File } from './protocol.mjs'
+import {
+  GovernorRefusal,
+  PLAN_SCHEMA,
+  assertHostedEnvironment,
+  judgeRunEvidence,
+  readJson,
+  scoutVerdict,
+} from './governor.mjs'
 
 const ROOT = process.cwd()
 const PLAN_PATH = path.resolve(ROOT, 'lane6-scratch/r9/resolved-plan.json')
@@ -12,8 +33,9 @@ const GATE_EXIT = Number(arg('gate-exit', '0'))
 const REPORT_ARG = arg('report', '')
 const OUT_ARG = arg('out', '')
 
-function fail(message) {
+function fail(message, detail) {
   console.error(`R9 decision infrastructure failure: ${message}`)
+  if (detail && Object.keys(detail).length) console.error(JSON.stringify(detail, null, 2))
   process.exit(1)
 }
 function appendSummary(text) {
@@ -22,225 +44,137 @@ function appendSummary(text) {
 function writeOutput(key, value) {
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`)
 }
+
+try {
+  assertHostedEnvironment()
+} catch (error) {
+  fail(error instanceof GovernorRefusal ? error.message : String(error))
+}
+
 if (!['scout', 'confirm', 'engineGuard'].includes(PHASE)) fail('invalid --phase')
 if (!Number.isInteger(REPLICATE) || REPLICATE < 0) fail('invalid --replicate')
 if (!fs.existsSync(PLAN_PATH)) fail('resolved plan missing')
 
 const plan = JSON.parse(fs.readFileSync(PLAN_PATH, 'utf8'))
+if (plan.schema !== PLAN_SCHEMA) fail('resolved-plan schema mismatch')
 const candidate = plan.candidate
-const phase = candidate.phases[PHASE]
-if (!phase) fail(`phase ${PHASE} absent from manifest`)
-const browser = BROWSER || phase.browsers[0]
-if (!phase.browsers.includes(browser)) fail(`browser ${browser} is not valid for phase ${PHASE}`)
+const phaseSpec = plan.phaseSpec[PHASE]
+if (!phaseSpec) fail('phase ' + PHASE + ' absent from policy')
+if (!Number.isInteger(phaseSpec.replicates)) {
+  fail('phase ' + PHASE + ' has no preregistered replicate count; policy slot phases.' + PHASE + '.replicates is unfrozen')
+}
+
+const browser = BROWSER || phaseSpec.browsers[0]
+if (!phaseSpec.browsers.includes(browser)) fail('browser ' + browser + ' is not preregistered for phase ' + PHASE)
 
 const outDir = path.resolve(ROOT, 'lane6-scratch/r9/decisions')
 fs.mkdirSync(outDir, { recursive: true })
 const outPath = OUT_ARG
   ? path.resolve(ROOT, OUT_ARG)
-  : path.join(outDir, `${candidate.id}-${PHASE}-${browser}-r${REPLICATE}.json`)
+  : path.join(outDir, candidate.id + '-' + PHASE + '-' + browser + '-r' + REPLICATE + '.json')
 
-function finish(decision, infrastructureFailure = false) {
+function base() {
+  return {
+    schema: 'snapdom-r9-run-decision-v2',
+    candidateId: candidate.id,
+    manifestSha256: plan.candidateManifestSha256,
+    policySha256: plan.policySha256,
+    measuredSha: plan.measuredSha,
+    measuredRef: plan.measuredRef,
+    phase: PHASE,
+    replicate: REPLICATE,
+    browser,
+    expectation: plan.phaseExpectations[PHASE],
+    promotable: false,
+    promotableEver: false,
+  }
+}
+
+function finish(decision, exitCode = 0) {
   fs.mkdirSync(path.dirname(outPath), { recursive: true })
   fs.writeFileSync(outPath, JSON.stringify(decision, null, 2) + '\n')
-  writeOutput('eligible', decision.eligible ? 'true' : 'false')
-  writeOutput('state', decision.state)
+  writeOutput('verdict', decision.verdict)
+  writeOutput('evidence_usable', decision.evidenceUsable ? 'true' : 'false')
+  writeOutput('promotable', 'false')
+  if (PHASE === 'scout') writeOutput('scout_killed', scoutVerdict(decision).killed ? 'true' : 'false')
   writeOutput('decision_path', path.relative(ROOT, outPath).replaceAll('\\', '/'))
   appendSummary([
-    `### R9 ${candidate.id} · ${PHASE} · ${browser} · r${REPLICATE}`,
+    '### R9 ' + candidate.id + ' · ' + PHASE + ' · ' + browser + ' · r' + REPLICATE,
     '',
-    `- state: **${decision.state}**`,
-    `- eligible for next stage: **${decision.eligible ? 'yes' : 'no'}**`,
-    `- manifest: \`${plan.candidateManifestSha256.slice(0, 12)}\``,
-    ...(decision.reasons || []).map((x) => `- ${x}`),
+    '- verdict: **' + decision.verdict + '**',
+    '- runner-level promotion: **never** (inference is aggregate-only)',
+    '- manifest: `' + plan.candidateManifestSha256.slice(0, 12) + '`',
+    '- policy: `' + plan.policySha256.slice(0, 12) + '`' + (plan.frozen ? '' : ' (unfrozen)'),
+    ...(decision.reasons || []).map((x) => '- ' + x),
     '',
   ].join('\n'))
   console.log(JSON.stringify(decision, null, 2))
-  if (infrastructureFailure) process.exit(1)
+  process.exit(exitCode)
 }
 
+function infrastructureFailure(verdict, reasons, extra = {}) {
+  finish({ ...base(), verdict, evidenceUsable: false, reasons, scientific: [], fixtures: {}, ...extra }, 1)
+}
+
+// The ambient gate blocks before any browser timing happens. That is zero evidence, and it is
+// reported as INCOMPLETE_EVIDENCE — never as a clean pass and never as a claim.
 if (GATE_EXIT === 3) {
-  finish({
-    schema: 'snapdom-r9-run-decision-v1',
-    candidateId: candidate.id,
-    manifestSha256: plan.candidateManifestSha256,
-    phase: PHASE,
-    replicate: REPLICATE,
-    browser,
-    state: 'AMBIENT_BLOCKED',
-    eligible: false,
-    hardFailure: false,
-    reasons: ['ambient CPU gate blocked before browser timing; no performance claim was consumed'],
-    fixtures: {},
-  })
-  process.exit(0)
+  infrastructureFailure('INCOMPLETE_EVIDENCE', [
+    'ambient CPU gate blocked before browser timing; no performance claim was consumed',
+  ])
 }
 if (GATE_EXIT !== 0) {
-  finish({
-    schema: 'snapdom-r9-run-decision-v1',
-    candidateId: candidate.id,
-    manifestSha256: plan.candidateManifestSha256,
-    phase: PHASE,
-    replicate: REPLICATE,
-    browser,
-    state: 'HARNESS_FAILED',
-    eligible: false,
-    hardFailure: true,
-    reasons: [`benchmark process exited ${GATE_EXIT}`],
-    fixtures: {},
-  }, true)
+  infrastructureFailure('PROVENANCE_FAILURE', ['benchmark or gate process exited ' + GATE_EXIT])
 }
 
 const expectedReport = path.resolve(
   ROOT,
-  REPORT_ARG || `lane6-scratch/r9/results/${candidate.id}-${PHASE}-${browser}-r${REPLICATE}.json`,
+  REPORT_ARG || ('lane6-scratch/r9/results/' + candidate.id + '-' + PHASE + '-' + browser + '-r' + REPLICATE + '.json'),
 )
 const buildProvenancePath = path.resolve(ROOT, 'lane6-scratch/r9/bundles/build-provenance.json')
+const gatePath = path.resolve(ROOT, 'lane6-scratch/r5/results/timing-environment-latest.json')
+const policyPath = path.resolve(ROOT, 'lane6-scratch/r9/POLICY.json')
+
 if (!fs.existsSync(expectedReport)) {
-  finish({
-    schema: 'snapdom-r9-run-decision-v1',
-    candidateId: candidate.id,
-    manifestSha256: plan.candidateManifestSha256,
-    phase: PHASE,
-    replicate: REPLICATE,
-    browser,
-    state: 'MISSING_EVIDENCE',
-    eligible: false,
-    hardFailure: true,
-    reasons: [`expected report absent: ${path.relative(ROOT, expectedReport)}`],
-    fixtures: {},
-  }, true)
+  infrastructureFailure('INCOMPLETE_EVIDENCE', ['expected report absent: ' + path.relative(ROOT, expectedReport)])
+}
+if (!fs.existsSync(buildProvenancePath)) {
+  infrastructureFailure('PROVENANCE_FAILURE', ['build-provenance.json missing from the prepared artifact'])
 }
 
 let report
 try { report = JSON.parse(fs.readFileSync(expectedReport, 'utf8')) }
-catch (error) { fail(`cannot parse report: ${error.message}`) }
-if (!fs.existsSync(buildProvenancePath)) fail('build-provenance.json missing from bundle artifact')
+catch (error) { fail('cannot parse report: ' + error.message) }
 let build
 try { build = JSON.parse(fs.readFileSync(buildProvenancePath, 'utf8')) }
-catch (error) { fail(`cannot parse build provenance: ${error.message}`) }
-
-const hard = []
-const scientific = []
-if (report.schema !== 'snapdom-r9-hosted-bench-v1') hard.push('report schema mismatch')
-if (report.provenance?.github?.actions !== true) hard.push('report was not produced under GitHub Actions')
-if (report.provenance?.browser?.requested !== browser) hard.push('requested browser provenance mismatch')
-if (report.provenance?.browser?.actualName !== browser) hard.push('actual launched browser provenance mismatch')
-if (!report.provenance?.browser?.actualVersion) hard.push('actual browser version missing')
-if (report.provenance?.browser?.playwrightVersion !== candidate.playwrightVersion) hard.push('Playwright version mismatch')
-if (report.provenance?.code?.manifestSha256 !== plan.candidateManifestSha256) hard.push('candidate manifest hash mismatch')
-if (build.schema !== 'snapdom-r9-build-provenance-v1') hard.push('build provenance schema mismatch')
-if (build.candidateId !== candidate.id || build.manifestSha256 !== plan.candidateManifestSha256) {
-  hard.push('build provenance candidate/manifest identity mismatch')
-}
-if (report.provenance?.bundles?.candidate?.sha256 !== build.candidate?.bundleSha256) {
-  hard.push('candidate bundle digest does not match prepare-stage build provenance')
-}
-if (report.provenance?.bundles?.baseline?.sha256 !== build.baseline?.bundleSha256) {
-  hard.push('baseline bundle digest does not match prepare-stage build provenance')
-}
-if (report.provenance?.git?.candidateSha !== (process.env.SNAPDOM_CANDIDATE_GIT_SHA || process.env.GITHUB_SHA || null)) {
-  hard.push('candidate git SHA mismatch')
-}
-if (build.candidate?.gitSha !== (process.env.SNAPDOM_CANDIDATE_GIT_SHA || process.env.GITHUB_SHA || null)) {
-  hard.push('prepare-stage candidate git SHA mismatch')
-}
-if (candidate.mode === 'bundle-diff') {
-  if (report.provenance?.git?.baselineSha !== candidate.baselineRef) hard.push('baseline git SHA mismatch')
-  if (build.baseline?.gitSha !== candidate.baselineRef) hard.push('prepare-stage baseline git SHA mismatch')
-  if (report.provenance?.bundles?.baseline?.sha256 === report.provenance?.bundles?.candidate?.sha256) {
-    hard.push('bundle-diff unexpectedly produced identical bundle digests')
-  }
-} else if (report.provenance?.bundles?.baseline?.sha256 !== report.provenance?.bundles?.candidate?.sha256) {
-  hard.push('option-pair must measure the same bundle digest in both arms')
+catch (error) { fail('cannot parse build provenance: ' + error.message) }
+let gate = null
+if (fs.existsSync(gatePath)) {
+  try { gate = JSON.parse(fs.readFileSync(gatePath, 'utf8')) }
+  catch (error) { fail('cannot parse ambient gate artifact: ' + error.message) }
 }
 
-const expectedFixtures = [...candidate.primaryFixtures, ...candidate.guardFixtures]
-const observedFixtures = Object.keys(report.fixtures || {})
-if (expectedFixtures.length !== observedFixtures.length ||
-    expectedFixtures.some((x) => !observedFixtures.includes(x))) {
-  hard.push(`fixture identity mismatch expected=[${expectedFixtures.join(',')}] observed=[${observedFixtures.join(',')}]`)
-}
+const policy = readJson(policyPath)
+if (sha256File(policyPath) !== plan.policySha256) fail('governor policy changed after resolve')
 
-const knownNoOps = new Set(candidate.knownNoOpFixtures)
-const fixtureDecision = {}
-for (const name of expectedFixtures) {
-  const fx = report.fixtures?.[name]
-  if (!fx) continue
-  const reasons = []
-  if (!fx.parity) reasons.push('raw parity failed')
-  if (!fx.controlsPass) reasons.push('AA/BB equivalence controls failed')
-  if (!fx.stabilityPass) reasons.push(`paired log-ratio SD exceeded ${phase.maxPairLogSd.toFixed(3)}`)
-  if (knownNoOps.has(name) && !fx.candidateEquivalent) reasons.push('pre-registered no-op effect is not equivalent')
-  fixtureDecision[name] = {
-    primary: candidate.primaryFixtures.includes(name),
-    guard: candidate.guardFixtures.includes(name),
-    knownNoOp: knownNoOps.has(name),
-    pct: fx.candidate?.pct,
-    ci95: fx.candidate?.ci95,
-    logPoint: fx.candidate?.logPoint,
-    parity: fx.parity,
-    controlsPass: fx.controlsPass,
-    stabilityPass: fx.stabilityPass,
-    candidateWin: fx.candidateWin,
-    candidateRegression: fx.candidateRegression,
-    candidateEquivalent: fx.candidateEquivalent,
-    rawMaxCov: fx.rawMaxCov,
-    maxPairLogSd: fx.maxPairLogSd,
-    reasons,
-  }
-  scientific.push(...reasons.map((r) => `${name}: ${r}`))
-}
-
-const expectation = phase.expect || candidate.expect
-if (expectation === 'equivalence') {
-  for (const name of expectedFixtures) {
-    if (!fixtureDecision[name]?.candidateEquivalent) scientific.push(`${name}: candidate effect failed equivalence band`)
-  }
-} else if (expectation === 'improvement') {
-  for (const name of candidate.primaryFixtures) {
-    if (!fixtureDecision[name]?.candidateWin) scientific.push(`${name}: primary CI does not clear improvement epsilon`)
-  }
-  for (const name of candidate.guardFixtures) {
-    if (fixtureDecision[name]?.candidateRegression) scientific.push(`${name}: guard fixture has a significant regression`)
-  }
-} else if (expectation === 'explore') {
-  for (const name of candidate.guardFixtures) {
-    if (fixtureDecision[name]?.candidateRegression) scientific.push(`${name}: exploratory guard fixture regressed`)
-  }
-}
-
-if (hard.length) {
-  finish({
-    schema: 'snapdom-r9-run-decision-v1',
-    candidateId: candidate.id,
-    manifestSha256: plan.candidateManifestSha256,
-    phase: PHASE,
-    replicate: REPLICATE,
-    browser,
-    state: 'PROVENANCE_FAILURE',
-    eligible: false,
-    hardFailure: true,
-    reasons: hard,
-    fixtures: fixtureDecision,
-    provenance: report.provenance,
-  }, true)
-}
-
-const eligible = scientific.length === 0
-finish({
-  schema: 'snapdom-r9-run-decision-v1',
-  candidateId: candidate.id,
-  manifestSha256: plan.candidateManifestSha256,
+const decision = judgeRunEvidence({
+  plan,
+  policy,
+  report,
+  build,
+  gate,
+  env: process.env,
   phase: PHASE,
-  replicate: REPLICATE,
   browser,
-  expectation,
-  state: eligible ? 'GATES_CLEARED' : 'NO_CLAIM',
-  eligible,
-  hardFailure: false,
-  reasons: scientific,
-  fixtures: fixtureDecision,
-  provenance: report.provenance,
-  reportSha256: sha256File(expectedReport),
-  reportPath: path.relative(ROOT, expectedReport).replaceAll('\\', '/'),
+  replicate: REPLICATE,
 })
+
+finish(
+  {
+    ...decision,
+    reportSha256: sha256File(expectedReport),
+    reportPath: path.relative(ROOT, expectedReport).replaceAll('\\', '/'),
+    gateSha256: gate && fs.existsSync(gatePath) ? sha256File(gatePath) : null,
+  },
+  decision.verdict === 'PROVENANCE_FAILURE' || decision.verdict === 'INCOMPLETE_EVIDENCE' ? 1 : 0,
+)

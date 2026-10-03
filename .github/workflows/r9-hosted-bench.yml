@@ -27,28 +27,31 @@ on:
       - "lane6-scratch/atlas/profiler/fixtures.mjs"
       - "lane6-scratch/r9/**"
       - ".github/workflows/r9-hosted-bench.yml"
-  pull_request:
-    paths:
-      - "src/**"
-      - "package.json"
-      - "package-lock.json"
-      - "esbuild.config.mjs"
-      - "lane6-scratch/r5/run-with-timing-gate.mjs"
-      - "lane6-scratch/atlas/profiler/fixtures.mjs"
-      - "lane6-scratch/r9/**"
-      - ".github/workflows/r9-hosted-bench.yml"
   workflow_dispatch:
+
+# pull_request measurement is deliberately DISABLED, not merely narrowed.
+#
+# On pull_request, github.ref is refs/pull/<n>/merge: a synthetic merge commit that is not the code
+# under review, so measuring it and calling the result "this candidate" is a merge-ref ambiguity.
+# The alternatives are both dishonest: labelling a merge commit as refs/heads/<head.ref> fabricates
+# a branch identity, and for fork PRs the head branch does not exist in this repository at all.
+# The governor refuses merge refs outright (see mergeRefProblems), so PR measurement is disabled
+# here rather than taught to reinterpret them. Push and manual dispatch measure a real branch ref
+# at an exact commit.
 
 permissions:
   contents: read
 
 concurrency:
-  group: r9-hosted-${{ github.event.pull_request.head.sha || github.sha }}
+  group: r9-hosted-${{ github.sha }}
   cancel-in-progress: false
 
 env:
   NODE_VERSION: "22.21.1"
-  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CANDIDATE_SHA: ${{ github.sha }}
+  # The measured ref must be a real, non-merge ref. It is verified against the checkout at prepare
+  # time and re-verified on every run decision.
+  MEASURED_REF: ${{ github.ref }}
 
 jobs:
   prepare:
@@ -59,14 +62,21 @@ jobs:
       candidate_id: ${{ steps.resolve.outputs.candidate_id }}
       candidate_manifest: ${{ steps.resolve.outputs.candidate_manifest }}
       candidate_manifest_sha256: ${{ steps.resolve.outputs.candidate_manifest_sha256 }}
+      policy_sha256: ${{ steps.resolve.outputs.policy_sha256 }}
       mode: ${{ steps.resolve.outputs.mode }}
       baseline_ref: ${{ steps.resolve.outputs.baseline_ref }}
       suite: ${{ steps.resolve.outputs.suite }}
-      expect: ${{ steps.resolve.outputs.expect }}
-      playwright_version: ${{ steps.resolve.outputs.playwright_version }}
+      candidate_expect: ${{ steps.resolve.outputs.candidate_expect }}
+      policy_frozen: ${{ steps.resolve.outputs.policy_frozen }}
+      unfrozen_slots: ${{ steps.resolve.outputs.unfrozen_slots }}
+      expect_confirm: ${{ steps.resolve.outputs.expect_confirm }}
+      expect_engine_guard: ${{ steps.resolve.outputs.expect_engine_guard }}
       confirm_replicates: ${{ steps.resolve.outputs.confirm_replicates }}
       confirm_matrix: ${{ steps.resolve.outputs.confirm_matrix }}
+      engine_guard_replicates: ${{ steps.resolve.outputs.engine_guard_replicates }}
       engine_guard_matrix: ${{ steps.resolve.outputs.engine_guard_matrix }}
+      measured_sha: ${{ steps.resolve.outputs.measured_sha }}
+      measured_ref: ${{ steps.resolve.outputs.measured_ref }}
     steps:
       - name: Checkout exact candidate head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -91,9 +101,70 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
 
+      # Policy ownership is checked before the active candidate is even interpreted. This matters
+      # while the dedicated calibration lane still owns replicate counts/bands: a stale calibration
+      # manifest must not mask the more fundamental POLICY_NOT_FROZEN state.
+      - name: Refuse unfrozen promotion policy before candidate resolution
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import { loadPolicy, promotionFrozen, unfrozenSlots } from './lane6-scratch/r9/governor.mjs'
+            const policy = loadPolicy(process.cwd())
+            if (!promotionFrozen(policy)) {
+              const slots = unfrozenSlots(policy)
+              console.error('R9 promotion policy is not frozen: ' + slots.join(', '))
+              process.exit(1)
+            }
+          "
+
       - name: Resolve committed benchmark identity
         id: resolve
+        env:
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
         run: node lane6-scratch/r9/resolve-candidate.mjs
+
+      # Fail closed BEFORE any browser job runs. An unfrozen policy means the replicate counts and
+      # bands are still owned by hosted calibration, so the matrices below are not authoritative.
+      # Proceeding with empty matrices would produce a green run with zero measured evidence.
+      - name: Refuse to measure while the promotion policy is unfrozen
+        if: steps.resolve.outputs.policy_frozen != 'true'
+        run: |
+          echo "::error::R9 promotion policy is not frozen."
+          echo "::error::Unfrozen slots: ${{ steps.resolve.outputs.unfrozen_slots }}"
+          echo "::error::Hosted calibration ${{ steps.resolve.outputs.candidate_id }} run owns these values."
+          exit 1
+
+      # Every preregistered replicate must exist. This asserts the matrices are non-empty and match
+      # the policy replicate counts, so a null/unfrozen count can never masquerade as a green run.
+      - name: Assert preregistered matrices are complete
+        env:
+          CONFIRM_MATRIX: ${{ steps.resolve.outputs.confirm_matrix }}
+          ENGINE_MATRIX: ${{ steps.resolve.outputs.engine_guard_matrix }}
+          CONFIRM_REPLICATES: ${{ steps.resolve.outputs.confirm_replicates }}
+          ENGINE_REPLICATES: ${{ steps.resolve.outputs.engine_guard_replicates }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const confirm = JSON.parse(process.env.CONFIRM_MATRIX)
+            const engines = JSON.parse(process.env.ENGINE_MATRIX)
+            const confirmReplicates = Number(process.env.CONFIRM_REPLICATES)
+            const engineReplicates = Number(process.env.ENGINE_REPLICATES)
+            const problems = []
+            if (!Number.isInteger(confirmReplicates) || confirmReplicates < 2) {
+              problems.push(`confirm replicate count ${process.env.CONFIRM_REPLICATES} is not frozen`)
+            }
+            if (!Number.isInteger(engineReplicates) || engineReplicates < 1) {
+              problems.push(`engineGuard replicate count ${process.env.ENGINE_REPLICATES} is not frozen`)
+            }
+            if (confirm.length !== confirmReplicates) problems.push("confirm matrix size mismatch")
+            if (engines.length === 0) problems.push("engineGuard matrix is empty")
+            for (const cell of engines) {
+              if (!cell.browser || !Number.isInteger(cell.replicate)) problems.push("engineGuard cell is not {browser,replicate}")
+            }
+            if (problems.length) { console.error("preregistration incomplete:\n  - " + problems.join("\n  - ")); process.exit(1) }
+            console.log(`preregistration: ${confirmReplicates} chromium replicates, ${engines.length} engine-guard cells`)
+          '
 
       - name: Compile exact candidate bundle
         run: |
@@ -130,7 +201,8 @@ jobs:
 
       - name: Record cryptographic build provenance
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ steps.resolve.outputs.baseline_ref }}
         run: node lane6-scratch/r9/build-provenance.mjs
 
@@ -145,13 +217,15 @@ jobs:
           retention-days: 30
 
   scout:
-    name: Chromium scout
+    name: Chromium scout (kill-only, never promotes)
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      eligible: ${{ steps.decision.outputs.eligible }}
-      state: ${{ steps.decision.outputs.state }}
+      # Scout may kill; it may never promote. No eligibility or promotion signal is exposed.
+      scout_killed: ${{ steps.decision.outputs.scout_killed }}
+      verdict: ${{ steps.decision.outputs.verdict }}
+      evidence_usable: ${{ steps.decision.outputs.evidence_usable }}
     steps:
       - name: Checkout exact measured head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -181,7 +255,8 @@ jobs:
         id: bench
         shell: bash
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
           SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
         run: |
@@ -196,7 +271,8 @@ jobs:
         id: decision
         if: always()
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
         run: |
           node lane6-scratch/r9/decide-run.mjs             --phase=scout --replicate=0 --browser=chromium             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
@@ -217,7 +293,8 @@ jobs:
   confirm:
     name: Chromium confirmation r${{ matrix.replicate }}
     needs: [prepare, scout]
-    if: needs.scout.outputs.eligible == 'true'
+    # Scout gates the lane only by killing it. A cleared scout is not evidence of improvement.
+    if: needs.scout.outputs.scout_killed == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -253,7 +330,8 @@ jobs:
         id: bench
         shell: bash
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
           SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
         run: |
@@ -266,7 +344,8 @@ jobs:
       - name: Adjudicate confirmation
         if: always()
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
         run: |
           node lane6-scratch/r9/decide-run.mjs             --phase=confirm --replicate="${{ matrix.replicate }}" --browser=chromium             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
@@ -287,12 +366,14 @@ jobs:
   aggregate:
     name: Aggregate fresh Chromium runners
     needs: [prepare, scout, confirm]
-    if: always() && needs.scout.outputs.eligible == 'true'
+    if: always() && needs.scout.outputs.scout_killed == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      eligible: ${{ steps.aggregate.outputs.eligible }}
-      state: ${{ steps.aggregate.outputs.state }}
+      # The runner-level aggregate is the ONLY Chromium inference stage.
+      promotable: ${{ steps.aggregate.outputs.promotable }}
+      verdict: ${{ steps.aggregate.outputs.verdict }}
+      evidence_usable: ${{ steps.aggregate.outputs.evidence_usable }}
     steps:
       - name: Checkout exact measured head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -326,13 +407,16 @@ jobs:
           retention-days: 60
 
   engine-guard:
-    name: Engine guard · ${{ matrix.browser }}
+    name: Engine guard ${{ matrix.entry.browser }} r${{ matrix.entry.replicate }}
     needs: [prepare, aggregate]
-    if: needs.aggregate.outputs.eligible == 'true'
+    # Engine guards run only when the Chromium claim actually cleared, not merely when evidence
+    # was valid: a NO_CLAIM Chromium result must not buy cross-engine measurement.
+    if: needs.aggregate.outputs.promotable == 'true'
     strategy:
       fail-fast: false
       matrix:
-        browser: ${{ fromJSON(needs.prepare.outputs.engine_guard_matrix) }}
+        # {browser,replicate} cells come only from policy; replicate is never hardcoded to 0.
+        entry: ${{ fromJSON(needs.prepare.outputs.engine_guard_matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -358,18 +442,19 @@ jobs:
           path: lane6-scratch/r9
 
       - name: Install pinned browser
-        run: npx playwright install --with-deps "${{ matrix.browser }}"
+        run: npx playwright install --with-deps "${{ matrix.entry.browser }}"
 
       - name: Run ambient gate + engine guard
         id: bench
         shell: bash
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
           SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
         run: |
           set +e
-          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9/run-candidate.mjs               --phase=engineGuard --replicate=0 --browser="${{ matrix.browser }}"
+          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9/run-candidate.mjs               --phase=engineGuard --replicate="${{ matrix.entry.replicate }}" --browser="${{ matrix.entry.browser }}"
           code=$?
           echo "exit=$code" >> "$GITHUB_OUTPUT"
           exit 0
@@ -377,33 +462,39 @@ jobs:
       - name: Adjudicate engine guard
         if: always()
         env:
-          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_MEASURED_REF: ${{ env.MEASURED_REF }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
         run: |
-          node lane6-scratch/r9/decide-run.mjs             --phase=engineGuard --replicate=0 --browser="${{ matrix.browser }}"             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
+          node lane6-scratch/r9/decide-run.mjs             --phase=engineGuard --replicate="${{ matrix.entry.replicate }}" --browser="${{ matrix.entry.browser }}"             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
 
+      # Decision artifacts are uploaded under a shared prefix so closeout can download the whole
+      # set in one call and see every cell, including the ones that failed.
       - name: Upload engine-guard evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-engine-${{ needs.prepare.outputs.candidate_id }}-${{ matrix.browser }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-${{ matrix.entry.browser }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            lane6-scratch/r9/results/
             lane6-scratch/r9/decisions/
+            lane6-scratch/r9/results/
             lane6-scratch/r5/results/timing-environment-latest.json
             lane6-scratch/r9/bundles/build-provenance.json
           if-no-files-found: error
           retention-days: 30
 
+  # Cross-engine guards are guard-only. This aggregate can report PROVENANCE_FAILURE or
+  # INCOMPLETE_EVIDENCE and can withhold a promotable claim, but it is never itself the promotion:
+  # only the Chromium aggregate is the inference stage, and closeout combines both.
   engine-aggregate:
-    name: Aggregate cross-engine guards
+    name: Aggregate cross-engine guards (guard-only)
     needs: [prepare, aggregate, engine-guard]
-    if: always() && needs.aggregate.outputs.eligible == 'true'
+    if: always() && needs.aggregate.outputs.promotable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      eligible: ${{ steps.aggregate.outputs.eligible }}
-      state: ${{ steps.aggregate.outputs.state }}
+      guard_verdict: ${{ steps.aggregate.outputs.verdict }}
+      guard_evidence_usable: ${{ steps.aggregate.outputs.evidence_usable }}
     steps:
       - name: Checkout exact measured head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -420,7 +511,7 @@ jobs:
       - name: Download engine decisions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: r9-engine-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: lane6-scratch/r9/aggregate-input
 
       - name: Aggregate engine guards
@@ -442,29 +533,69 @@ jobs:
     needs: [prepare, scout, aggregate, engine-aggregate]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
+    outputs:
+      outcome: ${{ steps.closeout.outputs.outcome }}
+      promotable: ${{ steps.closeout.outputs.promotable }}
     steps:
-      - name: Final fail-closed summary
-        shell: bash
-        env:
-          CANDIDATE_ID: ${{ needs.prepare.outputs.candidate_id }}
-          SCOUT_STATE: ${{ needs.scout.outputs.state }}
-          CHROMIUM_STATE: ${{ needs.aggregate.outputs.state }}
-          ENGINE_STATE: ${{ needs.engine-aggregate.outputs.state }}
-          CHROMIUM_ELIGIBLE: ${{ needs.aggregate.outputs.eligible }}
-          ENGINE_ELIGIBLE: ${{ needs.engine-aggregate.outputs.eligible }}
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Refuse closeout without prepared identity
+        if: needs.prepare.result != 'success'
         run: |
-          {
-            echo "### snapDOM R9 hosted benchmark closeout"
-            echo
-            echo "- candidate: \`$CANDIDATE_ID\`"
-            echo "- scout: \`${SCOUT_STATE:-not-run}\`"
-            echo "- fresh-runner Chromium aggregate: \`${CHROMIUM_STATE:-not-run}\`"
-            echo "- cross-engine guard: \`${ENGINE_STATE:-not-run}\`"
-            echo
-            if [ "$CHROMIUM_ELIGIBLE" = "true" ] && [ "$ENGINE_ELIGIBLE" = "true" ]; then
-              echo "**FULL HOSTED GATES CLEARED.** This is evidence eligibility, not an automatic code promotion."
-            else
-              echo "**NO PERFORMANCE CLAIM.** The pipeline stopped or one of the preregistered gates did not clear."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::prepare did not complete; there is no immutable measured identity or policy plan to close out"
+          echo "### R9 closeout — INCOMPLETE_EVIDENCE" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prepare failed before a measurement plan was materialized. Zero evidence is not success." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Set up exact Node
+        if: needs.prepare.result == 'success'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download immutable prepared plan
+        if: needs.prepare.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Download scout decision
+        if: needs.prepare.result == 'success' && needs.scout.result != 'skipped'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/closeout-input/scout
+
+      - name: Download Chromium aggregate
+        if: needs.prepare.result == 'success' && needs.aggregate.result != 'skipped'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/closeout-input/confirm
+
+      - name: Download engine aggregate
+        if: needs.prepare.result == 'success' && needs.engine-aggregate.result != 'skipped'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/closeout-input/engine
+
+      - name: Compute machine-readable fail-closed closeout
+        id: closeout
+        if: needs.prepare.result == 'success'
+        run: node lane6-scratch/r9/closeout.mjs
+
+      - name: Upload closeout decision
+        if: always() && needs.prepare.result == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-closeout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/decisions/closeout.json
+          if-no-files-found: error
+          retention-days: 90
