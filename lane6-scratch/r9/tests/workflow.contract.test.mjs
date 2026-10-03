@@ -67,6 +67,29 @@ test('engine decision artifact producer and consumer use the same prefix', () =>
   assert.ok(raw.includes('pattern: ' + producer + '*-'))
 })
 
+test('artifact addressing is retry-stable while run-attempt remains evidence provenance', () => {
+  // A rerun-failed-jobs attempt does not rerun successful prepare/aggregate jobs. Artifact names
+  // therefore belong to the immutable workflow run, not the mutable attempt number.
+  assert.doesNotMatch(raw, /github\.run_attempt/)
+
+  const uploads = Object.values(doc.jobs).flatMap((job) =>
+    (job.steps || []).filter((step) => String(step.uses || '').includes('actions/upload-artifact@')),
+  )
+  assert.equal(uploads.length, 7)
+  for (const step of uploads) {
+    assert.match(String(step.with?.name || ''), /github\.run_id/)
+    assert.equal(step.with?.overwrite, true, `${step.name} must replace only its stable run/cell artifact`)
+  }
+
+  const preparedName = 'r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}'
+  assert.ok(raw.includes('name: ' + preparedName), 'downstream jobs must reuse the attempt-1 prepared bundle')
+  assert.match(raw, /r9-confirm-\$\{\{ needs\.prepare\.outputs\.candidate_id \}\}-r\$\{\{ matrix\.replicate \}\}-\$\{\{ github\.run_id \}\}/)
+  assert.match(raw, /r9-decisions-\$\{\{ needs\.prepare\.outputs\.candidate_id \}\}-\$\{\{ matrix\.entry\.browser \}\}-r\$\{\{ matrix\.entry\.replicate \}\}-\$\{\{ github\.run_id \}\}/)
+
+  // Attempt identity is still recorded and verified INSIDE evidence, just never used as storage identity.
+  assert.match(build, /GITHUB_RUN_ATTEMPT/)
+})
+
 test('benchmark report actually emits the v2 identities the verifier requires', () => {
   for (const required of [
     'expectation: EXPECTATION',

@@ -209,12 +209,13 @@ jobs:
       - name: Upload immutable prepared evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-prepared-${{ steps.resolve.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ steps.resolve.outputs.candidate_id }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/bundles/
             lane6-scratch/r9/resolved-plan.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   scout:
     name: Chromium scout (kill-only, never promotes)
@@ -245,7 +246,7 @@ jobs:
       - name: Download immutable prepared bundles
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Install pinned Chromium
@@ -281,7 +282,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/results/
             lane6-scratch/r9/decisions/
@@ -289,6 +290,7 @@ jobs:
             lane6-scratch/r9/bundles/build-provenance.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   confirm:
     name: Chromium confirmation r${{ matrix.replicate }}
@@ -320,7 +322,7 @@ jobs:
       - name: Download immutable prepared bundles
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Install pinned Chromium
@@ -354,7 +356,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-r${{ matrix.replicate }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/results/
             lane6-scratch/r9/decisions/
@@ -362,6 +364,7 @@ jobs:
             lane6-scratch/r9/bundles/build-provenance.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   aggregate:
     name: Aggregate fresh Chromium runners
@@ -384,13 +387,13 @@ jobs:
       - name: Download prepared plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Download all confirmation decisions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}
           path: lane6-scratch/r9/aggregate-input
 
       - name: Aggregate without cross-runner raw-sample pooling
@@ -401,10 +404,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/decisions/aggregate-confirm.json
           if-no-files-found: error
           retention-days: 60
+          overwrite: true
 
   engine-guard:
     name: Engine guard ${{ matrix.entry.browser }} r${{ matrix.entry.replicate }}
@@ -438,7 +442,7 @@ jobs:
       - name: Download immutable prepared bundles
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Install pinned browser
@@ -474,7 +478,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-${{ matrix.entry.browser }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-${{ matrix.entry.browser }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/decisions/
             lane6-scratch/r9/results/
@@ -482,6 +486,7 @@ jobs:
             lane6-scratch/r9/bundles/build-provenance.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   # Cross-engine guards are guard-only. This aggregate can report PROVENANCE_FAILURE or
   # INCOMPLETE_EVIDENCE and can withhold a promotable claim, but it is never itself the promotion:
@@ -505,13 +510,13 @@ jobs:
       - name: Download prepared plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Download engine decisions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: r9-decisions-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}
           path: lane6-scratch/r9/aggregate-input
 
       - name: Aggregate engine guards
@@ -523,10 +528,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/decisions/aggregate-engineGuard.json
           if-no-files-found: error
           retention-days: 60
+          overwrite: true
 
   closeout:
     name: Benchmark closeout
@@ -562,28 +568,28 @@ jobs:
         if: needs.prepare.result == 'success'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9
 
       - name: Download scout decision
         if: needs.prepare.result == 'success' && needs.scout.result != 'skipped'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/closeout-input/scout
 
       - name: Download Chromium aggregate
         if: needs.prepare.result == 'success' && needs.aggregate.result != 'skipped'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/closeout-input/confirm
 
       - name: Download engine aggregate
         if: needs.prepare.result == 'success' && needs.engine-aggregate.result != 'skipped'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/closeout-input/engine
 
       - name: Compute machine-readable fail-closed closeout
@@ -595,7 +601,8 @@ jobs:
         if: always() && needs.prepare.result == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-closeout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-closeout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}
           path: lane6-scratch/r9/decisions/closeout.json
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
