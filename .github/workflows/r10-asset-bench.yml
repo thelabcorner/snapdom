@@ -1,0 +1,204 @@
+name: snapDOM R10 AS-BLOB hosted experiment
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r10-asset-frontier'
+    paths:
+      - '.github/workflows/r10-asset-bench.yml'
+      - 'lane6-scratch/r10/**'
+      - 'scripts/as-blob.node.test.mjs'
+      - 'src/core/cache.js'
+      - 'src/core/capture.js'
+      - 'src/modules/compress.js'
+      - 'src/modules/images.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'esbuild.config.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r10-asblob-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22.21.1'
+  CANDIDATE_SHA: ${{ github.sha }}
+  BASELINE_SHA: c523ddb6e141846d55af1c8f315f65babbc32a7e
+
+jobs:
+  prepare:
+    name: Prepare exact baseline and candidate bundles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked candidate dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run browser-free lint, mechanism and benchmark contracts
+        run: |
+          npm run lint
+          npm run test:asset-proof
+          node --test lane6-scratch/r10/tests/asset-bench.contract.test.mjs lane6-scratch/r10/tests/asset-aggregate.contract.test.mjs lane6-scratch/r10/tests/workflow.contract.test.mjs
+
+      - name: Compile exact candidate bundle
+        run: |
+          set -euo pipefail
+          npm run compile
+          mkdir -p lane6-scratch/r10/bundles
+          cp dist/snapdom.mjs lane6-scratch/r10/bundles/candidate.mjs
+
+      - name: Checkout frozen baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: __r10_baseline
+          fetch-depth: 1
+
+      - name: Verify and compile frozen baseline
+        working-directory: __r10_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASELINE_SHA"
+          npm ci --no-audit --no-fund
+          npm run compile
+          cp dist/snapdom.mjs ../lane6-scratch/r10/bundles/baseline.mjs
+
+      - name: Freeze experiment provenance
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ env.BASELINE_SHA }}
+        run: node lane6-scratch/r10/prepare.mjs
+
+      - name: Upload immutable prepared experiment
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-asset-prepared-${{ github.run_id }}
+          path: |
+            lane6-scratch/r10/bundles/
+            lane6-scratch/r10/prepared.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  runner:
+    name: Chromium fresh runner r${{ matrix.replicate }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        replicate: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download immutable prepared experiment
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-asset-prepared-${{ github.run_id }}
+          path: lane6-scratch/r10
+
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Wait for setup tail to settle
+        run: node lane6-scratch/r10/host-settle.mjs
+
+      - name: Run paired asset experiment behind ambient CPU gate
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ env.BASELINE_SHA }}
+        run: node lane6-scratch/r5/run-with-timing-gate.mjs -- node lane6-scratch/r10/assets-bench.mjs --replicate=${{ matrix.replicate }} --prepared=lane6-scratch/r10/prepared.json --out=lane6-scratch/r10/results/runner-r${{ matrix.replicate }}.json
+
+      - name: Upload raw runner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-asset-runner-r${{ matrix.replicate }}-${{ github.run_id }}
+          path: |
+            lane6-scratch/r10/results/runner-r${{ matrix.replicate }}.json
+            lane6-scratch/r10/host-settle.json
+            lane6-scratch/r5/results/timing-environment-latest.json
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
+
+  aggregate:
+    name: Aggregate fresh-runner AS-BLOB evidence
+    needs: [prepare, runner]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download immutable prepared experiment
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-asset-prepared-${{ github.run_id }}
+          path: lane6-scratch/r10
+
+      - name: Download every fresh-runner artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r10-asset-runner-r*-${{ github.run_id }}
+          path: lane6-scratch/r10/aggregate-input
+
+      - name: Aggregate one point per fresh runner
+        run: node lane6-scratch/r10/asset-aggregate.mjs --input-dir=lane6-scratch/r10/aggregate-input --prepared=lane6-scratch/r10/prepared.json --expected=6
+
+      - name: Upload runner-level summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-asset-summary-${{ github.run_id }}
+          path: lane6-scratch/r10/asset-summary.json
+          if-no-files-found: error
+          retention-days: 60
+          overwrite: true
