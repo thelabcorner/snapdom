@@ -186,37 +186,59 @@ try {
     requireAssertion('raw-parity', parity, 'candidate and historical raw SVG must be byte-identical')
     requireAssertion('capture-succeeded', !rec.failure, rec.failure || 'both arms completed')
 
+    // When the document-level mechanism participates, every queried row must actually have been
+    // decided or the counters prove nothing. Controls and scanner-boundary canaries intentionally
+    // bypass ANIM1 and are adjudicated separately below.
+    if (fx.role !== 'control' && fx.role !== 'scannerBlind') {
+      requireAssertion('every-queried-row-decided',
+        eu.released + eu.blocked >= fx.nodes,
+        `elementUniverse decided ${eu.released + eu.blocked} nodes; queried rows = ${fx.nodes}`)
+    }
+
     if (fx.role === 'opportunity') {
-      requireAssertion('universe-releases-queried',
-        eu.released >= fx.nodes,
+      requireAssertion('universe-releases-everything', eu.blocked === 0,
+        `elementUniverse blocked ${eu.blocked}; a disjoint animation must block nothing`)
+      requireAssertion('universe-releases-queried', eu.released >= fx.nodes,
         `elementUniverse released ${eu.released}; need >= queried rows ${fx.nodes}`)
       requireAssertion('work-decreases', saved > 0, `saved GPV=${saved}; opportunity must remove work`)
     } else if (fx.role === 'partial') {
       requireAssertion('universe-releases-unaffected',
         eu.released >= Math.max(1, fx.nodes - 1),
-        `elementUniverse released ${eu.released}; partial subtree must release unaffected siblings`)
-      requireAssertion('universe-blocks-target',
-        eu.blocked >= 1,
-        `elementUniverse blocked ${eu.blocked}; animated target must remain blocked`)
-      requireAssertion('subtree-consumer-blocked',
-        trunc.blocked >= 1,
-        `textTruncationPrepass blocked ${trunc.blocked}; captured subtree contains animation`)
+        `elementUniverse released ${eu.released}; a partial subtree must release the unaffected rows`)
+      requireAssertion('universe-blocks-only-the-animated-row',
+        eu.blocked >= 1 && eu.blocked <= fx.nodes - Math.max(1, fx.nodes - 1),
+        `elementUniverse blocked ${eu.blocked}; only the animated row and its descendants may block`)
+      requireAssertion('subtree-consumer-blocked', trunc.blocked >= 1,
+        `textTruncationPrepass blocked ${trunc.blocked}; the captured subtree contains an animation`)
+    } else if (fx.role === 'scannerBlind') {
+      // Document.getAnimations() and ShadowRoot.getAnimations() are separate scopes. ANIM1 is
+      // document-scoped, so a shadow-only animation must remain outside this mechanism entirely.
+      requireAssertion('document-animation-index-absent',
+        c.counters?.index == null,
+        `index=${JSON.stringify(c.counters?.index ?? null)}`)
+      requireAssertion('animation-scope-consumers-absent',
+        !c.counters?.elementUniverse && !c.counters?.textTruncationPrepass,
+        `elementUniverse=${JSON.stringify(c.counters?.elementUniverse)} truncation=${JSON.stringify(c.counters?.textTruncationPrepass)}`)
+      requireAssertion('scanner-boundary-zero-delta', saved === 0,
+        `saved GPV=${saved}; document-scoped ANIM1 must not alter a shadow-only animation case`)
     } else if (isGatedFalsifier(fx)) {
-      // The browser-free fixture contract proves every QUERIED ROW is downstream of the target for
-      // inherited fixtures, or unattributable for shadow fixtures. Root/wrapper bookkeeping calls
-      // are allowed to have other outcomes, so require a lower bound rather than released===0.
-      requireAssertion('universe-blocks-every-queried-row',
-        eu.blocked >= fx.nodes,
+      // The browser-free fixture contract proves every QUERIED ROW is at or below the animated node
+      // on a mandatory inherited channel. Zero releases is therefore the per-consumer contract.
+      requireAssertion('universe-releases-nothing', eu.released === 0,
+        `elementUniverse released ${eu.released}; a mandatory-block falsifier must release nothing`)
+      requireAssertion('universe-blocks-every-queried-row', eu.blocked >= fx.nodes,
         `elementUniverse blocked ${eu.blocked}; need >= queried rows ${fx.nodes}`)
       if (fx.channel === 'unresolvable') {
-        requireAssertion('animation-index-unresolvable',
-          c.counters?.index?.unresolvable === true,
+        requireAssertion('animation-index-unresolvable', c.counters?.index?.unresolvable === true,
           `index.unresolvable=${c.counters?.index?.unresolvable}`)
       }
     } else if (fx.role === 'control') {
       requireAssertion('no-animation-zero-delta', saved === 0, `saved GPV=${saved}; control must not change work`)
+      requireAssertion('universe-undecided', eu.released === 0 && eu.blocked === 0,
+        `elementUniverse decided ${eu.released + eu.blocked}; with no animation the gate must never run`)
     } else if (fx.role === 'conservative') {
-      // Deliberately report-only: a tighter correct future implementation may release these.
+      // Deliberately report-only: a tighter correct future implementation may release these, so
+      // holding them to a contract would turn a legitimate improvement into a red build.
       rec.reportOnly = true
     }
 
@@ -244,6 +266,9 @@ report.summary = {
   ),
   falsifierSavedReportedOnly: Object.fromEntries(
     all.filter((f) => f.role === 'falsifier').map((f) => [f.name, f.gpv.saved]),
+  ),
+  scannerBlindSaved: Object.fromEntries(
+    all.filter((f) => f.role === 'scannerBlind').map((f) => [f.name, f.gpv.saved]),
   ),
   conservativeSavedReportedOnly: Object.fromEntries(
     all.filter((f) => f.role === 'conservative').map((f) => [f.name, f.gpv.saved]),

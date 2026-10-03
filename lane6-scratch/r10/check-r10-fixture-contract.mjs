@@ -23,6 +23,7 @@
 //   opportunity  no queried row is at or below the animated node        -> spec RELEASES
 //   falsifier    every queried row is at or below the animated node      -> spec BLOCKS
 //   control      no animation                                            -> spec RELEASES
+//   scannerBlind shadow animation is outside Document.getAnimations()          -> report scanner boundary
 //   conservative reported only, never gated
 //
 // Plus the admissibility rule that keeps a fixture out of the zero-savings contract unless blocking is
@@ -98,6 +99,7 @@ for (const fx of FIXTURES) {
   else if (fx.role === 'partial') required = 'partial'
   else if (fx.role === 'falsifier') required = 'all-blocked'
   else if (fx.role === 'control') required = 'all-released'
+  else if (fx.role === 'scannerBlind') required = 'scanner-boundary'
   else if (fx.role === 'conservative') required = 'report-only'
   else throw new Error('unknown role ' + fx.role)
 
@@ -126,6 +128,10 @@ for (const fx of FIXTURES) {
     check(`${fx.name}: conservative fixtures must carry a note`, typeof fx.note === 'string' && fx.note.length > 20)
   }
   if (fx.role === 'control') check(`${fx.name}: control must have no animated target`, plan.target === null)
+  if (fx.role === 'scannerBlind') {
+    check(`${fx.name}: scanner-boundary fixture must target shadow content`, plan.shadowInner === plan.target)
+    check(`${fx.name}: scanner-boundary fixture must carry an explanatory note`, typeof fx.note === 'string' && fx.note.length > 40)
+  }
   if (fx.role !== 'control') check(`${fx.name}: must name an animated target`, typeof plan.target === 'string' && plan.target.length > 0)
 
   rows.push({
@@ -156,7 +162,7 @@ for (const fx of FIXTURES) {
     rootOpacity && rootOpacity.role === 'conservative' && !isGatedFalsifier(rootOpacity))
 }
 
-const ROLE_LABEL = { opportunity: 'saved>0 ', partial: 'saved>0*', falsifier: 'saved=0*', conservative: 'report  ', control: 'saved=0 ' }
+const ROLE_LABEL = { opportunity: 'saved>0 ', partial: 'saved>0*', falsifier: 'saved=0*', scannerBlind: 'scan=none', conservative: 'report  ', control: 'saved=0 ' }
 console.log('  fixture                              geometry               channel        animated   blocked  contract')
 for (const r of rows) {
   console.log(`  ${r.name.padEnd(34)} ${r.where.padEnd(22)} ${r.channel.padEnd(14)} ${String(r.animated).padEnd(10)} ` +
@@ -165,6 +171,7 @@ for (const r of rows) {
 console.log('')
 console.log(`R10-ANIM1 fixture contract: ${FIXTURES.length} fixtures, ` +
   `${rows.filter((r) => r.gated).length} gated falsifiers, ` +
+  `${rows.filter((r) => r.role === 'scannerBlind').length} scanner-boundary canary, ` +
   `${rows.filter((r) => r.role === 'conservative').length} reported-only conservative`)
 console.log('  * gated = blocking is MANDATORY by the spec (inherited or unresolvable channel)')
 if (failures.length) {

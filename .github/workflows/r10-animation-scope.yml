@@ -9,18 +9,21 @@ name: snapDOM v3 R10 animation-scope causal probe
 # This is NOT a wall-clock benchmark. The lane's claim is about WORK — CSSOM property crossings and
 # gate vetoes — and work is counted deterministically, so there is no timing adjudication here, no
 # ambient-CPU gate and no warmup schedule. What IS gated is fidelity: every fixture must produce
-# byte-identical raw output between the historical and candidate arms of the SAME bundle, and every
-# falsifier/control fixture must show ZERO read reduction. A falsifier that saves reads means the
-# scope released a veto it was supposed to keep, and that is a red build.
+# byte-identical raw output between historical/candidate arms of the SAME bundle, plus a per-consumer
+# reachability contract. Read reduction is NOT itself a correctness failure: SELF consumers can
+# soundly release where the inherited element-universe consumer must block. The hosted oracle checks
+# those dimensions separately. Shadow-root animations are a scanner-boundary canary because
+# Document.getAnimations() does not enumerate the ShadowRoot animation scope.
 #
 # Red conditions:
-#   - the copied ancestor-closure algorithm drifts from the shipped source, or its randomized
-#     closure equivalence / scope-arm invariants fail (browser-free `logic` job);
-#   - any fixture's raw output differs between arms (fidelity regression);
-#   - any ancestor/self/subtree/shadow fixture reduces CSSOM crossings (over-broad scope);
-#   - any sibling fixture fails to reduce crossings (the opportunity does not exist);
+#   - the reachability algorithm drifts from the independent geometry oracle;
+#   - any fixture's raw output differs between arms;
+#   - an opportunity fails to release queried work;
+#   - a mandatory inherited falsifier releases a queried element;
+#   - the partial subtree releases its animated target or fails to release unaffected siblings;
+#   - the scanner-boundary canary unexpectedly enters document-scoped ANIM1 or changes work;
 #   - counter disagreement between the out-of-band getPropertyValue patch and the internal sink;
-#   - a missing engine, a missing artifact, or browser identity that is not the pinned Playwright.
+#   - a missing engine/artifact or browser identity outside pinned Playwright.
 
 on:
   workflow_dispatch:
@@ -76,7 +79,7 @@ jobs:
       - name: Verify reachability classification against an independent oracle
         run: node lane6-scratch/r10/check-r10-anim-scope-geometry.mjs
 
-      - name: Verify hosted fixture roles against their actual DOM geometry
+      - name: Verify every hosted fixture role against its own DOM geometry
         run: node lane6-scratch/r10/check-r10-fixture-contract.mjs
 
   probe:
@@ -131,6 +134,11 @@ jobs:
 
       - name: Install pinned ${{ matrix.engine }}
         run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      - name: Run animation-scope regression suite in the hosted browser
+        env:
+          BROWSER: ${{ matrix.engine }}
+        run: npx vitest run __tests__/module.styles.animationScope.test.js --browser.headless --reporter=dot
 
       - name: Run hosted causal probe
         env:

@@ -52,13 +52,21 @@ function freezeAllAnimations() {
   }
 }
 
-/** Animate the first child of `el`, so `el` is an ancestor of an animation target. */
-function runChild(el) {
-  const child = document.createElement('span')
-  child.textContent = 'child'
-  el.appendChild(child)
-  frozenAnimation(child, [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }])
-  mounted.push(child)
+/**
+ * Wrap `el`'s existing children in a new node and animate THAT, so the children become strict
+ * DESCENDANTS of an animated node rather than its siblings.
+ *
+ * The naive version -- append a child to `el` and animate the child -- leaves the corpus as siblings
+ * of the animated node, and this lane then correctly RELEASES it. A first cut of the hosted fixture
+ * made exactly that mistake and asserted saved===0 over rows that were the animated node's siblings,
+ * which would have rejected a correct implementation. Moving the children is the whole fix.
+ */
+function wrapAndAnimateChildren(el) {
+  const wrap = document.createElement('div')
+  el.appendChild(wrap)
+  while (el.firstChild !== wrap) wrap.appendChild(el.firstChild)
+  frozenAnimation(wrap, [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }])
+  return wrap
 }
 
 async function parity(root, extra = {}) {
@@ -198,10 +206,11 @@ describe('R10-ANIM1 ancestor animation is a correctness falsifier', () => {
 
   it('still vetoes the element universe for a child of the capture root', async () => {
     // The geometry d919614 missed: the queried nodes are neither the animation target nor its
-    // ancestors — they are its DESCENDANTS. Inheritance runs downward, so they are affected.
+    // ancestors -- they are its DESCENDANTS. Inheritance runs downward, so they are affected.
+    // The corpus is WRAPPED, not merely neighbored: see wrapAndAnimateChildren.
     const root = mount(BASE_CSS, (root) => {
       corpus(root)
-      runChild(root)
+      wrapAndAnimateChildren(root)
     })
     const sink = {}
     await snapdom.toRaw(root, {

@@ -22,8 +22,10 @@
 //
 //   inherited     the animated property inherits, so descendants' computed values really do move.
 //                 Blocking is MANDATORY. Admissible as a zero-savings falsifier.
-//   unresolvable  the target cannot be attributed (shadow content), so the lane must fail closed.
-//                 MANDATORY. Admissible.
+//   unresolvable  an animation already present in the DOCUMENT animation list has no usable
+//                 element target (or is rooted outside that document). If reachable, the lane must fail closed.
+//   scannerBlind  a shadow-tree animation is intentionally OUTSIDE document.getAnimations(); it is a boundary
+//                 canary for the scanner, not an ANIM1 falsifier. Historical/candidate must remain identical.
 //   nonInherited  the animated property does not inherit, so the spec permits releasing the
 //                 descendants even though this lane blocks them by position. A tighter
 //                 implementation would be RIGHT to release. NOT admissible as a contract: it would
@@ -37,7 +39,7 @@
 
 export const BASE_CSS = '.row{display:block;padding:2px;color:#334155}'
 
-export const CHANNELS = new Set(['inherited', 'unresolvable', 'nonInherited', 'none'])
+export const CHANNELS = new Set(['inherited', 'unresolvable', 'scannerBlind', 'nonInherited', 'none'])
 
 /** Rows are the queried corpus in every fixture. They are what the counters actually measure. */
 function rowNames(nodes) {
@@ -105,8 +107,8 @@ export function fixturePlan(fx) {
       break
     }
     case 'shadow': {
-      // Inside a shadow root: the target's getRootNode() is not the document, so the scan cannot
-      // attribute it and must fail closed for every consumer.
+      // ShadowRoot has its own getAnimations() scope. The document scanner does not enumerate this
+      // animation at all, so this fixture is a scanner-boundary canary rather than an ANIM1 target.
       edges.push(['shadowHost', 'root'])
       for (const name of rows) edges.push([name, 'root'])
       shadowInner = 'animInner'
@@ -142,7 +144,11 @@ export const FIXTURES = [
   // `color` on the capture root, NOT `opacity`: root opacity changes no descendant's computed style,
   // so a saved reading here would have been a legitimate release rather than a regression.
   { name: 'anim-self-60', nodes: 60, where: 'self', channel: 'inherited', role: 'falsifier', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }] },
-  { name: 'anim-shadow-60', nodes: 60, where: 'shadow', channel: 'unresolvable', role: 'falsifier', keys: [{ opacity: '0.2' }, { opacity: '0.9' }] },
+  {
+    name: 'anim-shadow-60', nodes: 60, where: 'shadow', channel: 'scannerBlind', role: 'scannerBlind',
+    keys: [{ opacity: '0.2' }, { opacity: '0.9' }],
+    note: 'Document.getAnimations() and ShadowRoot.getAnimations() are separate scopes. ANIM1 is document-scoped; this canary must remain a zero-delta non-participant until shadow scanning is deliberately expanded.',
+  },
 
   // ---- CONSERVATIVE: blocked by this lane's position test, but the spec permits a release.
   //      Reported for visibility; NOT gated, so a tighter future lane is not turned into a red build.
