@@ -11,11 +11,18 @@
 
 /** Max entries before evicting oldest (FIFO). Keeps lib lightweight, avoids memory leaks. */
 const MAX_IMAGE = 100
-// Retained Blob bytes across cache.image. A Blob is not a JS-heap copy of its payload, but 100
-// multi-megabyte rasters still pin hundreds of MB in the browser's blob store, so past this the
-// oldest blob is dropped and its data URL kept — which is what every entry had before the Blob
-// was retained alongside it. Counted, not estimated: Blob.size is exact and free.
-const MAX_IMAGE_BLOB_BYTES = 64 * 1024 * 1024
+// A HYPOTHESIS, not a certified policy: no measurement supports this number yet, and the only
+// honest description of it is "a guess that bounds obvious abuse". The hosted assets benchmark
+// (lane6-scratch/r10) records settled RSS against it so the value can be LOWERED or frozen from
+// evidence; it must not be defended as correct. Blobs are not JS-heap objects, so page-visible
+// heap counters under-report what retention actually costs — see that harness's §5.
+export const MAX_IMAGE_BLOB_BYTES = 64 * 1024 * 1024
+// compress's worker-offload threshold, in base64 characters of the data URL. It lives HERE,
+// not in compress.js, because compress.js imports the cache: defining it there would mean
+// either an import cycle or a second copy of the number, and two copies of a threshold is how
+// a payload ends up retained as a Blob at 64 KB and then never reaches the worker that would
+// have paid for the retention. cache.js is the dependency-free layer both sides already import.
+export const WORKER_MIN_PAYLOAD_CHARS = 64 * 1024
 const MAX_BACKGROUND = 100
 const MAX_RESOURCE = 150
 const MAX_BASE_STYLE = 50
@@ -47,7 +54,8 @@ class EvictingMap extends Map {
 /**
  * The global caches. Who writes each one:
  *  - image ........ <img> payloads by source URL (images.js, via rememberImageAsset): the data
- *                    URL and, when the fetch had one, the Blob carrying the same bytes
+ *                    URL and, only when the worker route could pay for it, the Blob carrying
+ *                    the same bytes (see rememberImageAsset for the gate)
  *  - background ... background-image data URLs by URL (utils/image.js)
  *  - resource ..... blob: URL contents (clone.helpers resolveBlobUrl; fonts.js reads it)
  *  - defaultStyle . per-tag UA defaults from the sandbox (utils/css.js)
@@ -94,8 +102,7 @@ export function normalizeCachePolicy(v) {
 }
 
 /**
- * Memoize one inlined raster: the data URL written onto the clone, plus the Blob holding the
- * same bytes when the fetch still had one.
+ * Memoize one inlined raster and RETURN the Blob that survived retention, or undefined.
  *
  * compress's worker path takes a Blob so the base64 string never crosses postMessage and is
  * never decoded again (140 ms for 26 MB of gallery photos, snapFetch.js). Only the fetch that
@@ -105,32 +112,97 @@ export function normalizeCachePolicy(v) {
  * same `resp.blob()` (snapFetch.js), so handing the worker one instead of the other cannot
  * change a pixel; it only changes who pays the copy.
  *
- * Blobs are held under a byte budget, oldest first. Dropping one leaves its data URL in place,
- * which is exactly the behaviour every entry had before it retained a Blob, so the budget can
- * only cost the saving, never correctness.
+ * Retention is gated on the Blob being ABLE TO PAY, because retaining one that never will is
+ * pure memory cost. Three ways a payload never reaches compress's worker: compress is off, the
+ * worker route is closed for the page (no Worker/OffscreenCanvas, or a CSP), or the payload is
+ * under WORKER_MIN_PAYLOAD_CHARS and takes the main thread by design. The last is checked here so
+ * the threshold has exactly one definition in the codebase; the first two are inputs the caller
+ * owns and passes as `workerEligible`. A small image therefore retains NO Blob at all.
  *
- * Re-storing an existing key keeps its FIFO position (Map semantics), so a repeat capture does
- * not make its own payload look newer than it is.
- * Pinned by __tests__/core.cache.imageBlob.test.js.
+ * The budget is AUTHORITATIVE: the byte sweep runs before the return, and the value handed back
+ * is re-read from the stored entry. A Blob the sweep dropped comes back undefined, so it cannot
+ * reach the clone by a side channel — an over-budget Blob added last used to be swept and then
+ * attached anyway, because the caller held its own reference from the fetch.
  *
- * @param {string} key - resolved source URL
+ * Dropping a Blob leaves its data URL in place, which is exactly what every entry had before
+ * any Blob was retained, so the budget can only cost the saving, never correctness. Re-storing
+ * an existing key keeps its FIFO position (Map semantics), so a repeat capture cannot make its
+ * own payload look newer than it is.
+ * Pinned by scripts/as-blob.node.test.mjs, which runs under `node --test`
+ * (`npm run test:asset-proof`) and needs no browser: this module has no DOM import, and the
+ * vitest suite cannot reach it without the Playwright provider.
+ *
+* @param {string} key - resolved source URL
  * @param {string} data - the data URL the clone will carry
- * @param {Blob} [blob] - the same bytes, when the fetch still had one
+ * @param {Blob} [blob] - the same bytes, when the fetch still had them
+ * @param {boolean} [workerEligible=false] - compress is on AND the worker route is open
+ * @returns {Blob|undefined} the retained Blob, or undefined when none was kept
  */
-export function rememberImageAsset(key, data, blob) {
-  const entry = blob ? { data, blob, blobBytes: blob.size } : { data }
-  cache.image.set(key, entry)
-  if (!blob) return
+export function rememberImageAsset(key, data, blob, workerEligible = false) {
+  // `blob.size` must be countable, because the whole budget is arithmetic over it. A size that
+  // is NaN or Infinity poisons the running total: every later `bytes <= MAX` comparison is
+  // false, so the sweep would never break and would strip EVERY retained Blob. Fail closed on
+  // the saving instead — an uncountable Blob is unbounded memory, so it is not retained.
+  const size = blob?.size
+  const countable = typeof size === 'number' && Number.isFinite(size) && size >= 0
+  const retain = !!blob && countable && !!workerEligible && data.length >= WORKER_MIN_PAYLOAD_CHARS
+  cache.image.set(key, retain ? { data, blob, blobBytes: size } : { data })
+  if (!retain) return undefined
   let bytes = 0
   for (const e of cache.image.values()) bytes += e.blobBytes || 0
-  if (bytes <= MAX_IMAGE_BLOB_BYTES) return
+  if (bytes > MAX_IMAGE_BLOB_BYTES) {
+    for (const e of cache.image.values()) {
+      if (bytes <= MAX_IMAGE_BLOB_BYTES) break
+      if (!e.blobBytes) continue
+      bytes -= e.blobBytes
+      e.blob = undefined
+      e.blobBytes = 0
+    }
+  }
+  // Re-read: this is the entry as the budget left it, not as the caller handed it over.
+  return cache.image.get(key)?.blob
+}
+
+/**
+ * Whether the compress worker route can exist on this platform, with no side effects.
+ *
+ * Deliberately the half of `compressWorkerRouteOpen` that cache.js can ask. compress.js imports
+ * this module, so the answer cannot live there; and this half is the one the retention gate
+ * needs on the FIRST capture, before any worker has been spawned. No Worker or no
+ * OffscreenCanvas closes the route for good, and a capability check answers that without
+ * allocating anything.
+ *
+ * A CSP that forbids workers is NOT visible here — it only shows up when a construction is
+ * attempted. `true` therefore means "worth trying", never "will work".
+ * @returns {boolean}
+ */
+export function compressWorkerRouteSupported() {
+  return typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined'
+}
+
+/**
+ * Purge every retained Blob sidecar from cache.image, leaving the data URLs in place.
+ *
+ * compress calls this the moment the worker route is closed for good. A CSP failure can surface
+ * on the FIRST capture — immediately after those Blobs were retained — and nothing else would
+ * ever reach them again, so they would sit in the browser's blob store for the page's lifetime.
+ * Waiting for the next byte-budget sweep is not good enough: that may be never.
+ *
+* The data URLs are untouched, so the memo keeps doing the one job it was built for.
+ * @returns {{entries: number, bytes: number}} how many entries lost their Blob, and how many
+ *   retained bytes that released — the number the hosted RSS arm is checked against
+ */
+export function dropRetainedImageBlobs() {
+  let entries = 0
+  let bytes = 0
   for (const e of cache.image.values()) {
-    if (bytes <= MAX_IMAGE_BLOB_BYTES) break
     if (!e.blobBytes) continue
-    bytes -= e.blobBytes
+    bytes += e.blobBytes
     e.blob = undefined
     e.blobBytes = 0
+    entries++
   }
+  return { entries, bytes }
 }
 
 /**

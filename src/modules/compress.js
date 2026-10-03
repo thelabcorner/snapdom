@@ -20,7 +20,12 @@
  * @module compress
  */
 
-import { cache } from '../core/cache.js'
+import {
+  cache,
+  WORKER_MIN_PAYLOAD_CHARS,
+  compressWorkerRouteSupported,
+  dropRetainedImageBlobs
+} from '../core/cache.js'
 import { getStyle } from '../utils/css.js'
 import { readTotalTransformMatrix } from '../utils/transforms.helpers.js'
 
@@ -226,11 +231,13 @@ function sourceMime(dataURL) {
   return m ? m[1] : ''
 }
 
-// Below this, the worker LOSES: postMessage structured-clones the whole base64 string in,
+// WORKER_MIN_PAYLOAD_CHARS lives in core/cache.js, and the reason is there: cache.js has to
+// know this number to decide whether retaining a Blob can pay, and compress.js imports the
+// cache, so the constant cannot live here without a cycle or a duplicate.
+// Below it, the worker LOSES: postMessage structured-clones the whole base64 string in,
 // FileReaderSync clones another one back, and the payload isn't big enough for the pixel
 // work to cover those two copies. Small images stay on the main thread, where their decode
 // is usually already warm in the browser's cache.
-const WORKER_MIN_CHARS = 64 * 1024
 
 // The sampled key is only a lookup hint: PNG metadata and fixed-size frames can share
 // both ends while their pixels differ. Keep the source for an exact equality check, and
@@ -372,6 +379,11 @@ function disableWorkers() {
   _pending.clear()
   if (Array.isArray(_workers)) for (const w of _workers) { try { w?.terminate() } catch { /* ok */ } }
   _workers = false
+  // The route is closed for good, so every Blob retained for it is dead weight from here on.
+  // This matters most when the route closed on the FIRST capture — a CSP that forbids blob
+  // workers fails at construction — because those Blobs were stored moments earlier and
+  // nothing would ever read them again.
+  dropRetainedImageBlobs()
 }
 
 /** One pool slot from the inline script. Null when the constructor throws (CSP). */
@@ -415,6 +427,48 @@ function getCompressWorker() {
   return _workers[i]
 }
 
+/**
+ * Whether the worker route could still run, WITHOUT spawning a worker to find out.
+ *
+ * Two halves. The platform half is a capability check that answers immediately, so a page with
+ * no Worker or no OffscreenCanvas retains nothing from its very first capture. The CSP half is
+ * only knowable by trying: `_workers` is lazily filled, so `null` means untried and `false`
+ * means a construction failed and the route is closed for good.
+ *
+ * The asset memo uses this to stop retaining Blobs it can never spend: with the route closed,
+ * compress decodes every payload on the main thread from the string and the Blob would be
+ * retained memory for nothing. The alternative — teaching the main-thread path to consume the
+ * Blob — means swapping `new Image()` + `decode()` for `createImageBitmap(blob)`, a different
+ * decode path whose pixels this branch cannot verify without a browser, so the gate is the fix.
+ * @returns {boolean}
+ */
+export function compressWorkerRouteOpen() {
+  return compressWorkerRouteSupported() && _workers !== false
+}
+
+/**
+ * A capture's compress route tally. Published on `options.__assetRoutes`, never on the result.
+ *
+ * `workerBlob` / `workerString` are counted AFTER a postMessage that actually landed, so they
+ * describe routes that RAN: a post that throws falls through to the main thread and is counted
+ * there instead. `memo` and `inflight` are the two short-circuits that returned before any
+ * decode, `header` the container-header "no gain" exit, and `main` the main-thread decode — which
+ * is where a payload lands when the worker route is closed or the payload is under
+ * WORKER_MIN_PAYLOAD_CHARS. A tally of Blob PRESENCE would credit the Blob route for images that
+ * never reached a worker at all.
+ *
+ * How a benchmark reads it, since it is not on CaptureResult: a caller-local plugin with
+ * `afterRender(context)` reads `context.__assetRoutes` and copies it somewhere page-side.
+ * `afterRender` runs after the clone is serialized (engines/svg.js), so the tallies are final by
+ * then. That path is exercised by lane6-scratch/r10/assets-bench.mjs and specified in
+ * lane6-scratch/r10/ASSET-BENCH-DESIGN.md §1 — a measurement surface is not a reason to widen
+ * the public result type.
+ * @returns {{memo:number, inflight:number, header:number, workerBlob:number, workerString:number, main:number}}
+ */
+export function assetRouteCounters() {
+  return { memo: 0, inflight: 0, header: 0, workerBlob: 0, workerString: 0, main: 0 }
+}
+
 // A job is one createImageBitmap + one drawImage + one convertToBlob: tens of milliseconds for
 // a typical photo, and still well under a second for a multi-megapixel source on a slow device.
 // Past 5s the worker is wedged, not busy — only `onerror` ever drained `_pending`, so a job that
@@ -424,7 +478,7 @@ const WORKER_JOB_TIMEOUT = 5000
 
 /** Runs the downsample in the worker. Resolves null (no gain / skip), a data URL, or
  *  undefined when the worker path failed and the caller must use the sync fallback. */
-function workerDownsample(dataURL, targetW, targetH, mime, blob) {
+function workerDownsample(dataURL, targetW, targetH, mime, blob, routes) {
   const w = getCompressWorker()
   if (!w) return Promise.resolve(undefined)
   return new Promise((resolve) => {
@@ -435,6 +489,10 @@ function workerDownsample(dataURL, targetW, targetH, mime, blob) {
     try {
       // With a Blob the string stays home: it is only there for the size comparison.
       w.postMessage({ id, dataURL: blob ? '' : dataURL, blob, srcLength: dataURL.length, targetW, targetH, resFactor: RES_FACTOR, quality: LOSSY_QUALITY, mime })
+      // Counted HERE, after the post landed, and not where the Blob was attached to the clone:
+      // the memo, the header probe, the size threshold and worker availability can each answer
+      // before this line, and a postMessage that throws answers below instead of running.
+      if (routes) routes[blob ? 'workerBlob' : 'workerString']++
     } catch {
       clearTimeout(timer)
       _pending.delete(id)
@@ -460,9 +518,12 @@ function workerDownsample(dataURL, targetW, targetH, mime, blob) {
  * @param {number} targetW - required box width in pixels, including output density and transforms
  * @param {number} targetH - visible box height in device pixels
  * @param {Blob} [blob] the same bytes as `dataURL`, when the inline pass still has them
+ * @param {{memo?:number, inflight?:number, header?:number, workerBlob?:number, workerString?:number, main?:number}} [routes]
+ *   tally from assetRouteCounters(); incremented on the branch actually taken, never on the
+ *   branches that returned early
  * @returns {Promise<string|null>}
  */
-export async function downsampleDataURL(dataURL, targetW, targetH, blob) {
+export async function downsampleDataURL(dataURL, targetW, targetH, blob, routes) {
   if (typeof dataURL !== 'string' || !dataURL.startsWith('data:image')) return null
   // SVG data URLs are vectors — rasterizing them here would *lose* fidelity, not save bytes.
   if (dataURL.startsWith('data:image/svg')) return null
@@ -475,9 +536,15 @@ export async function downsampleDataURL(dataURL, targetW, targetH, blob) {
     ':' + targetW + 'x' + targetH
   const targetCache = cache.compress
   const cached = targetCache.get(cacheKey)
-  if (cached?.source === dataURL) return cached.result
+  if (cached?.source === dataURL) {
+    if (routes) routes.memo++
+    return cached.result
+  }
   const pending = compressInFlight.get(cacheKey)
-  if (pending?.source === dataURL && pending.cache === targetCache) return pending.promise
+  if (pending?.source === dataURL && pending.cache === targetCache) {
+    if (routes) routes.inflight++
+    return pending.promise
+  }
 
   const promise = (async () => {
     // Keep JPEG/WebP encoding; use lossless PNG encoding for other raster types.
@@ -486,17 +553,21 @@ export async function downsampleDataURL(dataURL, targetW, targetH, blob) {
 
     // Header fast path: settle "is there anything to gain?" before any decode or thread hop.
     const header = naturalSizeFromDataURL(dataURL)
-    if (header && header.w > 0 && header.h > 0 && !gainFactor(header.w, header.h, targetW, targetH)) return null
+    if (header && header.w > 0 && header.h > 0 && !gainFactor(header.w, header.h, targetW, targetH)) {
+      if (routes) routes.header++
+      return null
+    }
 
     // Preferred path for big payloads: pixel work in the worker (decode + scale + encode off
-    // the main thread). Small ones skip it — see WORKER_MIN_CHARS.
-    if (dataURL.length >= WORKER_MIN_CHARS) {
-      const offloaded = await workerDownsample(dataURL, targetW, targetH, mime, blob)
+    // the main thread). Small ones skip it — see WORKER_MIN_PAYLOAD_CHARS.
+    if (dataURL.length >= WORKER_MIN_PAYLOAD_CHARS) {
+      const offloaded = await workerDownsample(dataURL, targetW, targetH, mime, blob, routes)
       if (offloaded !== undefined) return offloaded
     }
 
     // Main-thread path: small payloads, and the fallback when the worker is unavailable
     // (no Worker/OffscreenCanvas, CSP-blocked blob workers, worker error).
+    if (routes) routes.main++
     let img
     try { img = await loadImage(dataURL) } catch { return null }
     const nw = img.naturalWidth || img.width
@@ -548,17 +619,15 @@ export async function downsampleDataURL(dataURL, targetW, targetH, blob) {
  * @param {object} options - normalized capture context, including output sizing and compress
  * @param {Map<Node, Node>} [nodeMap] - Session clone-to-source map for live geometry
  * @param {object} [geometry] - Shared holder for lazy geometry across compression passes
- * @returns {Promise<{count:number, before:number, after:number, blobPath:number, stringPath:number}>}
- *   bytes before/after, and which source each candidate reached the downsample with: `blobPath`
- *   is the zero-copy worker route, `stringPath` the one that clones and re-decodes the payload
+ * @returns {Promise<{count:number, before:number, after:number}>} bytes before/after (for debug)
  */
-export async function compressClonedImages(clone, options, nodeMap = new Map(), geometry = {}) {
+export async function compressClonedImages(clone, options, nodeMap = new Map(), geometry = {}, routes) {
   if (!options.compress) return { count: 0, before: 0, after: 0 }
   // querySelectorAll never matches clone itself — a capture root that IS the <img> (#461)
   // was inlined but never downsampled, so compress:true silently did nothing for it.
   const imgs = Array.from(clone.querySelectorAll('img'))
   if (clone.tagName === 'IMG') imgs.unshift(clone)
-  let count = 0, before = 0, after = 0, blobPath = 0, stringPath = 0
+  let count = 0, before = 0, after = 0
 
   const process = async (img) => {
     const src = img.getAttribute('src') || ''
@@ -568,9 +637,7 @@ export async function compressClonedImages(clone, options, nodeMap = new Map(), 
     if (!cssW || !cssH) return
     const resolved = geometry.value ||= compressionGeometry(clone, options)
     const eff = resolved.density * resolved.stretch(nodeMap.get(img) || img)
-    const blob = img.__snapdomBlob
-    if (blob) blobPath++; else stringPath++
-    const out = await downsampleDataURL(src, cssW * eff, cssH * eff, blob)
+    const out = await downsampleDataURL(src, cssW * eff, cssH * eff, img.__snapdomBlob, routes)
     if (out) {
       count++
       before += src.length
@@ -585,7 +652,7 @@ export async function compressClonedImages(clone, options, nodeMap = new Map(), 
   for (let i = 0; i < imgs.length; i += BATCH) {
     await Promise.allSettled(imgs.slice(i, i + BATCH).map(process))
   }
-  return { count, before, after, blobPath, stringPath }
+  return { count, before, after }
 }
 
 /** `cover`, `contain` and percentage sizes derive their resolution from the element box.
@@ -621,7 +688,7 @@ function originalBox(el) {
  * @param {object} [geometry] - Shared holder for lazy geometry across compression passes
  * @returns {Promise<{count:number}>}
  */
-export async function compressClonedBackgrounds(clone, options, nodeMap = new Map(), geometry = {}) {
+export async function compressClonedBackgrounds(clone, options, nodeMap = new Map(), geometry = {}, routes) {
   if (!options.compress) return { count: 0 }
   const els = []
   // include the root clone itself, then descendants
@@ -658,7 +725,7 @@ export async function compressClonedBackgrounds(clone, options, nodeMap = new Ma
     for (const m of matches) {
       const dataURL = m[2]
       if (dataURL.startsWith('data:image/svg')) continue
-      const out = await downsampleDataURL(dataURL, tw, th)
+      const out = await downsampleDataURL(dataURL, tw, th, undefined, routes)
       if (out) { newBg = newBg.split(dataURL).join(out); count++ }
     }
     if (newBg !== bg) {
@@ -683,7 +750,7 @@ export async function compressClonedBackgrounds(clone, options, nodeMap = new Ma
  * @param {object} [geometry] - Shared holder for lazy geometry across compression passes
  * @returns {Promise<{count:number}>}
  */
-export async function compressClonedSvgImages(clone, options, nodeMap = new Map(), geometry = {}) {
+export async function compressClonedSvgImages(clone, options, nodeMap = new Map(), geometry = {}, routes) {
   if (!options.compress) return { count: 0 }
   const imgs = Array.from(clone.querySelectorAll('image'))
   if (clone.localName === 'image') imgs.unshift(clone)
@@ -713,7 +780,7 @@ export async function compressClonedSvgImages(clone, options, nodeMap = new Map(
     if (!w || !h) return
     const resolved = geometry.value ||= compressionGeometry(clone, options)
     const eff = resolved.density * resolved.stretch(original || el)
-    const out = await downsampleDataURL(href, w * eff, h * eff)
+    const out = await downsampleDataURL(href, w * eff, h * eff, undefined, routes)
     if (out) {
       el.setAttribute('href', out)
       rememberOriginal(el, 'attribute', 'href', href, out, options)
@@ -743,9 +810,14 @@ export async function compressClonedSvgImages(clone, options, nodeMap = new Map(
  * @returns {Promise<void>}
  */
 export async function compressCloneAssets(clone, options, nodeMap) {
+  // Published even when compress is off, so result.assets has the same shape on every capture
+  // and a benchmark reads zeros instead of guessing whether a missing field meant "none".
+  // A differential recapture (diff.js) overwrites these with the rebuilt subtree's own tally.
+  const routes = assetRouteCounters()
+  options.__assetRoutes = routes
   if (!options.compress) return
   const geometry = {}
-  await compressClonedImages(clone, options, nodeMap, geometry)
-  await compressClonedBackgrounds(clone, options, nodeMap, geometry)
-  await compressClonedSvgImages(clone, options, nodeMap, geometry)
+  await compressClonedImages(clone, options, nodeMap, geometry, routes)
+  await compressClonedBackgrounds(clone, options, nodeMap, geometry, routes)
+  await compressClonedSvgImages(clone, options, nodeMap, geometry, routes)
 }

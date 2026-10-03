@@ -84,6 +84,7 @@ export async function captureDOM(element, options) {
   delete options.__compressedAssets
   delete options.__compressedSnapshot
   delete options.__compressionDensity
+  delete options.__assetRoutes
   options.__resolveNodeHooks = collectResolveNodeHooks(options)
   // ONE context for the whole capture: hooks receive the normalized option bag itself, so
   // `ctx.scale` / `ctx.backgroundColor` / … are the very values the pipeline reads and the

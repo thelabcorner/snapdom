@@ -18,7 +18,10 @@
  * plugin reading the clone would see, so it is not done.
  * The cross-capture memo keeps the fetched Blob next to the data URL (rememberImageAsset), so a
  * repeat capture still hands compress's worker zero-copy bytes instead of a string it has to
- * clone and decode again.
+ * clone and decode again. That is a saving on REPEAT captures whose geometry changes the
+ * compress memo key — a repeat at the same scale and dpr is answered from cache.compress before
+ * any decode, and pays nothing either way. Retention is gated on the worker route being able to
+ * spend the Blob at all, and only a Blob that survived the cache's byte budget is attached.
  * Pinned by __tests__/modules.images.dataUrlPassthrough.test.js, which counts the writes.
  * @module images
  */
@@ -26,6 +29,7 @@
 import { snapFetch } from './snapFetch.js'
 import { sessionWarn } from '../utils/debug.js'
 import { cache, rememberImageAsset } from '../core/cache.js'
+import { compressWorkerRouteOpen } from './compress.js'
 import { pickSrcsetCandidate } from './pictureResolver.js'
 
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
@@ -108,8 +112,7 @@ export async function inlineImages(clone, options = {}) {
     const cached = cache.image?.get(src)
     if (cached) {
       img.src = cached.data
-      // The memo carries the Blob the fetch produced, so a repeat capture keeps compress's
-      // zero-copy worker path instead of one that clones and re-decodes the payload.
+      // Whatever survived retention, and nothing else: the budget may have dropped it.
       if (cached.blob) img.__snapdomBlob = cached.blob
       if (!img.width) img.width = img.naturalWidth || 100
       if (!img.height) img.height = img.naturalHeight || 100
@@ -119,11 +122,15 @@ export async function inlineImages(clone, options = {}) {
     const r = await snapFetch(src, { as: 'dataURL', useProxy: options.useProxy })
     if (r.ok && typeof r.data === 'string' && r.data.startsWith('data:')) {
       // Success path: inline DataURL and ensure dimensions for layout fidelity
-      rememberImageAsset(src, r.data, r.blob)
+      // compress off, or the worker route closed for the page: no decode will ever take the
+      // Blob, so retaining it would be memory for nothing.
+      const kept = rememberImageAsset(src, r.data, r.blob, !!options.compress && compressWorkerRouteOpen())
       img.src = r.data
       // Same bytes as the data URL, zero-copy into compress's worker (a Blob crosses
-      // postMessage by reference; the string would be cloned and base64-decoded again).
-      if (r.blob) img.__snapdomBlob = r.blob
+      // postMessage by reference; the string would be cloned and base64-decoded again). Only
+      // the Blob the cache reports as retained: r.blob is the fetch's own reference and would
+      // still be attached even after the budget swept it.
+      if (kept) img.__snapdomBlob = kept
       if (!img.width) img.width = img.naturalWidth || 100
       if (!img.height) img.height = img.naturalHeight || 100
       return
