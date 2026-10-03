@@ -1,0 +1,259 @@
+name: snapDOM RS-A10 icon raster ceiling
+
+# Diagnostic lane for the icon-raster memo audit. It is NOT a performance lane.
+#
+# The audit (docs/perf/RS_A10_ICON_RASTER_MEMO.md) concludes NO-GO on the memo: the only key
+# available is blind to live ambient CSS on the measuring span, so it cannot be made exact, and
+# the sound alternative saves only the PNG encode. No code in src/ changes on this branch.
+#
+# So this workflow does not measure a candidate against a baseline. It measures the CEILING the
+# memo could ever have reached, on a fixture it proves is self-contained:
+#
+#   icon-repeat-120     repeated glyphs, high dedup ceiling
+#   icon-repeat-12x10   partial repeats, realistic
+#   icon-distinct-120   all-distinct  -> ZERO ceiling control
+#   no-icon-120         no icons      -> no-op control
+#
+# Two facts are enforced fail-closed by lane6-scratch/r10/validate-ceiling.mjs: the per-node
+# forced layout + PNG encode are observed from outside the library, and with the network cut the
+# output and the counters are byte-identical to the warm online run.
+#
+# A green run here is evidence that the CEILING is real. It is never evidence that the memo was
+# built, and this workflow deliberately cannot emit a claim.
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r10-*'
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'esbuild.config.mjs'
+      - 'vitest.icon-key.config.js'
+      - 'lane6-scratch/r9/**'
+      - 'lane6-scratch/r10/**'
+      - '__tests__/module.iconRaster.key.test.js'
+      - '.github/workflows/r10-icon-ceiling.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'esbuild.config.mjs'
+      - 'vitest.icon-key.config.js'
+      - 'lane6-scratch/r9/**'
+      - 'lane6-scratch/r10/**'
+      - '__tests__/module.iconRaster.key.test.js'
+      - '.github/workflows/r10-icon-ceiling.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Per-PR/per-ref group with supersede. A static group would make every branch contend for one
+# queue in which GitHub cancels what exceeds the pending limit, and a cancelled run leaves no
+# artifact and no summary line — indistinguishable from a blocked ambient gate.
+concurrency:
+  group: r10-icon-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  NODE_VERSION: '22.21.1'
+  PLAYWRIGHT_VERSION: '1.55.1'
+  REPLICATES: '[0,1,2,3]'
+
+jobs:
+  browserfree:
+    name: Browser-free key + invalidation proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      # The audit's load-bearing proof needs no engine: the key module is pure, and the
+      # adversarial tests assert that the key ALIASES live ambient CSS. That is the NO-GO.
+      - name: Run the browser-free proof
+        run: npm run test:icon-key
+
+      - name: Confirm src/ carries no audit changes
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$CANDIDATE_SHA"^ "$CANDIDATE_SHA" -- src/ || true)"
+          if [ -n "$changed" ]; then
+            echo "::error::audit branch must not modify src/, found: $changed"
+            exit 1
+          fi
+          echo "src/ untouched by this branch."
+
+  prepare:
+    name: Prepare immutable ceiling bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      bundle_sha256: ${{ steps.prepare.outputs.bundle_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact measured head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile and freeze the measured bundle
+        id: prepare
+        run: |
+          set -euo pipefail
+          npm run compile
+          mkdir -p lane6-scratch/r10/bundle
+          cp dist/snapdom.mjs lane6-scratch/r10/bundle/candidate.mjs
+          sha="$(sha256sum lane6-scratch/r10/bundle/candidate.mjs | cut -d' ' -f1)"
+          echo "bundle_sha256=$sha" >> "$GITHUB_OUTPUT"
+          # The loopback face must exist, or "self-contained" would be vacuous.
+          test -s __tests__/fixtures/fonts/inter-400.woff2
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-icon-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10/bundle/
+          if-no-files-found: error
+          retention-days: 30
+
+  measure:
+    name: Ceiling · ${{ matrix.browser }} r${{ matrix.replicate }}
+    needs: [browserfree, prepare]
+    if: needs.browserfree.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        browser: [chromium, firefox, webkit]
+        replicate: ${{ fromJSON(env.REPLICATES) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-icon-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10
+
+      # BROWSER travels via env and is expanded with a default. The sibling workflow's
+      # `npx playwright install --with-deps ${{ inputs.browser }}` expands to an EMPTY argument on
+      # pull_request (inputs.* is only populated by workflow_dispatch) and installs every engine.
+      - name: Install pinned browser
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npx playwright install --with-deps "${BROWSER:-chromium}"
+
+      - name: Measure the ceiling with the network cut
+        id: bench
+        env:
+          BROWSER_NAME: ${{ matrix.browser }}
+          REPLICATE: ${{ matrix.replicate }}
+          CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
+        run: |
+          set +e
+          node lane6-scratch/r9/bench-r9-controlled.mjs \
+            --suite=icon \
+            --mode=option-pair \
+            --baseline=lane6-scratch/r10/bundle/candidate.mjs \
+            --candidate=lane6-scratch/r10/bundle/candidate.mjs \
+            --base={} \
+            --opt={} \
+            --browser="${BROWSER_NAME}" \
+            --n=8 \
+            --batch=4 \
+            --warmup=3 \
+            --bootstrap=4000 \
+            --seed=1511506142 \
+            --expect=explore \
+            --playwright-version="${PLAYWRIGHT_VERSION}" \
+            --label="RS-A10 icon ceiling ${BROWSER_NAME} r${REPLICATE}" \
+            --out="icon-ceiling-${BROWSER_NAME}-r${REPLICATE}.json"
+          code=$?
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          # `explore` never yields a claim, so a non-zero timing verdict must not fail the job;
+          # the ceiling gates below are what decide this lane.
+          exit 0
+
+      - name: Enforce the ceiling gates
+        env:
+          BROWSER_NAME: ${{ matrix.browser }}
+          REPLICATE: ${{ matrix.replicate }}
+        run: node lane6-scratch/r10/validate-ceiling.mjs --browser="${BROWSER_NAME}" --replicate="${REPLICATE}"
+
+      - name: Upload ceiling evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/results/icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}.json
+          if-no-files-found: error
+          retention-days: 60
+
+  closeout:
+    name: Icon ceiling closeout
+    needs: [browserfree, prepare, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r10-icon-ceiling-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10/inputs
+
+      - name: Fail-closed summary
+        run: |
+          set -euo pipefail
+          node lane6-scratch/r10/summarize.mjs --input-dir=lane6-scratch/r10/inputs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-icon-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10/summary.json
+          if-no-files-found: warn
+          retention-days: 60

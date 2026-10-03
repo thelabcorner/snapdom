@@ -40,6 +40,7 @@
     "test:webkit": "BROWSER=webkit npx vitest run --browser.headless --reporter=verbose",
     "test:full": "npm run lint && npm run test:types && npm run test:release-checks && npm run test:bundle && BROWSER=all npx vitest run --browser.headless --reporter=dot",
     "test:release-checks": "node --test scripts/release-checks.node.mjs",
+    "test:icon-key": "npx vitest run --config vitest.icon-key.config.js",
     "report:cross": "node scripts/cross-report.mjs",
     "test:coverage": "npx vitest run --browser.headless --coverage",
     "test:benchmark": "npx vitest bench --browser.headless --watch=false",

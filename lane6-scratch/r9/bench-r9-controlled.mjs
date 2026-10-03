@@ -57,7 +57,7 @@ const EXPECT = arg('expect', 'improvement')
 const EXPECTED_PLAYWRIGHT = arg('playwright-version', '1.55.1')
 
 if (!['bundle-diff', 'option-pair'].includes(MODE)) throw new Error(`unsupported --mode=${MODE}`)
-if (!['standing', 'focus', 'pseudo'].includes(SUITE)) throw new Error(`unsupported --suite=${SUITE}`)
+if (!['standing', 'focus', 'pseudo', 'icon'].includes(SUITE)) throw new Error(`unsupported --suite=${SUITE}`)
 if (!['improvement', 'equivalence', 'explore'].includes(EXPECT)) throw new Error(`unsupported --expect=${EXPECT}`)
 
 const basePath = path.resolve(ROOT, BASE_REL)
@@ -67,6 +67,16 @@ if (MODE === 'bundle-diff' && !fs.existsSync(basePath)) throw new Error(`baselin
 
 const candidateBytes = fs.readFileSync(candPath)
 const baselineBytes = MODE === 'option-pair' ? candidateBytes : fs.readFileSync(basePath)
+
+// The icon fixture's face, served from loopback so `icon` is measurable with the network cut.
+// Read unconditionally but only served for the icon suite; a missing file is a hard error there
+// (a silently absent face would make the "self-contained" claim vacuous).
+const ICON_FONT_REL = '__tests__/fixtures/fonts/inter-400.woff2'
+const iconFontPath = path.resolve(ROOT, ICON_FONT_REL)
+const iconFontBytes = fs.existsSync(iconFontPath) ? fs.readFileSync(iconFontPath) : null
+if (SUITE === 'icon' && !iconFontBytes) {
+  throw new Error(`icon suite needs the loopback face ${ICON_FONT_REL} so the fixture is self-contained`)
+}
 const candidateSha = sha256File(candPath)
 const baselineSha = MODE === 'option-pair' ? candidateSha : sha256File(basePath)
 
@@ -113,7 +123,24 @@ const PSEUDO = [
   { name: 'no-pseudo-400', nodes: 400, cardinality: 1, mode: 'none', noop: true },
 ]
 
-const ALL_FIXTURES = SUITE === 'standing' ? STANDING : SUITE === 'focus' ? FOCUS : PSEUDO
+// RS-A10. This suite is DIAGNOSTIC, not a claim lane: no memo ships (see
+// docs/perf/RS_A10_ICON_RASTER_MEMO.md — the memo key aliases live ambient CSS and cannot be made
+// exact), so there is no candidate/baseline difference to measure. What the lane measures
+// instead is the CEILING the memo could ever have reached, and whether the fixture is
+// self-contained enough for that ceiling to be believable:
+//   icon-repeat-*      repeated glyphs -> the dedup ceiling is high here
+//   icon-distinct-120  all-distinct     -> the zero-ceiling CONTROL; a memo must do nothing
+//   no-icon-120        no icons at all   -> the no-op control; the probe must add nothing
+// `distinct` is the number of distinct ligature strings, i.e. the number of keys a correct memo
+// would be forced to draw. avoidable = nodes - distinct.
+const ICON = [
+  { name: 'icon-repeat-120', nodes: 120, distinct: 1, mode: 'icons', noop: false },
+  { name: 'icon-repeat-12x10', nodes: 120, distinct: 12, mode: 'icons', noop: false },
+  { name: 'icon-distinct-120', nodes: 120, distinct: 120, mode: 'icons', noop: false },
+  { name: 'no-icon-120', nodes: 120, distinct: 0, mode: 'plain', noop: true },
+]
+
+const ALL_FIXTURES = SUITE === 'standing' ? STANDING : SUITE === 'focus' ? FOCUS : SUITE === 'icon' ? ICON : PSEUDO
 const FIXTURES = ALL_FIXTURES.filter((fx) => !ONLY.size || ONLY.has(fx.name))
 if (!FIXTURES.length) throw new Error('fixture selection is empty')
 
@@ -211,11 +238,85 @@ window.__fx = (() => {
 window.__fxReady = true
 `
 
-const fixtureSource = SUITE === 'standing' ? PAGE_FIXTURE_SRC : SUITE === 'focus' ? FOCUS_SRC : PSEUDO_SRC
+// Icon-font fixture. The family is declared as "Material Icons" (legacy, NON-variable) on
+// purpose: `isMaterialFamily` accepts it, so `ligatureIconToImage` runs the real path, and
+// `resolveLigatureTarget` returns the as-is target — which means NO static face is ever
+// requested and nothing here touches fonts.gstatic.com. The face itself is served from
+// 127.0.0.1, so the whole fixture is self-contained and can be measured offline.
+// The ligature text need not resolve to real glyphs: what a memo keys on is the string, so
+// 'glyph_7' is as valid a distinct key as 'home' is a repeated one.
+const ICON_SRC = String.raw`
+window.__fx = (() => {
+  const NAMES = ['home','star','settings','favorite','search','menu','close','arrow_back','delete','edit','share','info'];
+  function text(i, distinct) {
+    if (distinct <= 1) return NAMES[0];
+    return 'glyph_' + i;
+  }
+  function build(spec) {
+    const { nodes, distinct, mode } = spec;
+    const st = document.createElement('style');
+    st.textContent = '@font-face{font-family:"Material Icons";src:url("/font/material.woff2") format("woff2");font-display:block}'
+      + '.r10i-root{width:900px;font:13px Arial,sans-serif;display:flex;flex-wrap:wrap;gap:4px}'
+      + '.r10i-icon{font-family:"Material Icons";font-size:24px;line-height:24px;color:#1f2937;display:inline-block;width:24px;overflow:hidden}'
+      + '.r10i-plain{font:13px Arial,sans-serif;display:inline-block;width:24px}';
+    document.head.appendChild(st);
+    const root = document.createElement('div');
+    root.className = 'r10i-root';
+    for (let i = 0; i < nodes; i++) {
+      const e = document.createElement('span');
+      if (mode === 'icons') { e.className = 'material-icons r10i-icon'; e.textContent = text(i, distinct); }
+      else { e.className = 'r10i-plain'; e.textContent = 'x'; }
+      root.appendChild(e);
+    }
+    document.body.appendChild(root);
+    return root;
+  }
+  return {
+    build,
+    cleanup(el) {
+      try { el.remove(); } catch {}
+      document.querySelectorAll('style').forEach((s) => s.remove());
+    },
+  };
+})();
+window.__fxReady = true;
+`
+
+const fixtureSource = SUITE === 'standing' ? PAGE_FIXTURE_SRC
+  : SUITE === 'focus' ? FOCUS_SRC
+    : SUITE === 'icon' ? ICON_SRC
+      : PSEUDO_SRC
 const fixtureSpecs = Object.fromEntries(FIXTURES.map((fx) => [fx.name, fx]))
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script>${fixtureSource.replaceAll('</script>', '<\\/script>')}</script>
+<script>
+// RS-A10 probe. Counts the work the icon path actually performs, from OUTSIDE the library:
+// no memo ships, so there is nothing in src/ to instrument. getBoundingClientRect is counted
+// only for the measuring span's signature (a bare SPAN, position:absolute, visibility:hidden)
+// so unrelated layout in the capture is not attributed to icon rasterization. Installed before
+// the bundle is imported, so nothing is missed.
+(function () {
+  var P = { iconRects: 0, pngEncodes: 0, fontLoads: 0, fontReadies: 0, iconNodes: 0 };
+  window.__probe = P;
+  window.__probeReset = function () { P.iconRects = 0; P.pngEncodes = 0; P.fontLoads = 0; P.fontReadies = 0; P.iconNodes = 0; };
+  window.__probeSnapshot = function () { var o = {}; for (var k in P) o[k] = P[k]; return o; };
+  window.__probeDigest = function (s) {
+    var h = 2166136261 >>> 0;
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h.toString(16) + ':' + s.length;
+  };
+  var rect = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function () {
+    if (this.tagName === 'SPAN' && this.style && this.style.position === 'absolute' && this.style.visibility === 'hidden') P.iconRects++;
+    return rect.apply(this, arguments);
+  };
+  var enc = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function () { P.pngEncodes++; return enc.apply(this, arguments); };
+  var load = FontFaceSet.prototype.load;
+  FontFaceSet.prototype.load = function () { P.fontLoads++; return load.apply(this, arguments); };
+})();
+</script>
 <script type="module">
 const specs = ${JSON.stringify(fixtureSpecs)}
 window.__bench = {
@@ -226,10 +327,12 @@ window.__bench = {
   async one(slot, fixture) {
     const spec = specs[fixture]
     const el = window.__fx.build(${SUITE === 'standing' ? 'fixture' : 'spec'})
+    window.__probeReset()
+    const spec = specs[fixture]
     try {
       const t0 = performance.now()
       const raw = await this.mods[slot].snapdom.toRaw(el, this.opts[slot])
-      return { ms: performance.now() - t0, raw }
+      return { ms: performance.now() - t0, raw, digest: window.__probeDigest(raw), counters: window.__probeSnapshot() }
     } finally {
       window.__fx.cleanup(el)
     }
@@ -243,7 +346,21 @@ window.__bench = {
   async oracle(fixture) {
     const a = await this.one('slot1', fixture)
     const b = await this.one('slot2', fixture)
-    return { parity: a.raw === b.raw, aBytes: a.raw.length, bBytes: b.raw.length }
+    return {
+      parity: a.raw === b.raw,
+      aBytes: a.raw.length,
+      bBytes: b.raw.length,
+      digest: a.digest,
+      counters: { slot1: a.counters, slot2: b.counters },
+      countersParity: JSON.stringify(a.counters) === JSON.stringify(b.counters),
+    }
+  },
+  // Run once more with the network already cut. Byte-for-byte the same output AND the same
+  // counters is the self-containment oracle: it shows the icon path depends only on state the
+  // page already holds, so a timing difference cannot be attributed to the network.
+  async offlineCapture(fixture) {
+    const r = await this.one('slot1', fixture)
+    return { bytes: r.raw.length, digest: r.digest, counters: r.counters }
   },
   async sample(fixture, index, batch) {
     let slot1 = 0
@@ -280,6 +397,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname.startsWith('/candidate.mjs')) {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' })
     res.end(candidateBytes)
+    return
+  }
+  if (url.pathname === '/font/material.woff2') {
+    if (!iconFontBytes) { res.writeHead(404); res.end('nf'); return }
+    res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'no-store' })
+    res.end(iconFontBytes)
     return
   }
   res.writeHead(404)
@@ -357,6 +480,26 @@ async function runFixture(fx) {
         })
       }
       result[name].oracle = await page.evaluate((fixture) => window.__bench.oracle(fixture), fx.name)
+
+      // Warm-offline self-containment oracle. Only for the icon suite: cutting the network on
+      // the other lanes would perturb evidence that already has claims resting on it.
+      if (SUITE === 'icon') {
+        const online = result[name].oracle
+        await page.context().setOffline(true)
+        try {
+          const offline = await page.evaluate((fixture) => window.__bench.offlineCapture(fixture), fx.name)
+          result[name].selfContainment = {
+            onlineDigest: online.digest,
+            offlineDigest: offline.digest,
+            bytesStable: offline.digest === online.digest,
+            onlineCounters: online.counters.slot1,
+            offlineCounters: offline.counters,
+            countersStable: JSON.stringify(offline.counters) === JSON.stringify(online.counters.slot1),
+          }
+        } finally {
+          await page.context().setOffline(false)
+        }
+      }
     }
 
     for (let i = 0; i < N; i++) {
@@ -422,6 +565,17 @@ for (let i = 0; i < FIXTURES.length; i++) {
   )
 
   const parity = ef.oracle.parity && er.oracle.parity
+  // Work actually performed, measured from outside the library. A correct memo could skip
+  // exactly (draws - distinctKeys) of each, and nothing more: the first draw of every key is
+  // unavoidable. `distinct` is the fixture's own ground truth, so this is a CEILING, not a hope.
+  const nodes = meta.nodes || 0
+  const distinctKeys = meta.distinct || 0
+  const ceilingAvoidable = Math.max(0, nodes - distinctKeys)
+  const counters = ef.oracle.counters?.slot1 ?? null
+  const selfContainment = ef.selfContainment ?? null
+  const selfContainedPass = !selfContainment
+    ? null
+    : selfContainment.bytesStable && selfContainment.countersStable
   const baseNullEquivalent = ciWithin(baseNull.ci95, CONTROL_BAND)
   const optNullEquivalent = ciWithin(optNull.ci95, CONTROL_BAND)
   const controlsPass = baseNullEquivalent && optNullEquivalent
@@ -434,6 +588,18 @@ for (let i = 0; i < FIXTURES.length; i++) {
   fixtures[name] = {
     meta,
     parity,
+    counters,
+    countersParity: !!ef.oracle.countersParity,
+    ceiling: {
+      iconNodes: nodes,
+      distinctKeys,
+      avoidableLayouts: ceilingAvoidable,
+      avoidablePngEncodes: ceilingAvoidable,
+      avoidableFontAwaits: ceilingAvoidable,
+      note: 'a memo may skip at most draws-distinctKeys of each; it cannot skip the first draw of any key',
+    },
+    selfContainment,
+    selfContainedPass,
     candidate,
     baseNull,
     optNull,
