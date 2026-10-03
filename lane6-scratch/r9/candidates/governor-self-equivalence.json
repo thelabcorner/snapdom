@@ -1,0 +1,20 @@
+{
+  "schema": "snapdom-r9-candidate-v2",
+  "id": "governor-self-equivalence",
+  "description": "End-to-end governor certification: identical bundle/options in both arms must satisfy the preregistered equivalence contract without manufacturing an improvement. Firefox/WebKit remain mandatory guard-only phases.",
+  "mode": "option-pair",
+  "suite": "focus",
+  "expect": "EQUIVALENCE",
+  "baselineRef": null,
+  "base": {},
+  "opt": {},
+  "primaryFixtures": [
+    "focus-400"
+  ],
+  "guardFixtures": [
+    "no-focus-400"
+  ],
+  "knownNoOpFixtures": [
+    "no-focus-400"
+  ]
+}
