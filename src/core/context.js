@@ -220,6 +220,10 @@ export function createContext(options = {}) {
     // own-property overlay whose prototype is the immutable shared snapshot; false forces the
     // historical full object spread for byte/timing counterfactuals.
     __styleShareSnapshotOverlay: options.__styleShareSnapshotOverlay,
+    // Telemetry collector for the identity share, not an optimization knob. When the caller
+    // passes an object, the share records identity/refusal/element-hit/element-miss/
+    // pseudo-hit/pseudo-miss counts into it. Absent (production) costs one property read.
+    __styleShareCounters: options.__styleShareCounters,
     // Internal R7-GR1 counterfactual. Reuse exact gutter inputs already present in this node's
     // style snapshot; false restores the historical duplicate live CSSOM reads.
     __gutterSnapshotReuse: options.__gutterSnapshotReuse,

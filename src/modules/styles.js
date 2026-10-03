@@ -2401,10 +2401,23 @@ function shareSelectorFingerprint(el, selectors) {
 /** Interned identity id: parent's id + own tag + style-observable attributes + optional
  * selector vector. R4 may omit a data-* attribute from THIS CACHE KEY only when styleScan's
  * complete dependency index proves no selector or attr() declaration can observe it. The
- * cloned/output DOM is untouched. */
-function identityFor(el, st, selectors = null) {
+ * cloned/output DOM is untouched.
+ *
+ * Ids are minted in ONE namespace per capture: the document tree. `inDocument` is the caller's
+ * root check, and any other tree gets -1, which every consumer already reads as unshareable.
+ * Without it a shadow-root node keys off the same 'R' marker as the capture root and as every
+ * other root's top-level children, so two roots' identical subtrees intern to one id and
+ * pseudoSnapshotFor hands the second root a pseudo snapshot computed under the first root's
+ * sheets, which no document scan has read. */
+function identityFor(el, st, selectors = null, inDocument = true) {
   let id = st.ids.get(el)
   if (id !== undefined) return id
+  const counters = st.counters
+  if (!inDocument) {
+    if (counters) counters.outOfTree++
+    st.ids.set(el, -1)
+    return -1
+  }
   const parent = el.parentElement
   // The walk is top-down, so the ONE node whose parent was never walked is the capture root
   // itself (its parent lives outside the capture, a context every node here shares — a
@@ -2476,6 +2489,7 @@ function identityFor(el, st, selectors = null) {
   if (id === undefined) {
     id = st.intern.size
     st.intern.set(key, id)
+    if (counters) counters.identities++
   }
   st.ids.set(el, id)
   return id
@@ -2589,10 +2603,13 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
   const st = options && options.__styleShare ? session && session.__styleShare : null
   const id = st ? st.ids.get(source) : undefined
   // Same shadow-host and slotted escape as the element share (`:host(:nth-child(2))::before`).
+  // The -1 branch also covers a node outside the document tree: identityFor mints no id there,
+  // so two roots' identical subtrees cannot land on one pseudo key.
   if (id === undefined || id === -1 || source.shadowRoot || source.assignedSlot) return snapshotComputedStyle(style, pseudoUniverseFor(source))
   const key = id + pseudo
   const snaps = st.pseudo || (st.pseudo = new Map())
   const rec = snaps.get(key)
+  if (st.counters) st.counters[rec ? 'pseudoHits' : 'pseudoMisses']++
   if (rec) {
     const overlayEnabled = options?.__styleSharePseudoOverlay === true
     const useKeyCache = options?.__styleSharePseudoKeyCache === true
@@ -2688,6 +2705,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
   let dyn = null
   let isOverlay = false
   const shared = shareInfo && shareInfo.st.snaps.get(shareInfo.id)
+  if (shareInfo?.st.counters) shareInfo.st.counters[shared ? 'elementHits' : 'elementMisses']++
   let allowSharedUniverse = false
   if (shareInfo) {
     const shareState = shareInfo.st
@@ -3028,14 +3046,19 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   let shareInfo = null
   if (ctx.options && ctx.options.__styleShare && session.styleMap) {
     const selectors = ctx.options.__styleShareSelectors || null
+    const doc = source.ownerDocument || document
     const st = shareStateOf(
       session,
       selectors,
-      source.ownerDocument || document,
+      doc,
       ctx.options.__styleIdentityDataAttrs !== false,
     )
-    const id = identityFor(source, st, selectors)
-    const doc = source.ownerDocument || document
+    if (ctx.options.__styleShareCounters) st.counters = ctx.options.__styleShareCounters
+    // One root read feeds both identityFor's namespace admission and the element-share gate:
+    // the id is minted first on purpose (the eligibility decision itself must not move ahead
+    // of it), but this read is pure, so it is taken once.
+    const inDocument = !source.getRootNode || source.getRootNode() === doc
+    const id = identityFor(source, st, selectors, inDocument)
     const active = doc.activeElement
     // A shadow host and a slotted node are styled by a root sheet the scan never read:
     // `:host(:not(:first-child))` split three identical #488 groups and the twins painted
@@ -3043,7 +3066,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
     const eligible = id !== -1 &&
       !SHARE_SKIP_TAGS.has(source.tagName) &&
       !(active && active !== doc.body && active !== doc.documentElement && active === source) &&
-      (!source.getRootNode || source.getRootNode() === doc) &&
+      inDocument &&
       !source.shadowRoot && !source.assignedSlot
     if (eligible) shareInfo = { st, id }
   }
