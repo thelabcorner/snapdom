@@ -53,14 +53,14 @@
       "role": "inference",
       "promotable": true,
       "mandatory": true,
-      "replicates": null
+      "replicates": 8
     },
     "engineGuard": {
       "browsers": ["firefox", "webkit"],
       "role": "guard",
       "promotable": false,
       "mandatory": true,
-      "replicates": null
+      "replicates": 4
     }
   },
 
@@ -69,21 +69,21 @@
       "n": 24,
       "warmup": 5,
       "bootstrap": 12000,
-      "batch": null,
+      "batch": 9,
       "seed": 39457
     },
     "confirm": {
-      "n": 30,
+      "n": 24,
       "warmup": 6,
-      "bootstrap": 20000,
-      "batch": null,
+      "bootstrap": 12000,
+      "batch": 9,
       "seed": 78731
     },
     "engineGuard": {
-      "n": 18,
-      "warmup": 4,
-      "bootstrap": 8000,
-      "batch": null,
+      "n": 24,
+      "warmup": 6,
+      "bootstrap": 12000,
+      "batch": 9,
       "seed": 118087
     }
   },
@@ -144,31 +144,20 @@
   },
 
   "promotion": {
-    "frozen": false,
-    "frozenBy": null,
-    "frozenAt": null,
+    "frozen": true,
+    "frozenBy": "completed hosted self-null calibration 37097245291 plus explicit 1% practical MPE policy",
+    "frozenAt": "2026-10-03T05:36:14.755Z",
     "owner": {
       "lane": "lane6-scratch/r9-calibration",
       "workflow": ".github/workflows/r9-calibration.yml",
-      "runId": "37090104263",
-      "artifact": "r9-calibration-summary-37090104263"
+      "runId": "37097245291",
+      "artifact": "r9-calibration-summary-37097245291"
     },
-    "unfrozenSlots": [
-      "phases.confirm.replicates",
-      "phases.engineGuard.replicates",
-      "acquisition.scout.batch",
-      "acquisition.confirm.batch",
-      "acquisition.engineGuard.batch",
-      "promotion.epsilon",
-      "promotion.equivalenceBand",
-      "promotion.nonRegressionBand",
-      "promotion.controlBand",
-      "promotion.maxPairLogSd"
-    ],
-    "epsilon": null,
-    "equivalenceBand": null,
-    "nonRegressionBand": null,
-    "controlBand": null,
-    "maxPairLogSd": null
+    "unfrozenSlots": [],
+    "epsilon": 0.01,
+    "equivalenceBand": 0.05,
+    "nonRegressionBand": 0.05,
+    "controlBand": 0.05,
+    "maxPairLogSd": 0.35
   }
 }
