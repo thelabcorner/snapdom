@@ -56,6 +56,13 @@ if (!fs.existsSync(PREPARED)) throw new Error('prepared.json missing')
 
 const prepared = JSON.parse(fs.readFileSync(PREPARED, 'utf8'))
 if (prepared.schema !== 'snapdom-r10-asblob-prepared-v1') throw new Error('prepared schema mismatch')
+if (
+  prepared.acquisition?.repeats !== REPEATS ||
+  prepared.acquisition?.warmup !== WARMUP ||
+  prepared.acquisition?.runnerReplicates !== 6
+) {
+  throw new Error('acquisition policy drifted after prepare')
+}
 
 const baselinePath = path.resolve(ROOT, prepared.baseline.path)
 const candidatePath = path.resolve(ROOT, prepared.candidate.path)

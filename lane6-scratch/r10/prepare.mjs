@@ -71,6 +71,14 @@ const doc = {
     maxImageBlobBytes: MAX_IMAGE_BLOB_BYTES,
     retentionCapStatus: 'HYPOTHESIS',
   },
+  acquisition: {
+    runnerReplicates: 6,
+    repeats: 8,
+    warmup: 2,
+    timingPrimary: 'capture',
+    timingSecondary: 'capture+toCanvas',
+    memoryPrimary: 'pre-capture to post-warmup process-tree VmRSS growth',
+  },
   measurementFiles: fileIdentity,
   github: {
     repository: process.env.GITHUB_REPOSITORY || null,

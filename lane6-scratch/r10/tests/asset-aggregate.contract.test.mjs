@@ -20,10 +20,20 @@ function fixtureDir(count = 6, mutate = null) {
     candidateGitSha: 'a'.repeat(40),
     baselineGitSha: 'b'.repeat(40),
     playwrightVersion: '1.55.1',
+    nodeVersion: 'v22.21.1',
     candidate: { sha256: 'C'.repeat(64) },
     baseline: { sha256: 'D'.repeat(64) },
     mechanism: { workerMinPayloadChars: 65536, maxImageBlobBytes: 67108864, retentionCapStatus: 'HYPOTHESIS' },
+    acquisition: {
+      runnerReplicates: 6,
+      repeats: 8,
+      warmup: 2,
+      timingPrimary: 'capture',
+      timingSecondary: 'capture+toCanvas',
+      memoryPrimary: 'pre-capture to post-warmup process-tree VmRSS growth',
+    },
     measurementFiles: { 'lane6-scratch/r10/assets-bench.mjs': 'E'.repeat(64) },
+    github: { repository: 'thelabcorner/snapdom', runId: '12345' },
   }
   const preparedPath = path.join(dir, 'prepared.json')
   fs.writeFileSync(preparedPath, JSON.stringify(prepared))
@@ -59,12 +69,14 @@ function fixtureDir(count = 6, mutate = null) {
         baselineBundleSha256: prepared.baseline.sha256,
         preparedSha256,
         measurementFiles: prepared.measurementFiles,
+        nodeVersion: prepared.nodeVersion,
         playwrightVersion: prepared.playwrightVersion,
-        github: { runAttempt: '1' },
+        browser: { name: 'chromium', version: '140.0.0' },
+        github: { repository: prepared.github.repository, runId: prepared.github.runId, runAttempt: '1' },
+        acquisition: { repeats: prepared.acquisition.repeats, warmup: prepared.acquisition.warmup },
         runner: { imageVersion: 'test' },
-        browser: { version: '140.0.0' },
       },
-      fixtures: { large: { bytes: 1, sha256: 'E'.repeat(64) } },
+      fixtures: { large: { width: 1200, height: 800, bytes: 123, sha256: 'E'.repeat(64) } },
       conditions: {
         'large-same': condition('null-memo', 0.001 * (r - 2.5), 5 + r),
         'large-scale': condition('claim', -0.08 + 0.002 * r, 100 + r),
@@ -136,4 +148,15 @@ test('aggregate CLI refuses a runner with missing or non-finite primary evidence
   assert.notEqual(p.status, 0)
   const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
   assert.ok(summary.invalidEvidence.some((x) => x.includes('r2/large-scale')))
+})
+
+test('aggregate CLI refuses fixture identity drift', () => {
+  const f = fixtureDir(6, (doc, r) => {
+    if (r === 3) doc.fixtures.large.sha256 = '0'.repeat(64)
+  })
+  const p = runAggregate(f)
+
+  assert.notEqual(p.status, 0)
+  const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
+  assert.ok(summary.invalidEvidence.some((x) => x.includes('r3: fixture identity mismatch')))
 })

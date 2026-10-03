@@ -20,6 +20,7 @@ const preparedBytes = fs.readFileSync(PREPARED)
 const prepared = JSON.parse(preparedBytes)
 const preparedSha256 = sha256(preparedBytes)
 if (prepared.schema !== 'snapdom-r10-asblob-prepared-v1') throw new Error('prepared schema mismatch')
+if (EXPECTED !== prepared.acquisition?.runnerReplicates) throw new Error('runner-count policy drifted after prepare')
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out
@@ -56,7 +57,13 @@ for (const item of docs) {
     p.candidateBundleSha256 !== prepared.candidate.sha256 ||
     p.baselineBundleSha256 !== prepared.baseline.sha256 ||
     p.preparedSha256 !== preparedSha256 ||
+    p.nodeVersion !== prepared.nodeVersion ||
     p.playwrightVersion !== prepared.playwrightVersion ||
+    p.browser?.name !== 'chromium' ||
+    p.github?.repository !== prepared.github?.repository ||
+    p.github?.runId !== prepared.github?.runId ||
+    p.acquisition?.repeats !== prepared.acquisition?.repeats ||
+    p.acquisition?.warmup !== prepared.acquisition?.warmup ||
     JSON.stringify(p.measurementFiles || {}) !== JSON.stringify(prepared.measurementFiles || {})
   ) {
     wrongIdentity.push(d.replicate)
@@ -98,6 +105,8 @@ function incomplete() {
 const runners = expectedReplicates.filter((r) => byReplicate.has(r)).map((r) => byReplicate.get(r).value)
 const conditionIds = runners.length ? Object.keys(runners[0].conditions || {}) : []
 if (runners.length && !conditionIds.length) invalidEvidence.push('runner artifact has no conditions')
+const fixtureIdentity = runners.length ? JSON.stringify(runners[0].fixtures || {}) : ''
+if (runners.length && fixtureIdentity === '{}') invalidEvidence.push('runner artifact has no fixture identity')
 
 const finiteEvidence = (d, id) => {
   const c = d.conditions?.[id]
@@ -113,11 +122,24 @@ const finiteEvidence = (d, id) => {
 }
 
 for (const d of runners) {
+  if (JSON.stringify(d.fixtures || {}) !== fixtureIdentity) {
+    invalidEvidence.push('r' + d.replicate + ': fixture identity mismatch')
+  }
   if (JSON.stringify(Object.keys(d.conditions || {})) !== JSON.stringify(conditionIds)) {
     invalidEvidence.push('r' + d.replicate + ': condition identity/order mismatch')
     continue
   }
   for (const id of conditionIds) {
+    const c = d.conditions[id]
+    const canonical = runners[0].conditions[id]
+    if (
+      c?.role !== canonical?.role ||
+      c?.fixture !== canonical?.fixture ||
+      c?.csp !== canonical?.csp ||
+      c?.sweep !== canonical?.sweep
+    ) {
+      invalidEvidence.push('r' + d.replicate + '/' + id + ': condition metadata mismatch')
+    }
     if (!finiteEvidence(d, id)) invalidEvidence.push('r' + d.replicate + '/' + id + ': missing or non-finite primary evidence')
   }
 }
