@@ -94,6 +94,53 @@ export function dataUrlCharsForBytes(bytes, mime = 'image/png') {
   return ('data:' + mime + ';base64,').length + Math.ceil(bytes / 3) * 4
 }
 
+const ASSET_ROUTE_KEYS = ['memo', 'inflight', 'header', 'workerBlob', 'workerString', 'main']
+
+export function assetRouteTotal(routes) {
+  return ASSET_ROUTE_KEYS.reduce((sum, key) => sum + (Number(routes?.[key]) || 0), 0)
+}
+
+/**
+ * Pure contract for candidate warmup route accounting.
+ *
+ * On the first CSP-denied warmup Chromium may accept postMessage() before surfacing the denial
+ * asynchronously. snapDOM then falls back to main-thread compression, so that one capture may
+ * legitimately report both workerBlob=1 and main=1. This is an attempted worker post plus the
+ * terminal fallback, not two successful compression results.
+ */
+export function candidateWarmRouteValid(role, routes, warmIndex) {
+  if (!routes || !Number.isInteger(warmIndex) || warmIndex < 0) return false
+
+  const memo = Number(routes.memo) || 0
+  const inflight = Number(routes.inflight) || 0
+  const header = Number(routes.header) || 0
+  const workerBlob = Number(routes.workerBlob) || 0
+  const workerString = Number(routes.workerString) || 0
+  const main = Number(routes.main) || 0
+  const total = assetRouteTotal(routes)
+
+  if (warmIndex > 0) {
+    return total === 1 && memo === 1
+  }
+
+  if (role === 'claim' || role === 'null-memo') {
+    return total === 1 && workerBlob === 1 && workerString === 0 && main === 0
+  }
+
+  if (role === 'small-negative') {
+    return total === 1 && main === 1 && workerBlob === 0 && workerString === 0
+  }
+
+  if (role === 'worker-negative') {
+    const nonTerminalZero = memo === 0 && inflight === 0 && header === 0 && workerString === 0
+    const syncDenied = nonTerminalZero && workerBlob === 0 && main === 1 && total === 1
+    const asyncDenied = nonTerminalZero && workerBlob === 1 && main === 1 && total === 2
+    return syncDenied || asyncDenied
+  }
+
+  return false
+}
+
 export function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
 }

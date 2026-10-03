@@ -15,6 +15,8 @@ import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import {
+  assetRouteTotal,
+  candidateWarmRouteValid,
   dataUrlCharsForBytes,
   geometrySweep,
   makeDeterministicPng,
@@ -300,11 +302,7 @@ async function capture(page, geometry) {
   return page.evaluate((g) => window.__capture(g), geometry)
 }
 
-const ROUTE_KEYS = ['memo', 'inflight', 'header', 'workerBlob', 'workerString', 'main']
-
-function routeTotal(routes) {
-  return ROUTE_KEYS.reduce((sum, key) => sum + (Number(routes?.[key]) || 0), 0)
-}
+const routeTotal = assetRouteTotal
 
 function assertCandidateRoute(condition, routes, label) {
   if (!routes) throw new Error(label + ': candidate afterRender did not publish route counters')
@@ -421,20 +419,8 @@ function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, 
 
 function assertWarmCandidateRoute(condition, routes, label, warmIndex) {
   if (!routes) throw new Error(label + ': candidate warmup did not publish route counters')
-  if (warmIndex > 0) {
-    if (routeTotal(routes) !== 1 || routes.memo !== 1) {
-      throw new Error(label + ': second warmup did not hit compression memo: ' + JSON.stringify(routes))
-    }
-    return
-  }
-  if (condition.role === 'claim' || condition.role === 'null-memo') {
-    if (routeTotal(routes) !== 1 || routes.workerBlob !== 1 || routes.main !== 0) {
-      throw new Error(label + ': first warmup did not execute Blob worker route: ' + JSON.stringify(routes))
-    }
-  } else {
-    if (routeTotal(routes) !== 1 || routes.main !== 1) {
-      throw new Error(label + ': first control warmup did not take main route: ' + JSON.stringify(routes))
-    }
+  if (!candidateWarmRouteValid(condition.role, routes, warmIndex)) {
+    throw new Error(label + ': candidate warmup route contract failed: ' + JSON.stringify(routes))
   }
 }
 

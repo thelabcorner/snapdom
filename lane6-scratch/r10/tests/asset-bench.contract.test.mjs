@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   aggregateLinear,
   aggregateLogPoints,
+  candidateWarmRouteValid,
   collectProcessTree,
   crc32,
   dataUrlCharsForBytes,
@@ -200,6 +201,29 @@ test('geometry sweeps keep null constant and claim paths unique and distinct', (
     scale.map((x) => Number(x.scale.toFixed(4))),
     width.map((x) => Number((x.width / 300).toFixed(4))),
   )
+})
+
+test('candidate warmup route contract accepts only the intended CSP dual-accounting', () => {
+  const memo = { memo: 1, inflight: 0, header: 0, workerBlob: 0, workerString: 0, main: 0 }
+  const blob = { memo: 0, inflight: 0, header: 0, workerBlob: 1, workerString: 0, main: 0 }
+  const main = { memo: 0, inflight: 0, header: 0, workerBlob: 0, workerString: 0, main: 1 }
+  const asyncDenied = { memo: 0, inflight: 0, header: 0, workerBlob: 1, workerString: 0, main: 1 }
+
+  assert.equal(candidateWarmRouteValid('claim', blob, 0), true)
+  assert.equal(candidateWarmRouteValid('null-memo', blob, 0), true)
+  assert.equal(candidateWarmRouteValid('small-negative', main, 0), true)
+  assert.equal(candidateWarmRouteValid('worker-negative', main, 0), true)
+  assert.equal(candidateWarmRouteValid('worker-negative', asyncDenied, 0), true)
+
+  assert.equal(candidateWarmRouteValid('small-negative', asyncDenied, 0), false)
+  assert.equal(candidateWarmRouteValid('claim', asyncDenied, 0), false)
+  assert.equal(candidateWarmRouteValid('worker-negative', { ...asyncDenied, workerString: 1 }, 0), false)
+  assert.equal(candidateWarmRouteValid('worker-negative', { ...asyncDenied, main: 0 }, 0), false)
+
+  for (const role of ['claim', 'null-memo', 'small-negative', 'worker-negative']) {
+    assert.equal(candidateWarmRouteValid(role, memo, 1), true)
+    assert.equal(candidateWarmRouteValid(role, asyncDenied, 1), false)
+  }
 })
 
 test('runner-level aggregators consume one point per runner', () => {
