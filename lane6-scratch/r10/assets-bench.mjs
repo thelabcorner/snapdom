@@ -496,4 +496,15 @@ try {
     schema: doc.schema,
     replicate: REPLICATE,
     out: path.relative(ROOT, OUT).replaceAll('\\', '/'),
-    conditions: Object.f
+    conditions: Object.fromEntries(Object.entries(conditions).map(([id, x]) => [id, {
+      capturePct: x.timing.pct,
+      endToEndPct: x.timing.totalPct,
+      candidateMinusBaselineRetentionKb: x.memory.candidateMinusBaselineRetentionKb,
+      candidateMinusBaselineSweepKb: x.memory.candidateMinusBaselineSweepKb,
+      candidateMinusBaselineTotalKb: x.memory.candidateMinusBaselineTotalKb,
+    }])),
+  }, null, 2))
+} finally {
+  if (timingBrowser) await timingBrowser.close().catch(() => {})
+  await new Promise((resolve) => server.close(resolve))
+}
