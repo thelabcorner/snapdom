@@ -73,12 +73,15 @@ jobs:
       - name: Upload immutable prepared evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-cal-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          # Stable across workflow attempts: failed-job reruns do not rerun prepare, so
+          # downstream jobs must reuse the immutable prepared bundle from the same run.
+          name: r9-cal-prepared-${{ github.run_id }}
           path: |
             lane6-scratch/r9-calibration/bundle/
             lane6-scratch/r9-calibration/prepared.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   chromium:
     name: Chromium calibration r${{ matrix.replicate }}
@@ -109,7 +112,7 @@ jobs:
       - name: Download immutable bundle and plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-cal-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-cal-prepared-${{ github.run_id }}
           path: lane6-scratch/r9-calibration
 
       - name: Install pinned Chromium
@@ -140,7 +143,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-cal-sample-chromium-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # One stable artifact per preregistered cell. A retry replaces only that cell.
+          name: r9-cal-sample-chromium-r${{ matrix.replicate }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/results/calibration-chromium-r${{ matrix.replicate }}.json
             lane6-scratch/r9-calibration/requests/calibration-chromium-r${{ matrix.replicate }}.json
@@ -149,6 +153,7 @@ jobs:
             lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: warn
           retention-days: 30
+          overwrite: true
 
   engines:
     name: ${{ matrix.entry.engine }} calibration r${{ matrix.entry.replicate }}
@@ -180,7 +185,7 @@ jobs:
       - name: Download immutable bundle and plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-cal-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-cal-prepared-${{ github.run_id }}
           path: lane6-scratch/r9-calibration
 
       - name: Install pinned browser
@@ -211,7 +216,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-cal-sample-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-cal-sample-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}
           path: |
             lane6-scratch/r9/results/calibration-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
             lane6-scratch/r9-calibration/requests/calibration-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
@@ -220,6 +225,7 @@ jobs:
             lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: warn
           retention-days: 30
+          overwrite: true
 
   closeout:
     name: Calibration aggregate / closeout
@@ -242,13 +248,14 @@ jobs:
       - name: Download immutable plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r9-cal-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-cal-prepared-${{ github.run_id }}
           path: lane6-scratch/r9-calibration
 
       - name: Download every calibration sample
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: r9-cal-sample-*-${{ github.run_id }}-${{ github.run_attempt }}
+          # Stable cell names let closeout combine earlier successes with later retries.
+          pattern: r9-cal-sample-*-${{ github.run_id }}
           path: lane6-scratch/r9-calibration/aggregate-input
 
       - name: Aggregate fresh-runner calibration
@@ -259,7 +266,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r9-calibration-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r9-calibration-summary-${{ github.run_id }}
           path: lane6-scratch/r9-calibration/calibration-summary.json
           if-no-files-found: error
           retention-days: 60
+          overwrite: true
