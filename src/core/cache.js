@@ -11,6 +11,11 @@
 
 /** Max entries before evicting oldest (FIFO). Keeps lib lightweight, avoids memory leaks. */
 const MAX_IMAGE = 100
+// Retained Blob bytes across cache.image. A Blob is not a JS-heap copy of its payload, but 100
+// multi-megabyte rasters still pin hundreds of MB in the browser's blob store, so past this the
+// oldest blob is dropped and its data URL kept — which is what every entry had before the Blob
+// was retained alongside it. Counted, not estimated: Blob.size is exact and free.
+const MAX_IMAGE_BLOB_BYTES = 64 * 1024 * 1024
 const MAX_BACKGROUND = 100
 const MAX_RESOURCE = 150
 const MAX_BASE_STYLE = 50
@@ -41,7 +46,8 @@ class EvictingMap extends Map {
 
 /**
  * The global caches. Who writes each one:
- *  - image ........ <img> data URLs by source URL (images.js)
+ *  - image ........ <img> payloads by source URL (images.js, via rememberImageAsset): the data
+ *                    URL and, when the fetch had one, the Blob carrying the same bytes
  *  - background ... background-image data URLs by URL (utils/image.js)
  *  - resource ..... blob: URL contents (clone.helpers resolveBlobUrl; fonts.js reads it)
  *  - defaultStyle . per-tag UA defaults from the sandbox (utils/css.js)
@@ -85,6 +91,46 @@ export function normalizeCachePolicy(v) {
   if (v === false) return 'disabled'
   if (typeof v === 'string' && v.toLowerCase().trim() === 'disabled') return 'disabled'
   return 'soft'
+}
+
+/**
+ * Memoize one inlined raster: the data URL written onto the clone, plus the Blob holding the
+ * same bytes when the fetch still had one.
+ *
+ * compress's worker path takes a Blob so the base64 string never crosses postMessage and is
+ * never decoded again (140 ms for 26 MB of gallery photos, snapFetch.js). Only the fetch that
+ * first saw a payload has a Blob to give, so every later capture read this memo, got a bare
+ * string, and re-created the clone with no `__snapdomBlob` — the worker then structured-cloned
+ * the whole payload in and re-decoded it. The Blob and the data URL are both derived from the
+ * same `resp.blob()` (snapFetch.js), so handing the worker one instead of the other cannot
+ * change a pixel; it only changes who pays the copy.
+ *
+ * Blobs are held under a byte budget, oldest first. Dropping one leaves its data URL in place,
+ * which is exactly the behaviour every entry had before it retained a Blob, so the budget can
+ * only cost the saving, never correctness.
+ *
+ * Re-storing an existing key keeps its FIFO position (Map semantics), so a repeat capture does
+ * not make its own payload look newer than it is.
+ * Pinned by __tests__/core.cache.imageBlob.test.js.
+ *
+ * @param {string} key - resolved source URL
+ * @param {string} data - the data URL the clone will carry
+ * @param {Blob} [blob] - the same bytes, when the fetch still had one
+ */
+export function rememberImageAsset(key, data, blob) {
+  const entry = blob ? { data, blob, blobBytes: blob.size } : { data }
+  cache.image.set(key, entry)
+  if (!blob) return
+  let bytes = 0
+  for (const e of cache.image.values()) bytes += e.blobBytes || 0
+  if (bytes <= MAX_IMAGE_BLOB_BYTES) return
+  for (const e of cache.image.values()) {
+    if (bytes <= MAX_IMAGE_BLOB_BYTES) break
+    if (!e.blobBytes) continue
+    bytes -= e.blobBytes
+    e.blob = undefined
+    e.blobBytes = 0
+  }
 }
 
 /**

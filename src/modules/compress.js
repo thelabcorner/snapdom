@@ -548,7 +548,9 @@ export async function downsampleDataURL(dataURL, targetW, targetH, blob) {
  * @param {object} options - normalized capture context, including output sizing and compress
  * @param {Map<Node, Node>} [nodeMap] - Session clone-to-source map for live geometry
  * @param {object} [geometry] - Shared holder for lazy geometry across compression passes
- * @returns {Promise<{count:number, before:number, after:number}>} bytes before/after (for debug)
+ * @returns {Promise<{count:number, before:number, after:number, blobPath:number, stringPath:number}>}
+ *   bytes before/after, and which source each candidate reached the downsample with: `blobPath`
+ *   is the zero-copy worker route, `stringPath` the one that clones and re-decodes the payload
  */
 export async function compressClonedImages(clone, options, nodeMap = new Map(), geometry = {}) {
   if (!options.compress) return { count: 0, before: 0, after: 0 }
@@ -556,7 +558,7 @@ export async function compressClonedImages(clone, options, nodeMap = new Map(), 
   // was inlined but never downsampled, so compress:true silently did nothing for it.
   const imgs = Array.from(clone.querySelectorAll('img'))
   if (clone.tagName === 'IMG') imgs.unshift(clone)
-  let count = 0, before = 0, after = 0
+  let count = 0, before = 0, after = 0, blobPath = 0, stringPath = 0
 
   const process = async (img) => {
     const src = img.getAttribute('src') || ''
@@ -566,7 +568,9 @@ export async function compressClonedImages(clone, options, nodeMap = new Map(), 
     if (!cssW || !cssH) return
     const resolved = geometry.value ||= compressionGeometry(clone, options)
     const eff = resolved.density * resolved.stretch(nodeMap.get(img) || img)
-    const out = await downsampleDataURL(src, cssW * eff, cssH * eff, img.__snapdomBlob)
+    const blob = img.__snapdomBlob
+    if (blob) blobPath++; else stringPath++
+    const out = await downsampleDataURL(src, cssW * eff, cssH * eff, blob)
     if (out) {
       count++
       before += src.length
@@ -581,7 +585,7 @@ export async function compressClonedImages(clone, options, nodeMap = new Map(), 
   for (let i = 0; i < imgs.length; i += BATCH) {
     await Promise.allSettled(imgs.slice(i, i + BATCH).map(process))
   }
-  return { count, before, after }
+  return { count, before, after, blobPath, stringPath }
 }
 
 /** `cover`, `contain` and percentage sizes derive their resolution from the element box.

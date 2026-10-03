@@ -16,13 +16,16 @@
  * cold one from 409 to 298. What is left is cloneNode's own 41 ms, since the attribute copy
  * itself starts a load; avoiding it means a clone with no `src` until serialization, which a
  * plugin reading the clone would see, so it is not done.
+ * The cross-capture memo keeps the fetched Blob next to the data URL (rememberImageAsset), so a
+ * repeat capture still hands compress's worker zero-copy bytes instead of a string it has to
+ * clone and decode again.
  * Pinned by __tests__/modules.images.dataUrlPassthrough.test.js, which counts the writes.
  * @module images
  */
 
 import { snapFetch } from './snapFetch.js'
 import { sessionWarn } from '../utils/debug.js'
-import { cache } from '../core/cache.js'
+import { cache, rememberImageAsset } from '../core/cache.js'
 import { pickSrcsetCandidate } from './pictureResolver.js'
 
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
@@ -104,7 +107,10 @@ export async function inlineImages(clone, options = {}) {
     // caches no successes, so this cross-capture cache is what keeps a repeat from re-fetching.
     const cached = cache.image?.get(src)
     if (cached) {
-      img.src = cached
+      img.src = cached.data
+      // The memo carries the Blob the fetch produced, so a repeat capture keeps compress's
+      // zero-copy worker path instead of one that clones and re-decodes the payload.
+      if (cached.blob) img.__snapdomBlob = cached.blob
       if (!img.width) img.width = img.naturalWidth || 100
       if (!img.height) img.height = img.naturalHeight || 100
       return
@@ -113,7 +119,7 @@ export async function inlineImages(clone, options = {}) {
     const r = await snapFetch(src, { as: 'dataURL', useProxy: options.useProxy })
     if (r.ok && typeof r.data === 'string' && r.data.startsWith('data:')) {
       // Success path: inline DataURL and ensure dimensions for layout fidelity
-      cache.image?.set(src, r.data)
+      rememberImageAsset(src, r.data, r.blob)
       img.src = r.data
       // Same bytes as the data URL, zero-copy into compress's worker (a Blob crosses
       // postMessage by reference; the string would be cloned and base64-decoded again).
