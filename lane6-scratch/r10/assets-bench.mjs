@@ -379,8 +379,22 @@ function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, 
     return
   }
   if (firstWarm && condition.role === 'worker-negative') {
-    if (!(telemetry.attempts >= 1) || telemetry.constructed !== 0 || posts !== 0 || messages !== 0 || errorPosts !== 0) {
-      throw new Error(label + ': CSP warmup did not fail during worker construction: ' + JSON.stringify(telemetry))
+    // Chromium may reject a CSP-blocked blob worker synchronously in the constructor OR create the
+    // Worker object and surface the CSP denial asynchronously via its error event after postMessage.
+    // Both are valid negative controls. What must never happen is a successful worker response.
+    const syncDenied =
+      telemetry.attempts >= 1 &&
+      telemetry.constructed === 0 &&
+      posts === 0 &&
+      messages === 0
+    const asyncDenied =
+      telemetry.attempts >= 1 &&
+      telemetry.constructed >= 1 &&
+      posts >= 0 &&
+      messages === 0 &&
+      errors >= 1
+    if ((!syncDenied && !asyncDenied) || errorPosts !== 0) {
+      throw new Error(label + ': CSP warmup did not end in a denied worker route: ' + JSON.stringify(telemetry))
     }
     return
   }
@@ -393,6 +407,9 @@ function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, 
   if (laterWarm || condition.role !== 'claim') {
     if (posts !== 0 || messages !== 0 || errors !== 0 || errorPosts !== 0) {
       throw new Error(label + ': null/control capture unexpectedly touched worker: ' + JSON.stringify(telemetry))
+    }
+    if (condition.role === 'worker-negative' && telemetry.attempts !== 0) {
+      throw new Error(label + ': CSP-disabled worker route was retried after the first denial: ' + JSON.stringify(telemetry))
     }
     return
   }
