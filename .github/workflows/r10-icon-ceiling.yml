@@ -75,7 +75,7 @@ jobs:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -115,7 +115,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -137,10 +137,11 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r10-icon-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r10-icon-prepared-${{ github.run_id }}
           path: lane6-scratch/r10/bundle/
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   measure:
     name: Ceiling · ${{ matrix.browser }} r${{ matrix.replicate }}
@@ -160,7 +161,7 @@ jobs:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f1d6820020
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -170,7 +171,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: r10-icon-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r10-icon-prepared-${{ github.run_id }}
           path: lane6-scratch/r10
 
       # BROWSER travels via env and is expanded with a default. The sibling workflow's
@@ -181,36 +182,48 @@ jobs:
           BROWSER: ${{ matrix.browser }}
         run: npx playwright install --with-deps "${BROWSER:-chromium}"
 
+      - name: Wait for browser-install CPU tail to settle
+        run: node lane6-scratch/r10/icon-host-settle.mjs
+
       - name: Measure the ceiling with the network cut
         id: bench
         env:
           BROWSER_NAME: ${{ matrix.browser }}
           REPLICATE: ${{ matrix.replicate }}
           CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
         run: |
           set +e
-          node lane6-scratch/r9/bench-r9-controlled.mjs \
-            --suite=icon \
-            --mode=option-pair \
-            --baseline=lane6-scratch/r10/bundle/candidate.mjs \
-            --candidate=lane6-scratch/r10/bundle/candidate.mjs \
-            --base={} \
-            --opt={} \
-            --browser="${BROWSER_NAME}" \
-            --n=8 \
-            --batch=4 \
-            --warmup=3 \
-            --bootstrap=4000 \
-            --seed=1511506142 \
-            --expect=explore \
-            --playwright-version="${PLAYWRIGHT_VERSION}" \
-            --label="RS-A10 icon ceiling ${BROWSER_NAME} r${REPLICATE}" \
-            --out="icon-ceiling-${BROWSER_NAME}-r${REPLICATE}.json"
+          node lane6-scratch/r5/run-with-timing-gate.mjs -- \
+            node lane6-scratch/r9/bench-r9-controlled.mjs \
+              --suite=icon \
+              --mode=option-pair \
+              --baseline=lane6-scratch/r10/bundle/candidate.mjs \
+              --candidate=lane6-scratch/r10/bundle/candidate.mjs \
+              --base={} \
+              --opt={} \
+              --browser="${BROWSER_NAME}" \
+              --n=8 \
+              --batch=4 \
+              --warmup=3 \
+              --bootstrap=4000 \
+              --seed=1511506142 \
+              --expect=explore \
+              --playwright-version="${PLAYWRIGHT_VERSION}" \
+              --label="RS-A10 icon ceiling ${BROWSER_NAME} r${REPLICATE}" \
+              --out="icon-ceiling-${BROWSER_NAME}-r${REPLICATE}.json"
           code=$?
+          set -e
           echo "exit=$code" >> "$GITHUB_OUTPUT"
-          # `explore` never yields a claim, so a non-zero timing verdict must not fail the job;
-          # the ceiling gates below are what decide this lane.
-          exit 0
+          if [ "$code" -eq 3 ]; then
+            echo "::error::ambient CPU gate blocked this evidence cell"
+            exit 3
+          fi
+          if [ "$code" -ne 0 ] && [ ! -s "lane6-scratch/r9/results/icon-ceiling-${BROWSER_NAME}-r${REPLICATE}.json" ]; then
+            echo "::error::benchmark failed before producing evidence (exit=$code)"
+            exit "$code"
+          fi
 
       - name: Enforce the ceiling gates
         env:
@@ -222,10 +235,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r10-icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: lane6-scratch/r9/results/icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}.json
+          name: r10-icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}-${{ github.run_id }}
+          path: |
+            lane6-scratch/r9/results/icon-ceiling-${{ matrix.browser }}-r${{ matrix.replicate }}.json
+            lane6-scratch/r10/icon-host-settle.json
+            lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: error
           retention-days: 60
+          overwrite: true
 
   closeout:
     name: Icon ceiling closeout
@@ -239,9 +256,13 @@ jobs:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 1
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: r10-icon-ceiling-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: r10-icon-ceiling-*-${{ github.run_id }}
           path: lane6-scratch/r10/inputs
 
       - name: Fail-closed summary
@@ -253,7 +274,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r10-icon-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r10-icon-summary-${{ github.run_id }}
           path: lane6-scratch/r10/summary.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 60
+          overwrite: true

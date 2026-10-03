@@ -31,6 +31,11 @@ const arg = (name, fallback = '') => {
 
 const inputDir = path.resolve(ROOT, arg('input-dir') || 'lane6-scratch/r10/inputs')
 const N = 120
+const EXPECTED_BROWSERS = ['chromium', 'firefox', 'webkit']
+const EXPECTED_REPLICATES = [0, 1, 2, 3]
+const expectedCells = new Set(
+  EXPECTED_BROWSERS.flatMap((browser) => EXPECTED_REPLICATES.map((replicate) => `${browser}:${replicate}`))
+)
 
 const median = (xs) => {
   const s = [...xs].filter(Number.isFinite).sort((a, b) => a - b)
@@ -69,10 +74,58 @@ const timeByFixture = (reports, name) => {
 
 const byBrowser = new Map()
 let allGatesHeld = true
+const observedCells = new Map()
+const candidateShas = new Set()
+const bundleShas = new Set()
 
 for (const file of files) {
   const report = JSON.parse(fs.readFileSync(file, 'utf8'))
+  const match = path.basename(file).match(/^icon-ceiling-(chromium|firefox|webkit)-r([0-3])\.json$/)
+  if (!match) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: unexpected evidence filename ${path.basename(file)}`)
+    continue
+  }
+  const fileBrowser = match[1]
+  const replicate = Number(match[2])
+  const cellKey = `${fileBrowser}:${replicate}`
+  if (observedCells.has(cellKey)) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: duplicate evidence cell ${cellKey}`)
+    continue
+  }
+  observedCells.set(cellKey, file)
+
   const browser = report.provenance?.browser?.actualName || 'unknown'
+  if (report.schema !== 'snapdom-r9-hosted-bench-v1') {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${cellKey} has unexpected schema ${report.schema}`)
+  }
+  if (browser !== fileBrowser) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${cellKey} measured browser ${browser}`)
+  }
+  if (report.provenance?.protocol?.suite !== 'icon' || report.provenance?.protocol?.mode !== 'option-pair') {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${cellKey} has wrong suite/mode provenance`)
+  }
+  const candidateSha = report.provenance?.git?.candidateSha
+  const baselineSha = report.provenance?.git?.baselineSha
+  const candidateBundle = report.provenance?.bundles?.candidate?.sha256
+  const baselineBundle = report.provenance?.bundles?.baseline?.sha256
+  if (!candidateSha || candidateSha !== baselineSha) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${cellKey} is not a same-git self comparison`)
+  } else {
+    candidateShas.add(candidateSha)
+  }
+  if (!candidateBundle || candidateBundle !== baselineBundle) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${cellKey} is not a same-bundle self comparison`)
+  } else {
+    bundleShas.add(candidateBundle)
+  }
+
   if (!byBrowser.has(browser)) byBrowser.set(browser, [])
   byBrowser.get(browser).push(report)
 
@@ -83,6 +136,30 @@ for (const file of files) {
       allGatesHeld = false
       console.error(`RS-A10 summarizer: ${browser}/${name} failed its gates`)
     }
+  }
+}
+
+const missingCells = [...expectedCells].filter((key) => !observedCells.has(key))
+if (missingCells.length) {
+  allGatesHeld = false
+  console.error(`RS-A10 summarizer: missing preregistered cells: ${missingCells.join(', ')}`)
+}
+if (observedCells.size !== expectedCells.size) {
+  allGatesHeld = false
+  console.error(`RS-A10 summarizer: observed ${observedCells.size}/${expectedCells.size} unique cells`)
+}
+if (candidateShas.size !== 1) {
+  allGatesHeld = false
+  console.error(`RS-A10 summarizer: expected one measured git identity, saw ${candidateShas.size}`)
+}
+if (bundleShas.size !== 1) {
+  allGatesHeld = false
+  console.error(`RS-A10 summarizer: expected one measured bundle identity, saw ${bundleShas.size}`)
+}
+for (const browser of EXPECTED_BROWSERS) {
+  if ((byBrowser.get(browser) || []).length !== EXPECTED_REPLICATES.length) {
+    allGatesHeld = false
+    console.error(`RS-A10 summarizer: ${browser} does not have exactly 4 usable reports`)
   }
 }
 
@@ -120,6 +197,11 @@ const summary = {
   schema: 'snapdom-r10-icon-ceiling-summary-v1',
   generatedAt: new Date().toISOString(),
   artifacts: files.length,
+  expectedCells: expectedCells.size,
+  observedCells: observedCells.size,
+  complete: observedCells.size === expectedCells.size && missingCells.length === 0,
+  candidateGitSha: candidateShas.size === 1 ? [...candidateShas][0] : null,
+  bundleSha256: bundleShas.size === 1 ? [...bundleShas][0] : null,
   allGatesHeld,
   iconsPerFixture: N,
   derivation:
