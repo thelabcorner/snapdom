@@ -414,6 +414,43 @@ test('a clean hosted run is evidence-valid and can never be promotable', () => {
   assert.equal(decision.schema, RUN_DECISION_SCHEMA)
 })
 
+test('a failed-job retry may reuse attempt-1 prepare provenance while the cell proves attempt-2 identity', () => {
+  const p = policy()
+  const retryEnv = { ...HOSTED_ENV, GITHUB_RUN_ATTEMPT: '2' }
+  const retryReport = report(p)
+  retryReport.provenance.github.runAttempt = '2'
+  const retryGate = gateArtifact(p, { browser: 'chromium', replicate: 0 })
+  retryGate.hosted.runAttempt = '2'
+
+  // Build provenance intentionally remains attempt 1: prepare succeeded on attempt 1 and GitHub
+  // rerun-failed-jobs does not rerun it. Stable artifact identity is run-scoped, not attempt-scoped.
+  const prepared = buildProvenance(p)
+  assert.equal(prepared.github.runAttempt, '1')
+
+  const decision = judgeRunEvidence({
+    plan: plan(p),
+    policy: p,
+    report: retryReport,
+    build: prepared,
+    gate: retryGate,
+    env: retryEnv,
+    phase: 'confirm',
+    browser: 'chromium',
+    replicate: 0,
+  })
+  assert.equal(decision.verdict, 'EVIDENCE_VALID')
+
+  const staleGate = gateArtifact(p, { browser: 'chromium', replicate: 0 })
+  assert.equal(
+    judgeRunEvidence({
+      plan: plan(p), policy: p, report: retryReport, build: prepared, gate: staleGate,
+      env: retryEnv, phase: 'confirm', browser: 'chromium', replicate: 0,
+    }).verdict,
+    VERDICTS.PROVENANCE_FAILURE,
+    'the retried cell must still prove its own current-attempt gate identity',
+  )
+})
+
 test('provenance mismatch is PROVENANCE_FAILURE and fails closed', () => {
   const p = policy()
   const base = {

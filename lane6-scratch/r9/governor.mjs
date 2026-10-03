@@ -613,7 +613,10 @@ export function verifyGateIdentity({ gate, build, policy, env = process.env, pha
   if (!isSha256(gate.scriptSha256)) hard.push('ambient gate script digest missing')
   if (gate.scriptSha256 !== build?.measurementFiles?.[policy.gate.script]) hard.push('ambient gate script digest does not match prepare-stage identity')
   if (gate.hosted?.runId !== build?.github?.runId || gate.hosted?.runId !== env.GITHUB_RUN_ID) hard.push('ambient gate run id mismatch')
-  if (gate.hosted?.runAttempt !== build?.github?.runAttempt || gate.hosted?.runAttempt !== env.GITHUB_RUN_ATTEMPT) hard.push('ambient gate run attempt mismatch')
+  // prepare/build provenance may come from an earlier workflow ATTEMPT when GitHub reruns only
+  // failed jobs. Attempt identity is cell-local: the report and ambient gate must match the CURRENT
+  // attempt, while the immutable prepared artifact is joined by run_id / SHA / policy / file hashes.
+  if (gate.hosted?.runAttempt !== env.GITHUB_RUN_ATTEMPT) hard.push('ambient gate run attempt mismatch')
   if (gate.hosted?.job !== env.GITHUB_JOB) hard.push('ambient gate job identity mismatch')
   if (gate.hosted?.runnerName !== env.RUNNER_NAME) hard.push('ambient gate runner identity mismatch')
   if (gate.hosted?.workflow !== env.GITHUB_WORKFLOW) hard.push('ambient gate workflow identity mismatch')
