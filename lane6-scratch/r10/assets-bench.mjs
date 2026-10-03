@@ -20,6 +20,7 @@ import {
   makeDeterministicPng,
   mean,
   pairOrder,
+  PSS_SETTLE_POLICY,
   settleProcessTreeRss,
   sha256,
 } from './asset-bench-lib.mjs'
@@ -59,7 +60,8 @@ if (prepared.schema !== 'snapdom-r10-asblob-prepared-v1') throw new Error('prepa
 if (
   prepared.acquisition?.repeats !== REPEATS ||
   prepared.acquisition?.warmup !== WARMUP ||
-  prepared.acquisition?.runnerReplicates !== 6
+  prepared.acquisition?.runnerReplicates !== 6 ||
+  JSON.stringify(prepared.acquisition?.memorySettlePolicy) !== JSON.stringify(PSS_SETTLE_POLICY)
 ) {
   throw new Error('acquisition policy drifted after prepare')
 }
@@ -147,19 +149,33 @@ function scriptFor(side) {
   return [
     "window.__ready = false",
     "window.__routes = null",
-    "window.__workerTelemetry = { attempts: 0, constructed: 0, posts: 0, messages: 0, errors: 0 }",
+    "window.__workerTelemetry = { attempts: 0, constructed: 0, posts: 0, messages: 0, errors: 0, errorPosts: 0, stringPayloadPosts: 0, stringPayloadChars: 0, blobPayloadPosts: 0, blobPayloadBytes: 0, badBlobDataUrlPosts: 0 }",
     "const NativeWorker = window.Worker",
     "if (NativeWorker) {",
     "  const nativePostMessage = NativeWorker.prototype.postMessage",
     "  NativeWorker.prototype.postMessage = function(...args) {",
+    "    const payload = args[0]",
     "    window.__workerTelemetry.posts++",
+    "    if (payload && typeof payload === 'object') {",
+    "      if (payload.blob instanceof Blob) {",
+    "        window.__workerTelemetry.blobPayloadPosts++",
+    "        window.__workerTelemetry.blobPayloadBytes += payload.blob.size || 0",
+    "        if (payload.dataURL !== '') window.__workerTelemetry.badBlobDataUrlPosts++",
+    "      } else if (typeof payload.dataURL === 'string') {",
+    "        window.__workerTelemetry.stringPayloadPosts++",
+    "        window.__workerTelemetry.stringPayloadChars += payload.dataURL.length",
+    "      }",
+    "    }",
     "    return nativePostMessage.apply(this, args)",
     "  }",
     "  function InstrumentedWorker(...args) {",
     "    window.__workerTelemetry.attempts++",
     "    const worker = new NativeWorker(...args)",
     "    window.__workerTelemetry.constructed++",
-    "    worker.addEventListener('message', () => { window.__workerTelemetry.messages++ })",
+    "    worker.addEventListener('message', (event) => {",
+    "      window.__workerTelemetry.messages++",
+    "      if (event.data && event.data.error) window.__workerTelemetry.errorPosts++",
+    "    })",
     "    worker.addEventListener('error', () => { window.__workerTelemetry.errors++ })",
     "    return worker",
     "  }",
@@ -309,43 +325,68 @@ function assertCandidateRoute(condition, routes, label) {
   }
 }
 
-function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null } = {}) {
+function assertWorkerPayload(side, condition, telemetry, label) {
+  if (!['baseline', 'candidate'].includes(side)) throw new Error(label + ': invalid worker side ' + side)
+  if (side === 'baseline') {
+    if (
+      telemetry.stringPayloadPosts !== 1 ||
+      telemetry.stringPayloadChars <= WORKER_MIN_PAYLOAD_CHARS ||
+      telemetry.blobPayloadPosts !== 0
+    ) {
+      throw new Error(label + ': baseline did not post exactly one large string payload: ' + JSON.stringify(telemetry))
+    }
+  } else {
+    if (
+      telemetry.blobPayloadPosts !== 1 ||
+      telemetry.blobPayloadBytes !== fixtures[condition.fixture].bytes.length ||
+      telemetry.stringPayloadPosts !== 0 ||
+      telemetry.badBlobDataUrlPosts !== 0
+    ) {
+      throw new Error(label + ': candidate did not post exactly one source Blob with empty dataURL: ' + JSON.stringify(telemetry))
+    }
+  }
+}
+
+function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, side } = {}) {
   if (!telemetry) throw new Error(label + ': missing browser-level worker telemetry')
   const posts = telemetry.posts || 0
   const messages = telemetry.messages || 0
   const errors = telemetry.errors || 0
+  const errorPosts = telemetry.errorPosts || 0
 
   const firstWarm = warmIndex === 0
   const laterWarm = Number.isInteger(warmIndex) && warmIndex > 0
   const workerExpected = condition.role === 'claim' || condition.role === 'null-memo'
 
   if (firstWarm && workerExpected) {
-    if (posts !== 1 || messages !== 1 || errors !== 0) {
-      throw new Error(label + ': warm worker did not complete one request/response cleanly: ' + JSON.stringify(telemetry))
+    if (posts !== 1 || messages !== 1 || errors !== 0 || errorPosts !== 0) {
+      throw new Error(label + ': warm worker did not complete one successful request/response: ' + JSON.stringify(telemetry))
     }
+    assertWorkerPayload(side, condition, telemetry, label)
     return
   }
   if (firstWarm && condition.role === 'worker-negative') {
-    if (!(telemetry.attempts >= 1) || posts !== 0 || messages !== 0) {
-      throw new Error(label + ': CSP warmup did not fail before worker post: ' + JSON.stringify(telemetry))
+    if (!(telemetry.attempts >= 1) || telemetry.constructed !== 0 || posts !== 0 || messages !== 0 || errorPosts !== 0) {
+      throw new Error(label + ': CSP warmup did not fail during worker construction: ' + JSON.stringify(telemetry))
     }
     return
   }
   if (firstWarm && condition.role === 'small-negative') {
-    if (posts !== 0 || messages !== 0 || errors !== 0) {
+    if (telemetry.attempts !== 0 || posts !== 0 || messages !== 0 || errors !== 0 || errorPosts !== 0) {
       throw new Error(label + ': below-threshold warmup unexpectedly touched worker: ' + JSON.stringify(telemetry))
     }
     return
   }
   if (laterWarm || condition.role !== 'claim') {
-    if (posts !== 0 || messages !== 0 || errors !== 0) {
+    if (posts !== 0 || messages !== 0 || errors !== 0 || errorPosts !== 0) {
       throw new Error(label + ': null/control capture unexpectedly touched worker: ' + JSON.stringify(telemetry))
     }
     return
   }
-  if (posts !== 1 || messages !== 1 || errors !== 0) {
-    throw new Error(label + ': claim capture did not complete one worker request/response cleanly: ' + JSON.stringify(telemetry))
+  if (posts !== 1 || messages !== 1 || errors !== 0 || errorPosts !== 0) {
+    throw new Error(label + ': claim capture did not complete one successful worker request/response: ' + JSON.stringify(telemetry))
   }
+  assertWorkerPayload(side, condition, telemetry, label)
 }
 
 function assertWarmCandidateRoute(condition, routes, label, warmIndex) {
@@ -373,7 +414,7 @@ async function warm(sidePage, side, condition, label) {
     const observed = await capture(sidePage.page, condition.warm)
     if (side === 'candidate') assertWarmCandidateRoute(condition, observed.routes, label + ' warmup ' + i, i)
     else if (observed.routes !== null) throw new Error(label + ': baseline warmup exposed candidate route counters')
-    assertWorkerTelemetry(condition, observed.workerTelemetry, label + ' warmup ' + i, { warmIndex: i })
+    assertWorkerTelemetry(condition, observed.workerTelemetry, label + ' warmup ' + i, { warmIndex: i, side })
     observations.push({ routes: observed.routes, workerTelemetry: observed.workerTelemetry })
   }
   return observations
@@ -399,8 +440,8 @@ async function timingCondition(browser, condition, conditionIndex) {
         throw new Error(condition.id + ': baseline unexpectedly exposed candidate route counters')
       }
       assertCandidateRoute(condition, observed.candidate.routes, condition.id + ' timing sample ' + i)
-      assertWorkerTelemetry(condition, observed.baseline.workerTelemetry, condition.id + '/timing/baseline sample ' + i)
-      assertWorkerTelemetry(condition, observed.candidate.workerTelemetry, condition.id + '/timing/candidate sample ' + i)
+      assertWorkerTelemetry(condition, observed.baseline.workerTelemetry, condition.id + '/timing/baseline sample ' + i, { side: 'baseline' })
+      assertWorkerTelemetry(condition, observed.candidate.workerTelemetry, condition.id + '/timing/candidate sample ' + i, { side: 'candidate' })
       pairs.push({
         sample: i,
         order,
@@ -412,6 +453,7 @@ async function timingCondition(browser, condition, conditionIndex) {
         baselineTotalMs: observed.baseline.totalMs,
         candidateTotalMs: observed.candidate.totalMs,
         logRatio: Math.log(observed.candidate.captureMs / observed.baseline.captureMs),
+        renderLogRatio: Math.log(observed.candidate.renderMs / observed.baseline.renderMs),
         totalLogRatio: Math.log(observed.candidate.totalMs / observed.baseline.totalMs),
         candidateRoutes: observed.candidate.routes,
         baselineWorkerTelemetry: observed.baseline.workerTelemetry,
@@ -424,6 +466,7 @@ async function timingCondition(browser, condition, conditionIndex) {
       throw new Error(condition.id + ': AB/BA strata are not exactly balanced inside this runner')
     }
     const logPoint = 0.5 * (mean(candidateFirst.map((x) => x.logRatio)) + mean(baselineFirst.map((x) => x.logRatio)))
+    const renderLogPoint = 0.5 * (mean(candidateFirst.map((x) => x.renderLogRatio)) + mean(baselineFirst.map((x) => x.renderLogRatio)))
     const totalLogPoint = 0.5 * (mean(candidateFirst.map((x) => x.totalLogRatio)) + mean(baselineFirst.map((x) => x.totalLogRatio)))
     const orderBiasLog = mean(candidateFirst.map((x) => x.logRatio)) - mean(baselineFirst.map((x) => x.logRatio))
     return {
@@ -431,6 +474,8 @@ async function timingCondition(browser, condition, conditionIndex) {
       pairs,
       logPoint,
       pct: (Math.exp(logPoint) - 1) * 100,
+      renderLogPoint,
+      renderPct: (Math.exp(renderLogPoint) - 1) * 100,
       totalLogPoint,
       totalPct: (Math.exp(totalLogPoint) - 1) * 100,
       orderBiasLog,
@@ -439,6 +484,19 @@ async function timingCondition(browser, condition, conditionIndex) {
     }
   } finally {
     await Promise.all(Object.values(sides).map((x) => x.context.close().catch(() => {})))
+  }
+}
+
+function assertMemoryState(state, label) {
+  if (!state?.stable) throw new Error(label + ': process-tree PSS did not settle')
+  if (!Array.isArray(state.rendererPids) || state.rendererPids.length < 1) {
+    throw new Error(label + ': settled Chromium tree contains no renderer process')
+  }
+  if (state.settleRangePssKb > PSS_SETTLE_POLICY.deltaKb) {
+    throw new Error(label + ': PSS settle range exceeds preregistered policy')
+  }
+  if (state.settleDriftPssKb > PSS_SETTLE_POLICY.maxDriftKb) {
+    throw new Error(label + ': PSS settle drift exceeds preregistered policy')
   }
 }
 
@@ -457,8 +515,8 @@ async function memorySide(side, condition) {
 
     // State 0: page + source image are loaded, but snapDOM has never captured. This is the only
     // baseline that can observe the memory AS-BLOB retains during the first warm capture.
-    const initial = await settleProcessTreeRss(proc.pid)
-    if (!initial.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle before first capture')
+    const initial = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    assertMemoryState(initial, condition.id + '/' + side + '/initial')
 
     const warmObservations = await warm(
       sidePage,
@@ -469,8 +527,8 @@ async function memorySide(side, condition) {
 
     // State 1: image cache and same-geometry compress memo are warm. Candidate Blob retention has
     // already happened here, so warmupDelta is the direct retained-memory signal.
-    const warmed = await settleProcessTreeRss(proc.pid)
-    if (!warmed.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle after warmup')
+    const warmed = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    assertMemoryState(warmed, condition.id + '/' + side + '/warmed')
 
     const routeSamples = []
     for (let i = 0; i < condition.samples.length; i++) {
@@ -481,19 +539,19 @@ async function memorySide(side, condition) {
       } else if (observed.routes !== null) {
         throw new Error(condition.id + ': baseline memory page exposed candidate route counters')
       }
-      assertWorkerTelemetry(condition, observed.workerTelemetry, condition.id + '/memory/' + side + ' sample ' + i)
+      assertWorkerTelemetry(condition, observed.workerTelemetry, condition.id + '/memory/' + side + ' sample ' + i, { side })
     }
 
     // State 2: after the unique geometry sweep. This separates "memory retained merely by caching
     // the Blob" from incremental decode/encode/process memory created by the claim workload.
-    const final = await settleProcessTreeRss(proc.pid)
-    if (!final.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle after geometry sweep')
+    const final = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    assertMemoryState(final, condition.id + '/' + side + '/final')
     if (initial.identityKey !== warmed.identityKey || warmed.identityKey !== final.identityKey) {
       throw new Error(condition.id + '/' + side + ': Chromium process identity changed across memory states')
     }
     return {
       rootPid: proc.pid,
-      primaryMemoryMetric: 'process-tree PSS',
+      primaryMemoryMetric: 'whole Chromium process-tree PSS',
       pssInitialKb: initial.pssKb,
       pssWarmedKb: warmed.pssKb,
       pssFinalKb: final.pssKb,
@@ -504,6 +562,8 @@ async function memorySide(side, condition) {
       vmRssTotalDeltaKb: final.rssKb - initial.rssKb,
       anonShmemWarmupDeltaKb: warmed.anonShmemKb - initial.anonShmemKb,
       anonShmemTotalDeltaKb: final.anonShmemKb - initial.anonShmemKb,
+      rendererPssWarmupDeltaKb: warmed.rendererPssKb - initial.rendererPssKb,
+      rendererPssTotalDeltaKb: final.rendererPssKb - initial.rendererPssKb,
       initial,
       warmed,
       final,

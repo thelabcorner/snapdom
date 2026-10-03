@@ -12,6 +12,7 @@ import {
   parseProcChildren,
   parseProcStartTime,
   parseProcStatusMemory,
+  parseProcType,
   parseSmapsRollupPssKb,
   parseVmRssKb,
   processTreeRss,
@@ -46,7 +47,7 @@ test('CRC32 implementation matches the canonical check vector', () => {
   assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926)
 })
 
-test('proc parsers read status memory, PSS, start-time and child pid lists', () => {
+test('proc parsers read status memory, PSS, process type, start-time and child pid lists', () => {
   const text = status({ vm: 12345, anon: 7000, file: 4000, shmem: 1345 })
   assert.equal(parseVmRssKb(text), 12345)
   assert.deepEqual(parseProcStatusMemory(text), {
@@ -57,6 +58,8 @@ test('proc parsers read status memory, PSS, start-time and child pid lists', () 
   })
   assert.equal(parseSmapsRollupPssKb(smaps(6789)), 6789)
   assert.equal(parseProcStartTime(stat(10, 987654)), 987654)
+  assert.equal(parseProcType('/usr/bin/chromium\0--type=renderer\0--foo\0'), 'renderer')
+  assert.equal(parseProcType('/usr/bin/chromium\0--foo\0'), 'browser')
   assert.deepEqual(parseProcChildren('12  34\n56'), [12, 34, 56])
 })
 
@@ -65,18 +68,22 @@ test('process-tree memory sums PSS and diagnostics across descendants', () => {
     ['/proc/10/status', status({ vm: 1000, anon: 600, file: 300, shmem: 100 })],
     ['/proc/10/stat', stat(10, 100)],
     ['/proc/10/smaps_rollup', smaps(800)],
+    ['/proc/10/cmdline', '/usr/bin/chromium\0'],
     ['/proc/10/task/10/children', '11 12'],
     ['/proc/11/status', status({ vm: 2000, anon: 1400, file: 400, shmem: 200 })],
     ['/proc/11/stat', stat(11, 110)],
     ['/proc/11/smaps_rollup', smaps(1500)],
+    ['/proc/11/cmdline', '/usr/bin/chromium\0--type=renderer\0'],
     ['/proc/11/task/11/children', '13'],
     ['/proc/12/status', status({ vm: 3000, anon: 2000, file: 700, shmem: 300 })],
     ['/proc/12/stat', stat(12, 120)],
     ['/proc/12/smaps_rollup', smaps(2200)],
+    ['/proc/12/cmdline', '/usr/bin/chromium\0--type=gpu-process\0'],
     ['/proc/12/task/12/children', ''],
     ['/proc/13/status', status({ vm: 4000, anon: 2600, file: 1000, shmem: 400 })],
     ['/proc/13/stat', stat(13, 130)],
     ['/proc/13/smaps_rollup', smaps(3000)],
+    ['/proc/13/cmdline', '/usr/bin/chromium\0--type=renderer\0'],
     ['/proc/13/task/13/children', ''],
   ])
   const read = (p) => {
@@ -91,6 +98,8 @@ test('process-tree memory sums PSS and diagnostics across descendants', () => {
   assert.equal(memory.rssKb, 10000)
   assert.equal(memory.anonShmemKb, 7600)
   assert.equal(memory.processCount, 4)
+  assert.deepEqual(memory.rendererPids, [11, 13])
+  assert.equal(memory.rendererPssKb, 4500)
   assert.match(memory.identityKey, /10:100/)
   assert.match(memory.identityKey, /13:130/)
 })
@@ -118,14 +127,16 @@ test('PSS settle requires a stable pid:starttime set, not merely a flat total', 
     }
     if (p === '/proc/10/stat') return stat(10, snapshots[index].starts[10])
     if (p === '/proc/10/smaps_rollup') return smaps(snapshots[index].pss[10])
+    if (p === '/proc/10/cmdline') return '/usr/bin/chromium\0'
     if (p === '/proc/10/task/10/children') return snapshots[index].children
 
-    const m = p.match(/^\/proc\/(11|12)\/(status|stat|smaps_rollup)$/)
+    const m = p.match(/^\/proc\/(11|12)\/(status|stat|smaps_rollup|cmdline)$/)
     if (m) {
       const pid = Number(m[1])
       if (!(pid in snapshots[index].pss)) throw new Error('gone')
       if (m[2] === 'status') return status({ vm: snapshots[index].pss[pid], anon: snapshots[index].pss[pid], file: 0, shmem: 0 })
       if (m[2] === 'stat') return stat(pid, snapshots[index].starts[pid])
+      if (m[2] === 'cmdline') return '/usr/bin/chromium\0--type=renderer\0'
       return smaps(snapshots[index].pss[pid])
     }
     if (/^\/proc\/(11|12)\/task\/(11|12)\/children$/.test(p)) return ''
@@ -154,6 +165,7 @@ test('PSS settle times out fail-closed under monotone drift', async () => {
     }
     if (p === '/proc/10/stat') return stat(10, 100)
     if (p === '/proc/10/smaps_rollup') return smaps(1000 + call * 10)
+    if (p === '/proc/10/cmdline') return '/usr/bin/chromium\0'
     if (p === '/proc/10/task/10/children') return ''
     throw new Error('missing ' + p)
   }

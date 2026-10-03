@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { sha256 } from './asset-bench-lib.mjs'
+import { PSS_SETTLE_POLICY, sha256 } from './asset-bench-lib.mjs'
 import { MAX_IMAGE_BLOB_BYTES, WORKER_MIN_PAYLOAD_CHARS } from '../../src/core/cache.js'
 
 const ROOT = process.cwd()
@@ -78,6 +78,7 @@ const doc = {
     timingPrimary: 'capture',
     timingSecondary: 'capture+toCanvas',
     memoryPrimary: 'pre-capture to post-warmup process-tree PSS growth',
+    memorySettlePolicy: PSS_SETTLE_POLICY,
   },
   measurementFiles: fileIdentity,
   github: {

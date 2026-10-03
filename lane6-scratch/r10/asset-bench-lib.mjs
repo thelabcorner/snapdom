@@ -134,6 +134,27 @@ export function parseProcChildren(text) {
   return String(text).trim().split(/\s+/).filter(Boolean).map(Number).filter(Number.isInteger)
 }
 
+export function parseProcType(cmdlineText) {
+  const args = String(cmdlineText).split('\0').filter(Boolean)
+  const type = args.find((x) => x.startsWith('--type='))
+  return type ? type.slice('--type='.length) : 'browser'
+}
+
+export const PSS_SETTLE_POLICY = Object.freeze({
+  deltaKb: 1024,
+  maxDriftKb: 256,
+  consecutive: 5,
+  intervalMs: 500,
+  maxSamples: 60,
+})
+
+function median(xs) {
+  if (!xs.length) return NaN
+  const sorted = [...xs].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length & 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
 export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p, 'utf8')) {
   if (!Number.isInteger(rootPid) || rootPid <= 0) throw new TypeError('rootPid must be a positive integer')
   const seen = new Set()
@@ -148,10 +169,12 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
     let status
     let stat
     let smaps
+    let cmdline
     try {
       status = readText('/proc/' + pid + '/status')
       stat = readText('/proc/' + pid + '/stat')
       smaps = readText('/proc/' + pid + '/smaps_rollup')
+      cmdline = readText('/proc/' + pid + '/cmdline')
     } catch (error) {
       if (pid === rootPid) throw new Error('Chromium root process disappeared while sampling /proc', { cause: error })
       continue
@@ -160,6 +183,7 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
     const memory = parseProcStatusMemory(status)
     const startTime = parseProcStartTime(stat)
     const pssKb = parseSmapsRollupPssKb(smaps)
+    const processType = parseProcType(cmdline)
     if (
       !Number.isFinite(memory.vmRssKb) ||
       !Number.isFinite(memory.rssAnonKb) ||
@@ -175,6 +199,7 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
       pid,
       startTime,
       pssKb,
+      processType,
       ...memory,
       anonShmemKb: memory.rssAnonKb + memory.rssShmemKb,
     })
@@ -197,11 +222,14 @@ export function processTreeRss(rootPid, readText) {
   const identities = processes
     .map((p) => p.pid + ':' + p.startTime)
     .sort()
+  const renderers = processes.filter((p) => p.processType === 'renderer')
   return {
     rootPid,
     processCount: processes.length,
     identityKey: identities.join(','),
+    rendererPids: renderers.map((p) => p.pid).sort((a, b) => a - b),
     pssKb: processes.reduce((sum, p) => sum + p.pssKb, 0),
+    rendererPssKb: renderers.reduce((sum, p) => sum + p.pssKb, 0),
     rssKb: processes.reduce((sum, p) => sum + p.vmRssKb, 0),
     anonShmemKb: processes.reduce((sum, p) => sum + p.anonShmemKb, 0),
     processes,
@@ -211,15 +239,36 @@ export function processTreeRss(rootPid, readText) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function settleProcessTreeRss(rootPid, {
-  deltaKb = 1024,
-  consecutive = 5,
-  intervalMs = 500,
-  maxSamples = 60,
+  deltaKb = PSS_SETTLE_POLICY.deltaKb,
+  maxDriftKb = PSS_SETTLE_POLICY.maxDriftKb,
+  consecutive = PSS_SETTLE_POLICY.consecutive,
+  intervalMs = PSS_SETTLE_POLICY.intervalMs,
+  maxSamples = PSS_SETTLE_POLICY.maxSamples,
   readText,
 } = {}) {
   const samples = []
   let prev = processTreeRss(rootPid, readText)
   let window = [prev]
+
+  const summarizeWindow = (latest) => {
+    const pssValues = window.map((x) => x.pssKb)
+    const rssValues = window.map((x) => x.rssKb)
+    const anonValues = window.map((x) => x.anonShmemKb)
+    const rendererValues = window.map((x) => x.rendererPssKb)
+    const range = pssValues.length ? Math.max(...pssValues) - Math.min(...pssValues) : Infinity
+    const drift = pssValues.length > 1 ? Math.abs(pssValues.at(-1) - pssValues[0]) : Infinity
+    return {
+      ...latest,
+      // Return a robust window center rather than the newest observation.
+      pssKb: median(pssValues),
+      rssKb: median(rssValues),
+      anonShmemKb: median(anonValues),
+      rendererPssKb: median(rendererValues),
+      settleRangePssKb: range,
+      settleDriftPssKb: drift,
+      settleWindowPssKb: pssValues,
+    }
+  }
 
   for (let i = 0; i < maxSamples; i++) {
     await sleep(intervalMs)
@@ -229,9 +278,11 @@ export async function settleProcessTreeRss(rootPid, {
     samples.push({
       at: Date.now(),
       pssKb: next.pssKb,
+      rendererPssKb: next.rendererPssKb,
       rssKb: next.rssKb,
       anonShmemKb: next.anonShmemKb,
       processCount: next.processCount,
+      rendererPids: next.rendererPids,
       identityKey: next.identityKey,
       pssDeltaKb: next.pssKb - prev.pssKb,
       identityStable: sameIdentity,
@@ -243,25 +294,27 @@ export async function settleProcessTreeRss(rootPid, {
       if (window.length > consecutive + 1) window.shift()
     }
 
-    const pssValues = window.map((x) => x.pssKb)
-    const pssRangeKb = pssValues.length ? Math.max(...pssValues) - Math.min(...pssValues) : Infinity
-    if (window.length >= consecutive + 1 && pssRangeKb <= deltaKb) {
+    const summary = summarizeWindow(next)
+    if (
+      window.length >= consecutive + 1 &&
+      summary.settleRangePssKb <= deltaKb &&
+      summary.settleDriftPssKb <= maxDriftKb
+    ) {
       return {
-        ...next,
+        ...summary,
         stable: true,
         terminalStableSamples: consecutive,
-        settleRangePssKb: pssRangeKb,
         samples,
       }
     }
     prev = next
   }
 
+  const summary = summarizeWindow(prev)
   return {
-    ...prev,
+    ...summary,
     stable: false,
     terminalStableSamples: Math.max(0, window.length - 1),
-    settleRangePssKb: window.length ? Math.max(...window.map((x) => x.pssKb)) - Math.min(...window.map((x) => x.pssKb)) : Infinity,
     samples,
   }
 }

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sha256 } from '../asset-bench-lib.mjs'
+import { PSS_SETTLE_POLICY, sha256 } from '../asset-bench-lib.mjs'
 
 const ROOT = process.cwd()
 const script = path.resolve(ROOT, 'lane6-scratch/r10/asset-aggregate.mjs')
@@ -31,6 +31,7 @@ function fixtureDir(count = 6, mutate = null) {
       timingPrimary: 'capture',
       timingSecondary: 'capture+toCanvas',
       memoryPrimary: 'pre-capture to post-warmup process-tree PSS growth',
+      memorySettlePolicy: PSS_SETTLE_POLICY,
     },
     measurementFiles: {
       'lane6-scratch/r10/assets-bench.mjs': sha256(
@@ -99,13 +100,18 @@ function fixtureDir(count = 6, mutate = null) {
 }
 
 function runAggregate(f, expected = 6) {
+  // Synthetic contract fixtures deliberately use fake immutable identities. Do not let the parent
+  // GitHub Actions job inject its real run identity into this child; production aggregation keeps
+  // those environment checks enabled.
+  const env = { ...process.env }
+  for (const key of ['GITHUB_ACTIONS', 'GITHUB_SHA', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID']) delete env[key]
   return spawnSync(process.execPath, [
     script,
     '--input-dir=' + f.input,
     '--prepared=' + f.preparedPath,
     '--out=' + f.out,
     '--expected=' + expected,
-  ], { cwd: ROOT, encoding: 'utf8' })
+  ], { cwd: ROOT, encoding: 'utf8', env })
 }
 
 test('aggregate CLI consumes exactly one complete point per runner', () => {
