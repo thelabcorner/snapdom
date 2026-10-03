@@ -296,23 +296,23 @@ test('the reported aggregate is a plain Student-t on eight runner points', () =>
   assert.ok(Math.abs(agg.runnerSdLog * 100 - REPORTED_RUNNER_SD_PP) < 0.15)
 })
 
-test('the between-runner spread is ordinary sampling noise, not a systematic', () => {
-  // The harness names its own per-block stability quantity maxPairLogSd, and the calibration
-  // policy caps it at 0.50. A block log-ratio sd of s over N blocks gives a per-runner point sd
-  // of s / sqrt(N). Observed 3.3pp at N=24 implies s = 16.2pp, i.e. the rig ran at a third of its
-  // own preregistered ceiling. No systematic term is required to produce the observed dispersion.
+test('the original between-runner spread is compatible with sampling variance', () => {
+  // This is a compatibility calculation, NOT an exclusion of systematic error. The corrected
+  // post-settle run later resolved non-zero base-null physical-pair offsets. Here we prove only
+  // that the original 3.3pp runner spread did not, by itself, require a systematic term.
+  // A block log-ratio sd of s over N blocks gives a per-runner point sd of s / sqrt(N).
   const impliedBlockSdPp = REPORTED_RUNNER_SD_PP * Math.sqrt(N)
   assert.ok(Math.abs(impliedBlockSdPp - 16.2) < 0.5, `implied block sd ${impliedBlockSdPp.toFixed(1)}pp`)
   assert.ok(impliedBlockSdPp / 100 < 0.50, 'and comfortably inside the 0.50 stability ceiling')
 })
 
-test('the 2.62% aggregate is a plausible excursion of an eight-sample mean, not evidence of bias', () => {
+test('the original +2.62% candidate aggregate is statistically plausible under a zero-mean model', () => {
   const seOfMean = REPORTED_RUNNER_SD_PP / Math.sqrt(8)
   assert.ok(Math.abs(seOfMean - 1.18) < 0.02, `SE of the eight-runner mean is ${seOfMean.toFixed(2)}pp`)
   const z = 2.62 / seOfMean
   assert.ok(z > 2.0 && z < 2.5, `the point estimate sits at ${z.toFixed(2)} standard errors from zero`)
   // Two-sided normal tail at z = 2.2 is about 2.8%, so one in ~36 such calibrations looks this big.
-  assert.ok(z < 2.6, 'and inside the range a null calibration produces routinely')
+  assert.ok(z < 2.6, 'the candidate point alone cannot distinguish null noise from a separate rig systematic')
 })
 
 test('runner count required for a five-percent equivalence gate', () => {
@@ -332,10 +332,9 @@ test('runner count required for a five-percent equivalence gate', () => {
   assert.ok(halfWidth(12, sdHi) <= 4.0, `R=12 at the upper sigma limit gives ${halfWidth(12, sdHi).toFixed(2)}pp`)
 })
 
-test('N and batch are interchangeable per unit cost, so neither is a free lever', () => {
-  // The point sd scales as 1 / sqrt(batch * N). Doubling N costs exactly what halving the batch
-  // costs, because both are linear in the timed-call count. Runner count is the only lever, and it
-  // buys only the between-runner component.
+test('under the iid sampling model, N and batch are interchangeable per unit timed-call cost', () => {
+  // This describes only the sampling component. The corrected AA controls prove the real rig also
+  // has a topology/nonstationarity component, which increasing N or batch need not remove.
   const pointSd = (batch, n) => 1 / Math.sqrt(batch * n)
   assert.ok(Math.abs(pointSd(9, 24) - pointSd(24, 9)) < 1e-12, 'batch and N trade off one for one')
   assert.ok(Math.abs(pointSd(9, 96) / pointSd(9, 24) - 0.5) < 1e-12, 'quadrupling N halves the sd')

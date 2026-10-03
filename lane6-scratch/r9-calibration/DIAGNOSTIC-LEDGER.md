@@ -1,8 +1,11 @@
 # R9 hosted self-null calibration — diagnostic ledger
 
 Status: **diagnostic only.** Nothing here is an optimization or non-regression claim, and nothing
-here is promotable. This ledger records what the first 8-runner Chromium self-null does and does
-not establish, and what has to be measured next.
+here is promotable. This ledger now incorporates both the original 8-runner Chromium self-null and
+the corrected post-settle 8-runner Chromium run from hosted calibration `37090104263`. The
+post-settle controls materially change the diagnosis: stationary page costs still cancel by proof,
+but the real six-page rig shows a pair-specific nonstationary AA offset and is **not ready to freeze
+as the production promotion instrument**.
 
 All algebra below is proved browser-free by
 `node --test lane6-scratch/r9-calibration/algebra/selfnull-algebra.test.mjs` (19 assertions, no
@@ -16,7 +19,7 @@ and identical options (`--base={}` `--opt={}`). So all six physical layouts are 
 configuration: same module bytes, same options object, same fixture DOM, same viewport. The only
 thing that distinguishes them is the integer index they were created at.
 
-Observed, `chromium`, N=24, batch=9, 8 fresh runners:
+### Original run (`37088609368`, before the post-install settle fix)
 
 | fixture | self-null effect | runner 95% CI |
 |---|---:|---:|
@@ -25,7 +28,26 @@ Observed, `chromium`, N=24, batch=9, 8 fresh runners:
 | cards400-neutral-unsafe | +1.31% | [−1.19, +3.87] |
 | cards400-non-neutral | +0.83% | [−1.46, +3.17] |
 
-Individual `cards400-safe` runners: +8.88, +5.21, +3.75, +3.09, +1.38, +0.85, −0.51, −1.34.
+That run was useful for designing the instrument but its cross-engine phase became
+`INCOMPLETE_EVIDENCE`: WebKit jobs sampled Playwright-install CPU tail before timing. Commit
+`8c60647` added an adaptive settle phase and the run was repeated cleanly.
+
+### Corrected post-settle run (`37090104263`)
+
+Every completed Chromium runner reached timing after three quiet CPU windows and an ambient-gate
+mean/median near zero. N=24, batch=9, 8 fresh runners:
+
+| fixture | candidate self-null | candidate 95% CI | base-null | base-null 95% CI | opt-null | opt-null 95% CI |
+|---|---:|---:|---:|---:|---:|---:|
+| light-20cards | −0.27% | [−0.74, +0.20] | +0.03% | [−0.48, +0.54] | −0.09% | [−0.41, +0.24] |
+| cards400-safe | +0.36% | [−1.64, +2.40] | **+2.57%** | **[+1.09, +4.08]** | +0.28% | [−1.71, +2.31] |
+| cards400-neutral-unsafe | +1.40% | [+0.16, +2.65] | +0.70% | [−0.97, +2.40] | +0.83% | [−1.22, +2.92] |
+| cards400-non-neutral | −0.81% | [−3.28, +1.74] | **+2.36%** | **[+1.26, +3.48]** | +0.33% | [−1.20, +1.89] |
+
+The candidate self-null is inside ±5% on every fixture. The load-bearing result is instead the
+control asymmetry: **the base-null physical pair excludes zero on safe and non-neutral while the
+corresponding opt-null pair does not.** Because every arm is byte/option-identical in this
+calibration, that is measurement-rig evidence, not treatment evidence.
 
 ## 2. What the estimator actually computes
 
@@ -61,55 +83,70 @@ Two consequences, both proved:
 | Latin rotation order | cancels on its own — mean within-round position is 2.5 for every layout |
 | page creation order as a *stationary* offset | cancels exactly |
 | page identity as a *uniform* runner effect | blind to it entirely |
-| page creation order as a *non-stationary* term | **not excluded** — see §4, but bounded at ≲0.5% |
-| GC / JIT / scheduler state | only admissible via the non-stationary term of §4, or via block-level variance |
-| per-layout scheduler state | collapses into the same page×position term |
+| page creation order as a *non-stationary* term | **not excluded; now observed indirectly by pair-specific AA offsets** |
+| GC / JIT / scheduler state | admissible only when it changes the slot differential over block time; corrected AA controls show that some such channel survives |
+| per-layout scheduler state | collapses into a time-varying page×position term and can differ by physical page pair |
 
-## 4. The one real defect, and its ceiling
+## 4. The surviving mechanism: nonstationary page × slot-position state
 
-`shift = index % 6`, and `parity(index) === parity(index % 6)` because 6 is even. The batch-order
-parity `(index + b) & 1` is therefore locked to the Latin-rotation parity: **16 of every 24 blocks
-align "this layout was sampled early in the round" with "this layout's slot1 held the surplus first
-position"**, against 12 of 24 if the correlation were chance.
-
-That makes any *time-varying* page×position term leak. Each discontinuity contributes at most half
-its own size divided by `N`, because the alternating block parity only sums to ±1 over the affected
-window. With a discontinuity large enough to be physical — a first-of-pair interrupt at `exp(1.6) ≈ 5×`
-the other page's call — the leak is **−0.31%**, well under the 3.3pp noise floor. Reversing
-`LAYOUT_ORDER` flips its sign to +0.22%, near-exactly antisymmetric.
-
-**A smooth wall-clock relaxation of the same term leaks < 0.1%.** So:
-
-> The locked parity is a genuine correctness defect, but it is an order of magnitude too small to
-> have produced +2.62% on `cards400-safe`. It must be fixed eventually; it does not explain this result.
-
-## 5. What the 8-runner result actually shows
-
-Reconstructing the closeout aggregate exactly (Student-t on 8 log-point estimates, `t₇ = 2.365`)
-reproduces +2.62% and [−0.10, +5.41] to within rounding, and gives **runner SD(log) ≈ 3.3pp**.
-
-The harness already names this quantity: `maxPairLogSd` is the SD of the per-block log-ratio, and
-`POLICY.json` caps it at `0.50`. A per-runner point estimate is the mean of `N = 24` blocks, so
+The stationary proof in §2 remains valid. Therefore a non-zero AA control requires a term that
+changes **during acquisition**. The minimum model is:
 
 ```
-SD(runner point) = blockSd / sqrt(N)
-SD = 3.3pp  =>  blockSd = 3.3 * sqrt(24) = 16.2pp
+v_p(i) = (-1)^i · a_p(i) + ε_p(i)
 ```
 
-**The rig ran at 16.2pp against its own 50pp preregistered ceiling — about a third of it.** Ordinary
-sampling noise at the harness's own stability threshold accounts for the entire observed dispersion.
-No systematic term is required.
+where `(-1)^i` is the odd-batch surplus-first-position sign and `a_p(i)` is the physical page's
+time-varying sensitivity to that position. If `a_p(i)` is constant, the 12 even and 12 odd blocks
+cancel exactly. If it changes with JIT tiering, GC/decode pressure, renderer scheduling, thermal/VM
+state, or another page-specific phase transition, cancellation is no longer exact.
 
-Consequences for reading the table in §1:
+The current schedule makes this channel easier to leak: `shift = index % 6`, and because 6 is even,
+`parity(index) === parity(index % 6)`. Batch-order parity is therefore locked to Latin-rotation
+parity. Physical page pairs are also not exchangeable in wall-clock history:
 
-- The +2.62% is **2.2 standard errors** of an 8-sample mean whose expected SD is `3.3/√8 = 1.18pp`.
-  A two-sided normal tail at 2.2σ is ≈2.8%, so roughly one null calibration in 36 looks this large.
-- **7 of 8 runners positive** is a sign test at `p ≈ 0.035` one-sided. Suggestive, not conclusive,
-  and *inconsistent with a purely global systematic*, because `light-20cards` aggregates to −0.43%.
-- **The result does not establish a bias.** It establishes that the rig's noise floor is ~3.3pp of
-  between-runner dispersion at N=24, which makes a ±2% epsilon unresolvable by construction.
-- **The result also does not certify the rig.** A single underpowered run cannot distinguish "no
-  systematic" from "a systematic smaller than the floor". Both readings are consistent with the data.
+- candidate uses pages 0/1,
+- base-null uses pages 2/3,
+- opt-null uses pages 4/5,
+- all six are created, warmed and oracle-probed in a deterministic order before acquisition.
+
+A phase transition experienced differently by pages 2/3 can therefore move base-null while pages
+0/1 and 4/5 remain near zero. The corrected safe/non-neutral base-null results are direct evidence
+that **some pair-specific nonstationary differential exists**.
+
+The earlier browser-free synthetic test remains useful but its old interpretation was too strong.
+A single step/relaxation model leaked ≤0.5%; that is a bound on **that synthetic model only**, not
+on hosted Chromium. The corrected control means the real machine contains either repeated events,
+a different time-varying shape, or another nonstationary interaction not represented by that toy
+model. The hosted data falsifies using 0.5% as a real-world ceiling.
+
+This still does **not** justify subtracting base-null from the candidate. The three pair estimates
+come from different physical pages and need not share the same latent term; subtraction would
+replace one unidentified bias with another.
+
+## 5. What the corrected 8-runner result actually shows
+
+The original run established that the 400-card cells are noisy. The corrected post-settle run adds
+the missing distinction between **precision** and **control validity**:
+
+1. **Precision:** candidate self-null runner CIs are now inside ±5% on all four Chromium fixtures.
+   R=8 is therefore adequate for a ±5% *candidate-effect* equivalence statement on this sample.
+2. **Control validity:** two base-null CIs exclude zero by ~1–4%, while their opt-null counterparts
+   do not. This is statistically resolved physical-pair asymmetry under a true self-null.
+3. **Ambient-host contamination is not the cause:** the corrected runners entered timing at roughly
+   0–0.3% ambient CPU after the adaptive settle phase.
+4. **A global bias is also not the cause:** signs and magnitudes differ across candidate/base/opt
+   pairs and fixtures. The surviving term is pair/fixture/time specific.
+
+Accordingly, the old statement that ordinary sampling noise "accounts for the entire observed
+dispersion" is **retracted**. Sampling variance is substantial, but it is not the whole instrument:
+the corrected AA controls prove a systematic nonstationary component exists.
+
+The production conclusion is deliberately narrower:
+
+> **Do not freeze promotion thresholds against the current six-page schedule yet.** The candidate
+> self-null is precise enough for ±5%, but the control topology itself has a resolved pair-specific
+> offset. First challenge the topology with a physically matched design.
 
 ### What is needed, and is not currently possible from this artifact
 
@@ -139,18 +176,18 @@ Both are independent of the bias question and both are cheap to fix.
 
 ## 7. Variance channels and the R scaling that follows
 
-Point-estimate variance decomposes into three channels:
+Point-estimate uncertainty has at least four channels:
 
 | channel | scale | reducible by |
 |---|---|---|
-| per-call variance inside a block | `∝ 1/BATCH` | larger `--batch` |
-| block-level sampling | `∝ 1/sqrt(BATCH·N)` | larger `--batch` or `--n` |
-| between-runner dispersion | the 3.3pp observed | more runners only |
+| per-call variance inside a block | `∝ 1/BATCH` under iid sampling | larger `--batch` |
+| block-level sampling | `∝ 1/sqrt(BATCH·N)` under iid sampling | larger `--batch` or `--n` |
+| between-runner dispersion | measured directly across fresh VMs | more runners |
+| physical-page / nonstationary topology | **not iid and now empirically resolved in AA controls** | change/block/randomize the topology; more N is not guaranteed to help |
 
-`BATCH` and `N` are **interchangeable per unit cost** — both are linear in the timed-call count and
-the point SD is `∝ 1/sqrt(BATCH·N)`, so doubling `N` buys exactly what halving `BATCH` buys. Neither is
-a free lever. The only lever that is not paid for in wall clock is runner count, and it buys only the
-channel that dominates here.
+`BATCH` and `N` are interchangeable per unit cost only for the iid sampling component. The
+corrected base-null offsets prove that increasing either cannot, by itself, certify this instrument.
+Runner count narrows runner-level uncertainty; topology must be challenged separately.
 
 For a ±5% equivalence gate, `halfWidth = t(R−1) · σ / √R ≤ 5.0pp`, with `σ = 3.21pp` (log-space,
 from the 8 reported points) and `σ_hi = σ·√(7/χ²₀.₀₅,₇) = 5.77pp`:
@@ -191,31 +228,40 @@ exactly zero by construction rather than by argument.
 
 ## 9. Recommended next hosted experiment
 
-**One run, unchanged measurement, `N` raised — the variance decomposition experiment.**
+**A controlled A/A challenge of the measurement topology, at equal timed-call budget.**
 
-Run `bench-r9-controlled.mjs` exactly as the calibration does, but with `--n=96` instead of 24, on
-`cards400-safe` and `light-20cards` only, 8 Chromium runners, then read the runner SD of the
-per-runner point estimates.
+Run the current six-page rig and `bench-r9-blocked.mjs` side-by-side on the same fresh Chromium
+runner matrix. Use `light-20cards`, `cards400-safe` and `cards400-non-neutral`; keep the same
+total timed calls per fixture and at least R=8 fresh runners.
 
-- **σ(N=96) ≈ 1.65pp** → the 3.3pp is within-runner sampling noise. The rig is unbiased at this
-  scale; the fix is `BATCH·N` and runner count, nothing else. Merge nothing.
-- **σ(N=96) ≈ 3.3pp (flat)** → there is a runner- or fixture-level systematic that no amount of
-  blocking has touched, and the §4 hypothesis is dead. Go look for a channel that survives at
-  constant page count.
+Each runner should collect four preregistered lanes:
 
-This is decisive because it is the one measurement that separates the two surviving explanations, and
-it needs no change to the measurement semantics, so it is comparable against the existing artifacts.
+1. **current-six-page self-null** — exact existing semantics;
+2. **blocked-within-page self-null** — AB/BA paired inside the physical page, with even batch;
+3. **identity-canary** — both arms share the same module URL/physical identity, giving the
+   achievable exact-zero floor;
+4. **reversed `LAYOUT_ORDER` current rig** — creation/warm/rotation order all reversed together,
+   to expose order-coupled nonstationarity.
 
-Run alongside it, at zero marginal cost on the same runners:
+Add a **positive treatment control** with a known synthetic cost inserted in one arm. The alternative
+rig is acceptable only if it preserves that known effect; a design that "fixes" nulls by attenuating
+real treatment sensitivity is rejected.
 
-- **per-runner sign agreement across `{candidate, baseNull, optNull}`** — three independent
-  estimates of the same null quantity. A shared non-zero mean is the page-differential systematic;
-  independent scatter is noise. This is the single most informative quantity in the existing
-  artifacts and it is already in hand — it only needs `validate.mjs` to stop discarding it.
-- **`--reverse-layout-order`**, for a direct read on the §4 term. Expect ≤0.5%; anything larger
-  means the §4 ceiling derivation is wrong and needs revisiting.
-- **`--identity-canary`**, as the exact-zero floor the pipeline can produce when physical identity
-  is matched.
+Primary comparison metrics are runner-level and preregistered:
+
+- absolute mean of each AA/BB control;
+- maximum absolute control CI endpoint;
+- between-runner SD(log) of the self-null;
+- recovery of the injected positive-control effect and its CI;
+- timed calls / wall-clock cost.
+
+**Success criterion:** the blocked/matched design materially lowers the resolved base-null offsets
+and between-runner dispersion **without attenuating the positive control** and without increasing
+timed-call budget. If it does not, merge nothing.
+
+An `N=96` variance-decomposition run is still useful, but it is now secondary. The corrected
+base-null offsets already establish that sampling variance is not the only channel; increasing N
+alone cannot certify the topology.
 
 ### Measurement changes needed before the next calibration
 
@@ -232,8 +278,19 @@ Run alongside it, at zero marginal cost on the same runners:
 
 ## 10. Bottom line
 
-The rig is **not** demonstrably biased. It is **demonstrably underpowered** at 8 runners for a ±2%
-epsilon, and it has one real scheduling defect whose magnitude is an order of magnitude below the
-noise it already has. Fix the diagnostics, run the `N=96` decomposition, and choose the next step
-from that. Do not merge the blocked layout until a hosted A/A shows it lowers runner-level
-dispersion.
+The corrected hosted data changes the verdict:
+
+- the candidate self-null is precise enough to fit inside ±5% with R=8;
+- **the current six-page control topology is demonstrably asymmetric** on at least two 400-card
+  base-null pairs;
+- stationary page costs still cancel exactly, so the asymmetry must enter through nonstationary
+  page × slot-position state or an equivalent time-dependent physical-page interaction;
+- the old synthetic ≤0.5% bound is not a hosted-hardware ceiling;
+- no null subtraction is justified;
+- **the promotion policy stays unfrozen** until the current rig loses a controlled A/A challenge or
+  survives it.
+
+Do not merge `bench-r9-blocked.mjs` on algebra alone. Run it against the current rig with equal
+work, identity and reversed-order canaries, and a positive treatment control. Freeze the production
+instrument only after one topology shows lower null/control bias without losing treatment
+sensitivity.
