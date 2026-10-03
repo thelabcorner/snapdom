@@ -105,6 +105,37 @@ test('process-tree memory sums PSS and diagnostics across descendants', () => {
   assert.match(memory.identityKey, /13:130/)
 })
 
+test('process-tree discovery includes children spawned by non-main Chromium threads', () => {
+  const files = new Map([
+    ['/proc/10/status', status({ vm: 1000, anon: 600, file: 300, shmem: 100 })],
+    ['/proc/10/stat', stat(10, 100)],
+    ['/proc/10/smaps_rollup', smaps(800)],
+    ['/proc/10/cmdline', '/usr/bin/chromium\0'],
+    ['/proc/10/task/10/children', ''],
+    ['/proc/10/task/17/children', '11'],
+    ['/proc/11/status', status({ vm: 2000, anon: 1400, file: 400, shmem: 200 })],
+    ['/proc/11/stat', stat(11, 110)],
+    ['/proc/11/smaps_rollup', smaps(1500)],
+    ['/proc/11/cmdline', '/usr/bin/chromium\0--type=renderer\0'],
+    ['/proc/11/task/11/children', ''],
+  ])
+  const read = (p) => {
+    if (!files.has(p)) throw new Error('gone')
+    return files.get(p)
+  }
+  const readDir = (p) => {
+    if (p === '/proc/10/task') return ['10', '17']
+    if (p === '/proc/11/task') return ['11']
+    throw new Error('gone')
+  }
+
+  const memory = processTreeRss(10, read, readDir)
+  assert.deepEqual(memory.rendererPids, [11])
+  assert.equal(memory.rendererPssKb, 1500)
+  assert.equal(memory.pssKb, 2300)
+  assert.equal(memory.processCount, 2)
+})
+
 test('process-tree sampling refuses a vanished Chromium root pid', () => {
   assert.throws(
     () => processTreeRss(10, () => { throw new Error('gone') }),

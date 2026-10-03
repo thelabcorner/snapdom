@@ -202,11 +202,48 @@ function median(xs) {
   return sorted.length & 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
-export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p, 'utf8')) {
+const readFsText = (p) => fs.readFileSync(p, 'utf8')
+const readFsDir = (p) => fs.readdirSync(p)
+
+export function collectProcessTree(
+  rootPid,
+  readText = readFsText,
+  readDir = readText === readFsText ? readFsDir : null,
+) {
   if (!Number.isInteger(rootPid) || rootPid <= 0) throw new TypeError('rootPid must be a positive integer')
   const seen = new Set()
   const stack = [rootPid]
   const processes = []
+
+  // /proc/<pid>/task/<pid>/children only lists children created by the main task. Chromium can
+  // fork zygotes/renderers from another browser thread, so authoritative process-tree accounting
+  // must union the children files for every task in the process. Synthetic readers keep the
+  // legacy main-task path unless they explicitly provide a directory reader.
+  const childPids = (pid) => {
+    let tids = [pid]
+    if (typeof readDir === 'function') {
+      try {
+        const observed = readDir('/proc/' + pid + '/task')
+          .map(Number)
+          .filter(Number.isInteger)
+        if (observed.length) tids = observed
+      } catch {
+        // Task enumeration can race process exit. The main task is still the conservative floor.
+      }
+    }
+
+    const children = new Set()
+    for (const tid of tids) {
+      try {
+        for (const child of parseProcChildren(readText('/proc/' + pid + '/task/' + tid + '/children'))) {
+          children.add(child)
+        }
+      } catch {
+        // A worker thread may disappear between task enumeration and its children read.
+      }
+    }
+    return [...children]
+  }
 
   while (stack.length) {
     const pid = stack.pop()
@@ -251,18 +288,13 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
       anonShmemKb: memory.rssAnonKb + memory.rssShmemKb,
     })
 
-    try {
-      const children = parseProcChildren(readText('/proc/' + pid + '/task/' + pid + '/children'))
-      for (const child of children) if (!seen.has(child)) stack.push(child)
-    } catch {
-      // A short-lived child may disappear between memory sampling and the children read.
-    }
+    for (const child of childPids(pid)) if (!seen.has(child)) stack.push(child)
   }
   return processes
 }
 
-export function processTreeRss(rootPid, readText) {
-  const processes = collectProcessTree(rootPid, readText)
+export function processTreeRss(rootPid, readText, readDir) {
+  const processes = collectProcessTree(rootPid, readText, readDir)
   if (!processes.some((p) => p.pid === rootPid)) {
     throw new Error('Chromium root process disappeared while sampling /proc')
   }
@@ -292,9 +324,10 @@ export async function settleProcessTreeRss(rootPid, {
   intervalMs = PSS_SETTLE_POLICY.intervalMs,
   maxSamples = PSS_SETTLE_POLICY.maxSamples,
   readText,
+  readDir,
 } = {}) {
   const samples = []
-  let prev = processTreeRss(rootPid, readText)
+  let prev = processTreeRss(rootPid, readText, readDir)
   let window = [prev]
 
   const summarizeWindow = (latest) => {
@@ -319,7 +352,7 @@ export async function settleProcessTreeRss(rootPid, {
 
   for (let i = 0; i < maxSamples; i++) {
     await sleep(intervalMs)
-    const next = processTreeRss(rootPid, readText)
+    const next = processTreeRss(rootPid, readText, readDir)
     const sameIdentity = next.identityKey === prev.identityKey
 
     samples.push({
