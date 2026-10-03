@@ -60,17 +60,28 @@ const origin = `http://127.0.0.1:${server.address().port}`
 
 // Fixture builders run in the page. `where` places the animated element relative to the capture
 // root: 'sibling' | 'ancestor' | 'subtree' | 'self' | 'none'.
+// Fixture roles. `falsifier` MUST save exactly zero reads; `opportunity` MUST save more than zero.
+//
+// NOTE ON anim-subtree, corrected after hosted run 37145239641: an animation inside the captured
+// subtree is NOT a falsifier-zero case, and d919614's fixture table claimed it was. An animation
+// moves its target and its target's DESCENDANTS, so it cannot move a sibling of that target —
+// which means every other row in the capture is genuinely released. The subtree geometry is a
+// PARTIAL release for the element universe, and a full block for the subtree-scoped truncation
+// prepass (which lane6-scratch/r10/check-r10-anim-scope-geometry.mjs pins as a structural invariant).
+// Recording that honestly is the point; forcing it to falsifier-zero would mean weakening the
+// element-universe scope for a case it gets right.
 const FIXTURES = [
   { name: 'anim-sibling-60', nodes: 60, where: 'sibling', keys: [{ opacity: '0.2' }, { opacity: '0.9' }], role: 'opportunity' },
   { name: 'anim-sibling-entropy-120', nodes: 120, where: 'sibling', keys: [{ transform: 'translateX(0px)' }, { transform: 'translateX(40px)' }], role: 'opportunity' },
   { name: 'anim-sibling-inherited-60', nodes: 60, where: 'sibling', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'opportunity' },
+  { name: 'anim-subtree-partial-60', nodes: 60, where: 'subtree', keys: [{ opacity: '0.4' }, { opacity: '1' }], role: 'opportunity' },
   { name: 'anim-ancestor-60', nodes: 60, where: 'ancestor', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'falsifier' },
   { name: 'anim-ancestor-customprop-60', nodes: 60, where: 'ancestor', keys: [{ '--tone': 'rgb(1,2,3)' }, { '--tone': 'rgb(200,10,10)' }], role: 'falsifier', extraCss: '@property --tone{syntax:"<color>";inherits:true;initial-value:#000}.row{color:var(--tone)}' },
   { name: 'anim-ancestor-noninherited-60', nodes: 60, where: 'ancestor', keys: [{ paddingLeft: '0px' }, { paddingLeft: '24px' }], role: 'falsifier' },
+  { name: 'anim-descendant-of-root-60', nodes: 60, where: 'childOfRoot', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'falsifier' },
   { name: 'anim-self-60', nodes: 60, where: 'self', keys: [{ opacity: '0.4' }, { opacity: '1' }], role: 'falsifier' },
-  { name: 'anim-subtree-60', nodes: 60, where: 'subtree', keys: [{ opacity: '0.4' }, { opacity: '1' }], role: 'fallback-control' },
+  { name: 'anim-shadow-60', nodes: 60, where: 'shadow', keys: [{ opacity: '0.2' }, { opacity: '0.9' }], role: 'falsifier' },
   { name: 'anim-none-60', nodes: 60, where: 'none', keys: null, role: 'control' },
-  { name: 'anim-shadow-60', nodes: 60, where: 'shadow', keys: [{ opacity: '0.2' }, { opacity: '0.9' }], role: 'fallback-control' },
 ]
 
 const BASE_CSS = '.row{display:block;padding:2px;color:#334155}'
@@ -129,6 +140,10 @@ try {
           add(s)
         } else if (fx.where === 'ancestor') {
           add(host)
+        } else if (fx.where === 'childOfRoot') {
+          const s = document.createElement('div')
+          root.appendChild(s)
+          add(s)
         } else if (fx.where === 'self') {
           add(root)
         } else if (fx.where === 'subtree') {
@@ -196,7 +211,7 @@ try {
       (fx.role === 'opportunity' ? saved > 0 : saved === 0)
     report.fixtures[fx.name] = rec
     console.log(
-      `${fx.name.padEnd(30)} ${rec.role.padEnd(17)} raw=${parity ? 'EQ  ' : 'DIFF'} ` +
+      `${fx.name.padEnd(30)} ${rec.role.padEnd(13)} raw=${parity ? 'EQ  ' : 'DIFF'} ` +
       `gpv ${String(h.gpv).padStart(6)}->${String(c.gpv).padStart(6)} saved=${String(saved).padStart(6)} ` +
       `universe ${c.counters?.elementUniverse ? `${c.counters.elementUniverse.released}r/${c.counters.elementUniverse.blocked}b` : '-'} ` +
       `${rec.pass ? 'PASS' : 'FAIL'}`,
@@ -219,6 +234,7 @@ report.summary = {
     all.filter((f) => f.role === 'falsifier').map((f) => [f.name, f.gpv.saved]),
   ),
   falsifierMustBeZero: all.filter((f) => f.role === 'falsifier').every((f) => f.gpv.saved === 0),
+  controlMustBeZero: all.filter((f) => f.role === 'control').every((f) => f.gpv.saved === 0),
 }
 report.provenance = hostedProvenance({ engine: ENGINE })
 

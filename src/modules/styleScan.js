@@ -836,56 +836,55 @@ const NO_ANIMATION_TARGETS = new Set()
 export const UNRESOLVED_ANIMATION_SCOPE = Object.freeze({
   count: 0,
   targets: NO_ANIMATION_TARGETS,
-  ancestors: NO_ANIMATION_TARGETS,
   unresolvable: true,
 })
 
 /**
- * R10-ANIM1: attribute the document's live animations to the elements they can actually reach.
+ * R10-ANIM1: collect the elements the document's live animations actually animate.
  *
  * `hasAnimations` is document-wide, so one animation anywhere collapses the whole capture onto
- * its conservative paths. That is only sound because every consumer's question is LOCAL:
+ * its conservative paths. That is only sound because every consumer's question is LOCAL, and the
+ * locality is a statement about DIRECTION:
  *
- *  - A CSS animation, transition or WAAPI animation has exactly ONE effect target, and it
- *    participates in the cascade at that target only. It cannot move another element's computed
- *    style.
- *  - The one cross-element channel is INHERITANCE: an animation on an ancestor changes that
- *    ancestor's computed value of an inherited property, and descendants inherit the result.
- *    Registered custom properties (the `@property` family) are inherited too, so this channel
- *    covers them as well.
+ *  - A CSS animation, transition or WAAPI animation has exactly ONE effect target and
+ *    participates in the cascade AT THAT TARGET. It moves that target's computed values.
+ *  - INHERITANCE carries those values DOWNWARD to the target's descendants. Registered custom
+ *    properties (the `@property` family) are inherited, so they ride the same channel — which is
+ *    why the original finding surfaced under custom properties.
+ *  - Therefore the affected set is the target and its DESCENDANTS. Never its ancestors, and
+ *    never a sibling.
  *
- * So the two sets that answer "could this animation reach me?" are the animation's own target
- * element and the closure of that target's ancestors. `pseudoElement` needs no special case: a
- * pseudo animation's `effect.target` is its originating element, so `::before`/`::first-letter`
- * targets land on the host — the conservative direction for every consumer.
+ * CONSEQUENCE, and the reason this function keeps only `targets`: the downstream set is not a
+ * closure anyone should precompute. `targets` is a handful of nodes; "is `el` downstream of a
+ * target" is answered by walking UP from `el` and asking whether any node on that walk is a
+ * target, which is O(depth) Set lookups and needs no stored structure at all. A precomputed
+ * ancestor closure answers the OPPOSITE question ("who feeds the animation"), and shipping one is
+ * exactly the inversion that hosted run 37145239641 falsified: it released exactly the ancestor
+ * and self cases that had to stay blocked. See lane6-scratch/r10/check-r10-anim-scope-geometry.mjs,
+ * which keeps that broken predicate as a negative control.
+ *
+ * `pseudoElement` needs no special case: a pseudo animation's `effect.target` is its originating
+ * element, so `::before`/`::first-letter` targets land on the host. That over-approximates (a
+ * pseudo animation does not move its host's own computed values) and is kept deliberately.
  *
  * `unresolvable` fails closed. An animation with no usable element target (null effect, a
  * non-element target) or one rooted outside this document (shadow content, a foreign document)
- * cannot be placed in either set, so it blocks every consumer exactly as it blocks them today.
- *
- * `ancestors` is built with a monotone walk that stops at the first node already present: the
- * first target contributes the whole chain to the root, so every later walk stops where the
- * existing closure already covers it and the cost is O(animations x depth) once per scan.
+ * cannot be placed in the set, so it blocks every consumer exactly as it blocks them today.
  *
  * @param {Document} doc
  * @param {Array<Animation>} animations
- * @returns {{count: number, targets: Set<Element>, ancestors: Set<Element>, unresolvable: boolean}}
+ * @returns {{count: number, targets: Set<Element>, unresolvable: boolean}}
  */
 function buildAnimationScope(doc, animations) {
   const targets = new Set()
-  const ancestors = new Set()
   let unresolvable = false
   for (const anim of animations) {
     const target = anim?.effect?.target
     if (!target || target.nodeType !== 1) { unresolvable = true; continue }
     if (target.getRootNode && target.getRootNode() !== doc) { unresolvable = true; continue }
     targets.add(target)
-    for (let a = target.parentElement; a; a = a.parentElement) {
-      if (ancestors.has(a)) break
-      ancestors.add(a)
-    }
   }
-  return { count: animations.length, targets, ancestors, unresolvable }
+  return { count: animations.length, targets, unresolvable }
 }
 
 /** One matches()/querySelector-ready selector list from collected parts: '' when there are
@@ -955,13 +954,15 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
  *   `hasAnimations` covers live CSS/WAAPI animation state.
  * - `animationScope`: R10-ANIM1. The same live animations `hasAnimations` summarizes, resolved to
- *   the elements they can reach (`targets` plus the `ancestors` closure), so each consumer asks its
- *   own local question instead of inheriting one document-wide veto. Null when the document has no
- *   live animation; UNRESOLVED_ANIMATION_SCOPE when the scan cannot be trusted or an animation
- *   cannot be attributed, which blocks exactly as `hasAnimations` does today.
+ *   the elements they actually animate (`targets`), so each consumer asks its own local question
+ *   instead of inheriting one document-wide veto. Affected elements are a target and its
+ *   DESCENDANTS — never its ancestors — so consumers test downward reachability by walking up from
+ *   their own node; no closure is precomputed. Null when the document has no live animation;
+ *   UNRESOLVED_ANIMATION_SCOPE when the scan cannot be trusted or an animation cannot be
+ *   attributed, which blocks exactly as `hasAnimations` does today.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean, animationScope: {count: number, targets: Set<Element>, ancestors: Set<Element>, unresolvable: boolean}|null}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean, animationScope: {count: number, targets: Set<Element>, unresolvable: boolean}|null}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise

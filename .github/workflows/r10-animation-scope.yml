@@ -59,7 +59,7 @@ env:
 
 jobs:
   logic:
-    name: ancestor-closure invariants (no browser)
+    name: reachability geometry invariants (no browser)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -73,8 +73,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Verify the copied algorithm still matches the shipped source
-        run: node lane6-scratch/r10/check-r10-anim-scope-algorithm.mjs
+      - name: Verify reachability classification against an independent oracle
+        run: node lane6-scratch/r10/check-r10-anim-scope-geometry.mjs
 
   probe:
     name: ${{ matrix.engine }} causal probe
@@ -145,8 +145,10 @@ jobs:
             if (!f.length) throw new Error('no fixtures ran');
             const bad = f.filter(([, v]) => !v.rawParity);
             if (bad.length) throw new Error('raw parity failed: ' + bad.map(([k]) => k).join(','));
-            const lost = f.filter(([, v]) => v.role !== 'opportunity' && v.gpv.saved !== 0);
-            if (lost.length) throw new Error('falsifier/control saved reads: ' + lost.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
+            const lost = f.filter(([, v]) => v.role === 'falsifier' && v.gpv.saved !== 0);
+            if (lost.length) throw new Error('falsifier saved reads: ' + lost.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
+            const ctrl = f.filter(([, v]) => v.role === 'control' && v.gpv.saved !== 0);
+            if (ctrl.length) throw new Error('control saved reads: ' + ctrl.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
             const missed = f.filter(([, v]) => v.role === 'opportunity' && v.gpv.saved <= 0);
             if (missed.length) throw new Error('opportunity saved nothing: ' + missed.map(([k]) => k).join(','));
             if (r.provenance?.github?.actions !== true) throw new Error('missing hosted provenance');
@@ -228,8 +230,11 @@ jobs:
               const roles = new Set(rows.map(([, v]) => v.role));
               if (roles.size !== 1) throw new Error(name + ' role disagreement across engines');
               const role = [...roles][0];
-              if (role !== 'opportunity' && rows.some(([, v]) => v.gpv.saved !== 0)) {
+              if (role === 'falsifier' && rows.some(([, v]) => v.gpv.saved !== 0)) {
                 throw new Error(name + ' falsifier saved reads on some engine');
+              }
+              if (role === 'control' && rows.some(([, v]) => v.gpv.saved !== 0)) {
+                throw new Error(name + ' control saved reads on some engine');
               }
               if (role === 'opportunity' && rows.some(([, v]) => v.gpv.saved <= 0)) {
                 throw new Error(name + ' opportunity saved nothing on some engine');

@@ -678,28 +678,39 @@ function scanFor(doc) {
  *
  * `scanAuthorStyles` collapses the document's live animations into one boolean, so a single
  * unrelated spinner used to force every capture onto every conservative path. Each consumer's
- * actual question is local, and the scope it needs follows from what that consumer reads:
+ * actual question is local, and it is a question about DOWNSTREAM reachability: an animation on
+ * target T moves T and T's descendants, and nothing else. Each consumer needs the reach that
+ * matches what it actually reads:
  *
- *  - ANIM_SCOPE_SELF — the consumer reads only the element's OWN computed values, for properties
- *    that do not inherit (background/mask/border-image, mask layout, margins). An animation on an
- *    ancestor cannot produce such a value here, so only the element itself can.
- *  - ANIM_SCOPE_SELF_OR_ANCESTOR — the consumer also depends on INHERITED values (any computed
- *    property read at all; a font epoch re-resolving em/rem lengths). An animation on an ancestor
- *    moves those, so ancestors join the scope. Registered custom properties are inherited, so the
- *    same ancestor arm covers them.
- *  - ANIM_SCOPE_SUBTREE — the consumer's decision covers a whole subtree (the truncation prepass),
- *    so the scope is that subtree plus the ancestors of its root.
+ *  - ANIM_REACH_SELF — the consumer reads only the element's OWN computed values, for properties
+ *    that do not inherit (background/mask/border-image, mask layout, margins). Inheritance runs
+ *    downward, so a descendant's animation cannot produce such a value here: only the element
+ *    itself counts. This arm is an exact `targets.has(el)`.
+ *  - ANIM_REACH_INHERITED — the consumer depends on INHERITED values too (any computed property at
+ *    all; a font epoch re-resolving em/rem lengths), so the element is in scope when it, or any
+ *    node above it up to the document element, is animated. Registered custom properties are
+ *    inherited and ride the same channel.
+ *  - ANIM_REACH_SUBTREE — the consumer's decision covers a whole subtree (the truncation prepass),
+ *    so it is blocked when any animated node lies inside that subtree OR when the subtree's root
+ *    sits at or below an animated node.
  *
- * Every arm is answered from the two sets built by buildAnimationScope, so a scoped check is two
- * Set lookups. When the document has no live animation the index is null and the answer is "not
- * blocked" — which is what the historical boolean already said, at the same cost.
+ * The index holds only the animated nodes themselves, because the affected set is a target and its
+ * DESCENDANTS and precomputing that would mean walking whole subtrees. "Am I downstream of an
+ * animation?" is instead answered by walking UP and asking whether any node on that walk is a
+ * target: O(depth) Set lookups, no stored structure, and on the element-universe path the walk
+ * already exists for UA defaults so the marginal cost is one lookup per level. A sibling animation
+ * is outside that walk by construction, which is the whole opportunity.
  *
  * `options.__animationScope === false` restores the document-wide veto mechanism for mechanism,
  * which is the counterfactual both the parity fixtures and the hosted A/B arm against.
  */
-const ANIM_SCOPE_SELF = 1
-const ANIM_SCOPE_SELF_OR_ANCESTOR = 2
-const ANIM_SCOPE_SUBTREE = 3
+const ANIM_REACH_SELF = 1
+const ANIM_REACH_INHERITED = 2
+const ANIM_REACH_SUBTREE = 3
+
+/** Matches the ancestor walk's own budget. Exhausting it before the document element is reached
+ *  is uncertainty, not a negative answer, so it fails closed. */
+const ANIM_REACH_DEPTH_LIMIT = 1024
 
 /** Caller-supplied counter sink. Absent in production, so the hot path pays one optional-chaining
  *  read and nothing else. Keys: one record per consumer name, plus `reads` for CSSOM crossings. */
@@ -721,7 +732,7 @@ function noteAnimationRead(options) {
  * Whether a live animation can reach `el` for the question `scope` asks.
  * @param {object} scan scanFor() record
  * @param {Element} el
- * @param {1|2|3} scope one of the ANIM_SCOPE_* constants
+ * @param {1|2|3} scope one of the ANIM_REACH_* constants
  * @param {object} [options] capture options (counter sink + the false counterfactual)
  * @param {string} [name] consumer name for the counter record
  * @returns {boolean}
@@ -734,29 +745,69 @@ function animationBlocks(scan, el, scope, options, name) {
     return true
   }
   let blocked
+  const doc = el.ownerDocument || el.getRootNode?.() || document
   if (index.unresolvable) blocked = true
-  else if (scope === ANIM_SCOPE_SELF) blocked = index.targets.has(el)
-  else if (scope === ANIM_SCOPE_SELF_OR_ANCESTOR) {
-    blocked = index.targets.has(el) || index.ancestors.has(el)
-  } else {
-    blocked = index.ancestors.has(el)
-    if (!blocked) {
-      for (const target of index.targets) {
-        if (target === el || el.contains(target)) { blocked = true; break }
-      }
-    }
-  }
+  else if (scope === ANIM_REACH_SELF) blocked = index.targets.has(el)
+  else if (scope === ANIM_REACH_INHERITED) blocked = animationReachesInherited(index, el, doc)
+  else blocked = animationReachesSubtree(index, el, doc)
   const sink = options?.__animationScopeCounters
   if (sink && sink.index === undefined) {
     sink.index = {
       animations: index.count,
       targets: index.targets.size,
-      ancestors: index.ancestors.size,
       unresolvable: index.unresolvable,
     }
   }
   noteAnimationScope(options, name, blocked)
   return blocked
+}
+
+/**
+ * Can an animation change any computed value on `el`? True when `el` is itself animated, or when
+ * any node from `el` up to the document element is animated and an INHERITED value can therefore
+ * arrive from above.
+ *
+ * Walking UP is the point: the affected set of an animation is its target and the target's
+ * descendants, so the test for a given node is "is any ancestor of it (or itself) a target".
+ * Exiting the loop without having reached the document element — a detached node, or a tree
+ * deeper than the budget — is uncertainty, and uncertainty fails closed.
+*
+ * @param {{targets: Set<Element>}} index
+ * @param {Element} el
+ * @param {Document} doc
+ * @returns {boolean}
+ */
+function animationReachesInherited(index, el, doc) {
+  let a = el
+  for (let depth = 0; a && depth < ANIM_REACH_DEPTH_LIMIT; depth++) {
+    if (index.targets.has(a)) return true
+    if (a === doc.documentElement) return false
+    const next = a.parentElement
+    if (!next) return true
+    a = next
+  }
+  return true
+}
+
+/**
+ * Can an animation change anything inside `el`'s subtree? True when `el` is reachable by
+ * inheritance from above, or when an animated node lies inside the subtree.
+ *
+ * Both terms are needed and neither subsumes the other: subtrees are nested or disjoint, so a
+ * target strictly inside `el` does NOT make `el` itself reachable (an animation cannot move its
+ * own ancestors) yet still changes something the consumer cares about.
+
+ * @param {{targets: Set<Element>}} index
+ * @param {Element} el
+ * @param {Document} doc
+ * @returns {boolean}
+ */
+function animationReachesSubtree(index, el, doc) {
+  if (animationReachesInherited(index, el, doc)) return true
+  for (const target of index.targets) {
+    if (el.contains(target)) return true
+  }
+  return false
 }
 
 /** Whether a font completion could change background/mask/border-image layout values for this
@@ -807,10 +858,11 @@ function backgroundFontSensitiveFor(el) {
  * these truncation properties.
  *
  * R10-ANIM1 scopes the animation arm, because this pass covers a whole subtree: the only
- * animations that can make it necessary are ones inside that subtree or on one of its root's
- * ancestors (`text-overflow` is inherited, and `display` can be stepped discretely by an
- * animation). An animation on an unrelated sibling cannot add or remove a truncation anywhere
- * below this root, so the historical document-wide veto is strictly wider than the question.
+ * animations that can make it necessary are ones inside that subtree, or at or above its root
+ * (`text-overflow` is inherited, and `display` can be stepped discretely by an animation). Both
+ * terms are required and neither subsumes the other. An animation on an unrelated sibling cannot
+ * add or remove a truncation anywhere below this root, so the historical document-wide veto is
+ * strictly wider than the question.
  *
  * This is intentionally evaluated immediately before lineClampTree(), with no await between
  * proof and historical observation point. It must not be reused for later preparation phases.
@@ -824,7 +876,7 @@ export function needsTextTruncationPrepass(root, options) {
     const scan = scanFor(root.ownerDocument || document)
     if (!scan.elementRules || scan.elementUniverseBlocked ||
         (scan.elementAllRules && scan.elementAllRules.length)) return true
-    if (animationBlocks(scan, root, ANIM_SCOPE_SUBTREE, options, 'textTruncationPrepass')) return true
+    if (animationBlocks(scan, root, ANIM_REACH_SUBTREE, options, 'textTruncationPrepass')) return true
     const props = scan.elementDeclaredProps
     if (!props) return true
     if (props.has('line-clamp') || props.has('-webkit-line-clamp') || props.has('text-overflow')) return true
@@ -1576,12 +1628,14 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
 
   const scan = scanFor(doc)
   if (!scan.elementRules || scan.elementUniverseBlocked) return universe
-  // R10-ANIM1: narrowing is only exact while no animation can move this element's computed style.
-  // The element's own animations do that directly; an ancestor's do it for INHERITED properties
-  // (including registered custom properties). Anything else in the document — a sibling spinner, a
-  // carousel elsewhere on the page — is unreachable from here, and today it costs this element the
-  // full document universe anyway.
-  if (animationBlocks(scan, el, ANIM_SCOPE_SELF_OR_ANCESTOR, options, 'elementUniverse')) return universe
+ // R10-ANIM1: narrowing is only exact while no animation can move this element's computed style.
+  // The element's own animations do that directly, and so do its ANCESTORS' — inherited values
+  // (including registered custom properties) arrive from above. So the test is "is any node from
+  // here up to the document element animated", which is an upward walk against the animated set.
+  // The opposite direction is the bug hosted run 37145239641 caught: a sibling spinner, or a
+  // carousel elsewhere on the page, is outside that walk and genuinely unreachable, but neither is
+  // anything ABOVE this element.
+ if (animationBlocks(scan, el, ANIM_REACH_INHERITED, options, 'elementUniverse')) return universe
   const st = elementUniverseStateFor(doc, scan)
   if (st.blocked) return universe
   const seen = st.seen
@@ -2113,7 +2167,7 @@ function canSkipBackgroundInlineStateProbe(el, options, docUniverse) {
     // R10-ANIM1: the probe reads this element's own background/mask/border-image, none of which
     // inherit, so only an animation targeting this element can make the answer true. Moved out of
     // the memoized document arm above so the per-element question is asked per element.
-    if (animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'backgroundStateProbe')) return false
+    if (animationBlocks(scan, el, ANIM_REACH_SELF, options, 'backgroundStateProbe')) return false
 
     const inline = el.style
     if (inline?.length) {
@@ -2165,7 +2219,7 @@ export function maskLayoutInitialValues(el, options) {
     if (!scan.elementRules || scan.elementUniverseBlocked) return null
     // R10-ANIM1: mask longhands are all non-inherited, so an ancestor's animation cannot give THIS
     // node a mask to fold away. Only its own animation can.
-    if (animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'maskLayoutInitials')) return null
+    if (animationBlocks(scan, el, ANIM_REACH_SELF, options, 'maskLayoutInitials')) return null
     let safe = scan.__maskLayoutInitialSafe
     if (safe === undefined) {
       safe = Array.isArray(scan.elementAllRules) && scan.elementAllRules.length === 0 && !!scan.elementDeclaredProps
@@ -2949,7 +3003,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
           // margin and pushes to `dyn` when it actually finds one — so scoping the veto here
           // changes cost, never bytes. Evaluated unconditionally (not inside the || chain) so the
           // counter records the question rather than its short-circuit.
-          const animated = animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'autoMarginProbe')
+          const animated = animationBlocks(scan, el, ANIM_REACH_SELF, options, 'autoMarginProbe')
           probeAutoMargin = !!scan.marginMayBeAuto || animated ||
             UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
             AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)

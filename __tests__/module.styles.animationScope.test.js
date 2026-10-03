@@ -52,6 +52,15 @@ function freezeAllAnimations() {
   }
 }
 
+/** Animate the first child of `el`, so `el` is an ancestor of an animation target. */
+function runChild(el) {
+  const child = document.createElement('span')
+  child.textContent = 'child'
+  el.appendChild(child)
+  frozenAnimation(child, [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }])
+  mounted.push(child)
+}
+
 async function parity(root, extra = {}) {
   const common = { cache: 'disabled', burst: false, embedFonts: false, ...extra }
   const historical = await snapdom.toRaw(root, { ...common, __animationScope: false })
@@ -183,7 +192,44 @@ describe('R10-ANIM1 ancestor animation is a correctness falsifier', () => {
     })
     expect(sink.elementUniverse.released).toBe(0)
     expect(sink.elementUniverse.blocked).toBeGreaterThan(0)
-    expect(sink.index.ancestors).toBeGreaterThan(0)
+    expect(sink.index.targets).toBeGreaterThan(0)
+    expect(sink.index.ancestors).toBeUndefined()
+  })
+
+  it('still vetoes the element universe for a child of the capture root', async () => {
+    // The geometry d919614 missed: the queried nodes are neither the animation target nor its
+    // ancestors — they are its DESCENDANTS. Inheritance runs downward, so they are affected.
+    const root = mount(BASE_CSS, (root) => {
+      corpus(root)
+      runChild(root)
+    })
+    const sink = {}
+    await snapdom.toRaw(root, {
+      cache: 'disabled', burst: false, embedFonts: false,
+      __animationScope: true, __animationScopeCounters: sink,
+    })
+    expect(sink.elementUniverse.released).toBe(0)
+    expect(sink.elementUniverse.blocked).toBeGreaterThan(0)
+  })
+
+  it('releases every captured element when the animation is outside the captured root', async () => {
+    // The mirror of the falsifier above, and the shape the opportunity actually takes: the animated
+    // node is in a disjoint subtree, so it is neither a target of nor an ancestor of any captured
+    // node.
+    const root = mount(BASE_CSS, (root) => {
+      corpus(root)
+      const sibling = document.createElement('div')
+      root.parentNode.appendChild(sibling)
+      mounted.push(sibling)
+      frozenAnimation(sibling, [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }])
+    })
+    const sink = {}
+    await snapdom.toRaw(root, {
+      cache: 'disabled', burst: false, embedFonts: false,
+      __animationScope: true, __animationScopeCounters: sink,
+    })
+    expect(sink.elementUniverse.released).toBeGreaterThan(0)
+    expect(sink.elementUniverse.blocked).toBe(0)
   })
 
   it('is exact when an ancestor animates a non-inherited property', async () => {
