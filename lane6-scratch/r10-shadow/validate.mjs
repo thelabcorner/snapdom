@@ -1,17 +1,28 @@
 #!/usr/bin/env node
-// F4 provenance gate plus the PREREGISTERED decision rule. This file is the only place a verdict
-// is formed, and it reads the policy rather than restating it, so a threshold edit is a policy
-// edit and shows up in the pinned policy hash.
-//
-// The rule, from F4_POLICY.json:
-//   REJECT_PARTITION   no shadow fixture's 95% CI upper bound reaches gates.minEffectPct, OR the
-//                     instrument is noisy on any fixture, OR the no-op control is not equivalent,
-//                     OR any fixture regresses by more than gates.minEffectPct.
-//   PROMOTE_TO_DESIGN  every splitting-free shadow fixture clears gates.minEffectPct with a clean
-//                     instrument, the no-op control is equivalent, and nothing regresses. This
-//                     authorizes building the sound partition. It is not a promotion.
-//   INCOMPLETE         anything missing, blocked or unparseable. Zero evidence never reads as a
-//                     promising partition.
+/**
+ * F4 per-cell admissibility gate. Emits exactly three states and nothing else:
+ *
+ *   SAMPLE_VALID         this runner produced admissible evidence for its cell
+ *   INCOMPLETE_EVIDENCE  the cell yielded nothing usable (blocked settle, blocked ambient gate,
+ *                        harness failure, absent report, unstable runner, an A/A raw control outside
+ *                        the outer envelope, or arms that are not byte-comparable)
+ *   PROVENANCE_FAILURE   policy, bundle, measurement-hash, fixture-identity or runner-identity drift
+ *
+ * It deliberately does NOT answer the 1% question, and there is no code path here that can. A
+ * single VM has no business setting a one-percent floor: that verdict is a property of the
+ * runner-level aggregate in aggregate.mjs, and a per-cell verdict is exactly what made v1
+ * inadmissible. Nothing below computes an effect comparison against the floor, and nothing below
+ * emits a verdict field.
+ *
+ * What it DOES enforce, all of it per-runner and all of it about whether the observation can be
+ * trusted at all:
+ *   - the measurement hashes, bundle, policy and fixture manifest this run was frozen with;
+ *   - finite, index-aligned observation blocks and positive timing rows;
+ *   - a gross paired-log-ratio SD ceiling, kept separate from the outer envelope;
+ *   - the A/A raw controls, recomputed here from the raw rows rather than trusted from the
+ *     harness summary, so a tampered summary cannot hide a slot bias;
+ *   - exact byte parity between the arms wherever the policy requires it.
+ */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,68 +30,80 @@ import path from 'node:path'
 const ROOT = process.cwd()
 const LANE = path.resolve(ROOT, 'lane6-scratch/r10-shadow')
 const PREP = path.join(LANE, 'prepared.json')
+const SCHEMA = 'snapdom-r10-f4-wall-sample-v2'
+const STATES = { VALID: 'SAMPLE_VALID', INCOMPLETE: 'INCOMPLETE_EVIDENCE', PROVENANCE: 'PROVENANCE_FAILURE' }
+const EXIT = { [STATES.VALID]: 0, [STATES.INCOMPLETE]: 2, [STATES.PROVENANCE]: 1 }
+const ENGINE_OFFSET = { chromium: 0, firefox: 1000003, webkit: 2000003 }
+const LAYOUTS = ['effectForward', 'effectReverse', 'baseNullForward', 'baseNullReverse', 'optNullForward', 'optNullReverse']
+
 const arg = (name, fallback = '') => {
   const p = `--${name}=`
   const hit = process.argv.find((x) => x.startsWith(p))
   return hit ? hit.slice(p.length) : fallback
 }
 const shaFile = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex').toUpperCase()
+const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length
+const variance = (xs) => (xs.length < 2 ? NaN : (() => {
+  const m = mean(xs)
+  return xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1)
+})())
+const toPct = (logRatio) => (Math.exp(logRatio) - 1) * 100
 
-const finish = (doc, code = 0) => {
-  const dir = path.join(LANE, 'decisions')
-  fs.mkdirSync(dir, { recursive: true })
-  const name = doc.file || `f4-${doc.browser}-r${doc.replicate}.json`
-  const out = path.join(dir, name)
-  fs.writeFileSync(out, JSON.stringify(doc, null, 2) + '\n')
-  console.log(JSON.stringify({ ...doc, written: path.relative(ROOT, out).replaceAll('\\', '/') }, null, 2))
-  process.exit(code)
+const browser = String(arg('browser')).toLowerCase()
+const replicate = Number(arg('replicate'))
+const gateExit = Number(arg('gate-exit', '1'))
+const file = 'f4-' + browser + '-r' + replicate + '.json'
+
+function emit(doc, state) {
+  const out = path.join(LANE, 'decisions', file)
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  const payload = { ...doc, schema: SCHEMA, state, usable: state === STATES.VALID }
+  fs.writeFileSync(out, JSON.stringify(payload, null, 2) + '\n')
+  console.log(JSON.stringify({
+    file: path.relative(ROOT, out).replaceAll('\\', '/'),
+    state,
+    usable: payload.usable,
+    reasons: payload.reasons || [],
+  }, null, 2))
+  process.exit(EXIT[state])
 }
 
 if (!fs.existsSync(PREP)) throw new Error('prepared.json missing')
 const prepared = JSON.parse(fs.readFileSync(PREP, 'utf8'))
 const policy = prepared.policy
-const gates = policy.gates
-const browser = String(arg('browser')).toLowerCase()
-const replicate = Number(arg('replicate'))
-const gateExit = Number(arg('gate-exit', '1'))
-const reportPath = path.resolve(LANE, 'results', `f4-${browser}-r${replicate}.json`)
-const baseDoc = {
-  schema: 'snapdom-r10-f4-wall-decision-v1',
+const reportPath = path.resolve(LANE, 'results', file)
+const base = {
   browser,
   replicate,
+  // Attempt travels in the payload, never in a filename: see lib/artifacts.mjs.
+  runId: process.env.GITHUB_RUN_ID || null,
+  attempt: process.env.GITHUB_RUN_ATTEMPT || null,
+  attemptIndex: Number(process.env.GITHUB_RUN_ATTEMPT || 0),
+  job: process.env.GITHUB_JOB || null,
   policySha256: prepared.policySha256,
   candidateGitSha: prepared.candidateGitSha,
   bundleSha256: prepared.bundle.sha256,
-  github: {
-    runId: process.env.GITHUB_RUN_ID || null,
-    runAttempt: process.env.GITHUB_RUN_ATTEMPT || null,
-    job: process.env.GITHUB_JOB || null,
-  },
 }
 
-if (gateExit === 3) finish({ ...baseDoc, state: 'INCOMPLETE_EVIDENCE', usable: false, reason: 'AMBIENT_BLOCKED' }, 2)
-if (gateExit !== 0) finish({ ...baseDoc, state: 'HARNESS_FAILED', usable: false, reason: `bench exit ${gateExit}` }, 1)
-if (!fs.existsSync(reportPath)) finish({ ...baseDoc, state: 'INCOMPLETE_EVIDENCE', usable: false, reason: 'MISSING_REPORT' }, 2)
+// A blocked settle (exit 3) and a blocked ambient gate (exit 3) mean the same thing here: this
+// cell observed nothing. Both are INCOMPLETE, never a performance statement.
+if (gateExit === 3) emit({ ...base, reasons: ['AMBIENT_OR_SETTLE_BLOCKED'] }, STATES.INCOMPLETE)
+if (gateExit !== 0) emit({ ...base, reasons: ['BENCH_FAILED exit ' + gateExit] }, STATES.INCOMPLETE)
+if (!fs.existsSync(reportPath)) emit({ ...base, reasons: ['MISSING_REPORT'] }, STATES.INCOMPLETE)
 
 let report
 try { report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) }
-catch (e) { finish({ ...baseDoc, state: 'PROVENANCE_FAILURE', usable: false, reason: `report parse: ${e.message}` }, 1) }
+catch (e) { emit({ ...base, reasons: ['REPORT_PARSE ' + e.message] }, STATES.PROVENANCE) }
 
-const ENGINE_OFFSET = { chromium: 0, firefox: 1000003, webkit: 2000003 }
+// ---- provenance ---------------------------------------------------------------------------------
 const hard = []
 const p = report.provenance || {}
-if (report.schema !== 'snapdom-r10-f4-wall-v1') hard.push('report schema')
-if (p.github?.actions !== true || p.github?.repository !== policy.repository) {
-  hard.push('GitHub Actions repository provenance')
-}
+if (report.schema !== 'snapdom-r10-f4-wall-report-v2') hard.push('report schema')
+if (p.github?.actions !== true || p.github?.repository !== policy.repository) hard.push('GitHub Actions repository provenance')
 if (!p.github?.runId || p.github.runId !== process.env.GITHUB_RUN_ID) hard.push('run id provenance')
 if (!p.github?.job || p.github.job !== process.env.GITHUB_JOB) hard.push('job provenance')
-if (!p.runner?.name || !p.runner?.imageOs || !p.runner?.imageVersion || p.runner?.os !== 'Linux') {
-  hard.push('hosted runner provenance')
-}
-if (p.browser?.requested !== browser || p.browser?.actualName !== browser || !p.browser?.actualVersion) {
-  hard.push('browser identity')
-}
+if (!p.runner?.name || !p.runner?.imageOs || !p.runner?.imageVersion || p.runner?.os !== 'Linux') hard.push('hosted runner provenance')
+if (p.browser?.requested !== browser || p.browser?.actualName !== browser || !p.browser?.actualVersion) hard.push('browser identity')
 if (p.browser?.playwrightVersion !== policy.playwrightVersion) hard.push('Playwright version')
 for (const [rel, field] of [
   ['lane6-scratch/r10-shadow/bench-f4.mjs', 'harness'],
@@ -89,7 +112,7 @@ for (const [rel, field] of [
   ['lane6-scratch/r10-shadow/F4_POLICY.json', 'policy'],
 ]) {
   const value = p.code?.[field]
-  if (!value || value.sha256 !== prepared.measurementFiles[rel]) hard.push(`measurement hash ${rel}`)
+  if (!value || value.sha256 !== prepared.measurementFiles[rel]) hard.push('measurement hash ' + rel)
 }
 if (p.bundle?.sha256 !== prepared.bundle.sha256) hard.push('bundle identity')
 const rp = p.protocol || {}
@@ -102,7 +125,7 @@ for (const [key, expected] of Object.entries({
   replicate,
   engineOffset: ENGINE_OFFSET[browser],
 })) {
-  if (rp[key] !== expected) hard.push(`protocol field ${key}`)
+  if (rp[key] !== expected) hard.push('protocol field ' + key)
 }
 const expectedSeed = (policy.sampling.baseSeed + ENGINE_OFFSET[browser] + replicate * 104729) >>> 0
 if (rp.seed !== expectedSeed) hard.push('seed')
@@ -110,74 +133,86 @@ if (JSON.stringify(rp.fixtureNames) !== JSON.stringify(policy.fixtures)) hard.pu
 if (JSON.stringify(Object.keys(report.fixtures || {})) !== JSON.stringify(policy.fixtures)) {
   hard.push('fixture result identity/order')
 }
+if (hard.length) emit({ ...base, reasons: hard }, STATES.PROVENANCE)
 
-const invalid = []
+// ---- runner admissibility ----------------------------------------------------------------------
+const N = policy.sampling.n
+const envelope = policy.instrument.outerNullEnvelopePct
+const grossSd = policy.instrument.grossMaxPairLogSd
+const reasons = []
+const fixtures = {}
+
+const rawSlotBias = (layout, name) => mean(report.layouts[layout][name].rows.map((r) => Math.log(r.slot2 / r.slot1)))
+
 for (const name of policy.fixtures) {
   const fx = report.fixtures[name]
   const blocks = fx?.effect?.logRatios?.blocks
-  if (!Array.isArray(blocks) || blocks.length !== policy.sampling.n || blocks.some((x) => !Number.isFinite(x))) {
-    invalid.push(`${name}: invalid effect blocks`)
+  if (!Array.isArray(blocks) || blocks.length !== N || blocks.some((x) => !Number.isFinite(x))) {
+    reasons.push(name + ': non-finite or misaligned effect blocks')
   }
-  for (const layout of ['effectForward', 'effectReverse', 'baseNullForward', 'baseNullReverse',
-    'optNullForward', 'optNullReverse']) {
+  for (const layout of LAYOUTS) {
     const rows = report.layouts?.[layout]?.[name]?.rows
-    if (!Array.isArray(rows) || rows.length !== policy.sampling.n ||
-        rows.some((r) => !(r.slot1 > 0) || !(r.slot2 > 0))) {
-      invalid.push(`${name}: invalid ${layout} rows`)
+    if (!Array.isArray(rows) || rows.length !== N || rows.some((r) => !(r.slot1 > 0) || !(r.slot2 > 0))) {
+      reasons.push(name + ': invalid ' + layout + ' rows')
     }
   }
-}
-if (hard.length) finish({ ...baseDoc, state: 'PROVENANCE_FAILURE', usable: false, reasons: hard }, 1)
-if (invalid.length) finish({ ...baseDoc, state: 'INVALID_SAMPLE', usable: false, reasons: invalid }, 1)
 
-const fixtures = {}
-const reasons = []
-for (const name of policy.fixtures) {
-  const fx = report.fixtures[name]
+  const withinBlockSd = Array.isArray(blocks) && blocks.length > 1 ? Math.sqrt(variance(blocks)) : NaN
+  const withinSe = withinBlockSd / Math.sqrt(N)
+
+  // A/A raw controls, recomputed from the raw rows. Slot order bias is the failure mode a fresh
+  // hosted VM actually shows, and reading it here means the harness summary cannot hide it.
+  const baseSlotBiasPct = toPct(rawSlotBias('baseNullForward', name))
+  const optSlotBiasPct = toPct(rawSlotBias('optNullForward', name))
+  const nullWorstPct = Math.max(Math.abs(baseSlotBiasPct), Math.abs(optSlotBiasPct))
+  const nullEnvelopePass = nullWorstPct <= envelope
+  if (!nullEnvelopePass) {
+    reasons.push(name + ': A/A raw slot bias ' + nullWorstPct.toFixed(2) + '% outside the ' + envelope + '% envelope')
+  }
+
+  const stabilityPass = fx.maxPairLogSd <= grossSd
+  if (!stabilityPass) {
+    reasons.push(name + ': paired-log SD ' + fx.maxPairLogSd.toFixed(3) + ' above the gross ceiling ' + grossSd)
+  }
+
+  const byteParity = fx.byteParity.forward === true && fx.byteParity.reverse === true
+  const parityRequired = !policy.parityExemptFixtures.includes(name)
+  if (parityRequired && !byteParity) {
+    reasons.push(name + ': ARM_BYTE_PARITY — the ceiling arm does not agree byte-for-byte with released')
+  }
+
+  // The no-op fixture runs identical code in both arms, so its raw effect IS a null and gets the
+  // same envelope. This is what stops the control from being decorative.
+  const noop = policy.noopFixtures.includes(name)
+  const noopEffectPct = fx.effect.pct
+  const noopRawPass = Math.abs(noopEffectPct) <= envelope
+  if (noop && !noopRawPass) {
+    reasons.push(name + ': no-op raw effect ' + noopEffectPct.toFixed(2) + '% outside the ' + envelope + '% envelope')
+  }
+
   fixtures[name] = {
-    noop: fx.meta.noop,
-    splitting: fx.meta.splitting,
-    effectPct: fx.effect.pct,
-    ci95: fx.effect.ci95,
-    baseNull: { pct: fx.baseNull.pct, ci95: fx.baseNull.ci95 },
-    optNull: { pct: fx.optNull.pct, ci95: fx.optNull.ci95 },
-    spikeByteSafe: fx.spikeByteSafe,
-    controlsPass: fx.controlsPass,
-    stabilityPass: fx.stabilityPass,
+    meta: { noop, promotionExcluded: policy.promotionExcludedFixtures.includes(name), parityExempt: !parityRequired },
+    effect: { logPoint: fx.effect.logPoint, pct: fx.effect.pct, ci95: fx.effect.ci95 },
+    withinBlockSd,
+    withinSe,
+    baseNull: { logPoint: fx.baseNull.logPoint, pct: fx.baseNull.pct, ci95: fx.baseNull.ci95, slotBiasPct: baseSlotBiasPct },
+    optNull: { logPoint: fx.optNull.logPoint, pct: fx.optNull.pct, ci95: fx.optNull.ci95, slotBiasPct: optSlotBiasPct },
+    nulls: { envelopePass: nullEnvelopePass, worstSlotBiasPct: nullWorstPct, envelopePct: envelope },
+    noopEffectRawPass: noop ? noopRawPass : null,
+    byteParity,
     maxPairLogSd: fx.maxPairLogSd,
     rawMaxCov: fx.rawMaxCov,
+    controls: { nullEnvelopePass, stabilityPass, parityPass: parityRequired ? byteParity : null },
   }
-  if (!fx.controlsPass) reasons.push(`${name}: A/A control outside the control band`)
-  if (!fx.stabilityPass) reasons.push(`${name}: instrument noise above the preregistered pair SD`)
-  if (fx.meta.noop && !fx.noOpEquivalent) reasons.push(`${name}: no-op control not equivalent`)
-  if (fx.regresses) reasons.push(`${name}: regression beyond the preregistered tolerance`)
 }
 
-const judged = policy.fixtures.filter((name) => !policy.noopFixtures.includes(name))
-// A splitting fixture's two arms are EXPECTED to diverge in bytes, so its bytes say nothing
-// about whether the win is real. Only splitting-free fixtures can carry the promotion case.
-const promotable = judged.filter((name) => !policy.splittingFixtures.includes(name))
-const anyReaches = judged.some((name) => report.fixtures[name].reachesMinEffect)
-const allClear = promotable.length > 0 && promotable.every((name) => report.fixtures[name].clearsMinEffect)
-const noisy = reasons.some((r) => r.includes('control band') || r.includes('noise'))
-const regressed = reasons.some((r) => r.includes('regression'))
-const verdict = (!anyReaches || noisy || regressed || !allClear) ? 'REJECT_PARTITION' : 'PROMOTE_TO_DESIGN'
-
-finish({
-  ...baseDoc,
-  state: 'F4_SAMPLE',
-  usable: true,
+emit({
+  ...base,
   reportSha256: shaFile(reportPath),
-  runner: p.runner,
-  browserVersion: p.browser.actualVersion,
+  runner: report.provenance.runner,
+  browserVersion: report.provenance.browser.actualVersion,
+  preregistered: { outerNullEnvelopePct: envelope, grossMaxPairLogSd: grossSd },
+  note: 'Runner-level sample. This cell decides nothing about the 1% floor; see aggregate.mjs.',
   fixtures,
-  sampleVerdict: verdict,
   reasons,
-  preregistered: {
-    minEffectPct: gates.minEffectPct,
-    controlBand: gates.controlBand,
-    equivalenceBand: gates.equivalenceBand,
-    maxPairLogSd: gates.maxPairLogSd,
-  },
-  rule: policy.decision,
-}, 0)
+}, reasons.length ? STATES.INCOMPLETE : STATES.VALID)

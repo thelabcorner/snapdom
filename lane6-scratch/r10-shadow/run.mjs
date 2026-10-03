@@ -21,7 +21,7 @@ if (process.env.GITHUB_ACTIONS !== 'true') fail('F4 wall measurement is GitHub-A
 if (!fs.existsSync(PREP) || !fs.existsSync(BUNDLE)) fail('prepared evidence/bundle missing')
 const prepared = JSON.parse(fs.readFileSync(PREP, 'utf8'))
 const policy = prepared.policy
-if (prepared.schema !== 'snapdom-r10-f4-wall-prepared-v1') fail('prepared schema mismatch')
+if (prepared.schema !== 'snapdom-r10-f4-wall-prepared-v2') fail('prepared schema mismatch')
 if (process.env.GITHUB_REPOSITORY !== policy.repository) fail('repository mismatch')
 if (!process.env.GITHUB_RUN_ID || !process.env.GITHUB_JOB || !process.env.RUNNER_NAME) fail('hosted provenance incomplete')
 if (process.env.RUNNER_OS !== 'Linux') fail('F4 requires a Linux GitHub-hosted runner')
@@ -62,7 +62,7 @@ const benchArgs = [
   `--out=f4-${browser}-r${replicate}.json`,
 ]
 const request = {
-  schema: 'snapdom-r10-f4-wall-request-v1',
+  schema: 'snapdom-r10-f4-wall-request-v2',
   browser,
   replicate,
   seed,
@@ -71,6 +71,7 @@ const request = {
   bundleSha256: prepared.bundle.sha256,
   github: {
     runId: process.env.GITHUB_RUN_ID,
+    attempt: process.env.GITHUB_RUN_ATTEMPT || null,
     runAttempt: process.env.GITHUB_RUN_ATTEMPT || null,
     job: process.env.GITHUB_JOB,
     runnerName: process.env.RUNNER_NAME,

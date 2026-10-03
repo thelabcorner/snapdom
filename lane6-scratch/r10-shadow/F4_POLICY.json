@@ -1,15 +1,16 @@
 {
-  "schema": "snapdom-r10-f4-wall-policy-v1",
+  "schema": "snapdom-r10-f4-wall-policy-v2",
   "repository": "thelabcorner/snapdom",
   "runner": "ubuntu-24.04",
   "nodeVersion": "22.21.1",
   "playwrightVersion": "1.55.1",
-  "question": "Does a per-root identity partition for shadow content earn its cost in wall time?",
+  "question": "Is a per-root identity partition for shadow content worth the architecture work it would take?",
+  "answerKind": "CEILING",
+  "ceiling": "The opt arm is the cheapest thing that could capture the whole win: it hands shadow content a per-root identity token and nothing else, and it does not read the root's own sheets. A sound partition needs that per-root scan on top, so the sound build can only be SLOWER than what F4 measures. A ceiling that does not clear the floor therefore settles the question; a ceiling that clears it authorises designing the sound partition and nothing more.",
   "arms": {
-    "base": "same bundle, __styleShareShadowRootTwins:false — released behavior, shadow content reads in full",
-    "opt": "same bundle, __styleShareShadowRootTwins:true — the CEILING spike: per-root identity token, no per-root sheet scan"
+    "base": "same bundle, __styleShareShadowRootTwins:false — released behaviour, shadow content reads in full",
+    "opt": "same bundle, __styleShareShadowRootTwins:true — the CEILING arm"
   },
-  "ceiling": "The opt arm is deliberately the cheapest thing that could capture the whole win, and it is deliberately unsound on a root whose own sheet splits twins. A sound partition needs a per-root scan on top, so the opt arm measures an UPPER BOUND on the win and the sound build can only be smaller. That is what makes a sub-threshold result falsifying rather than merely discouraging.",
   "fixtures": [
     "uniform-shadow-cards",
     "heterogeneous-shadow-cards",
@@ -20,7 +21,10 @@
     "document-uniform-cards"
   ],
   "noopFixtures": ["document-uniform-cards"],
-  "splittingFixtures": ["host-split-shadow-cards", "slotted-split-shadow-cards"],
+  "promotionExcludedFixtures": ["host-split-shadow-cards", "slotted-split-shadow-cards"],
+  "promotionExcludedReason": "A sound partition has to keep :host() and ::slotted() splitting intact while partitioning shadow CONTENT. The ceiling arm does not model that at all, so these two scenes are measured (and a regression in either rejects the partition) but cannot carry the promotion case.",
+  "parityExemptFixtures": [],
+  "parityReason": "Every fixture must be byte-identical across the two arms. On this fixture set the ceiling arm is expected to agree everywhere, so an empty exemption list is the strongest available contract; a future fixture that makes the ceiling arm legitimately unsound goes here with a written reason rather than silently widening the gate.",
   "sampling": {
     "n": 24,
     "batch": 9,
@@ -28,24 +32,56 @@
     "bootstrap": 12000,
     "baseSeed": 881234567
   },
-  "replicates": {
-    "chromium": 8,
-    "firefox": 4,
-    "webkit": 4
-  },
+  "replicates": { "chromium": 8, "firefox": 4, "webkit": 4 },
+  "stageOrder": ["chromium", "engines"],
   "maxParallel": 8,
-  "gates": {
-    "minEffectPct": 1.0,
-    "controlBand": 0.20,
-    "equivalenceBand": 0.20,
-    "maxPairLogSd": 0.50,
-    "epsilon": 0.02
+  "thresholds": {
+    "practicalFloorPct": 1.0,
+    "materialRegressionPct": 1.0
+  },
+  "thresholdMeaning": {
+    "practicalFloorPct": "A PREREGISTERED PRACTICAL FLOOR for whether architecture work is worth doing, NOT a significance threshold. 1% is the smallest wall effect that would pay for a per-root sheet scan, a per-root property universe, per-root pseudo gates, per-root selector vectors, slot handling and their own invalidation story. It carries no claim that 1% is detectable here; whether this instrument can resolve 1% is exactly what INCONCLUSIVE reports.",
+    "materialRegressionPct": "A ceiling that is SLOWER than released by more than this rejects the partition on its own, regardless of any other fixture.",
+    "signConvention": "The harness reports (slot2/slot1 - 1) * 100, so a NEGATIVE percentage means the ceiling arm was FASTER. Every threshold above is therefore read as an IMPROVEMENT MAGNITUDE: promotion needs an aggregate lower bound above practicalFloorPct in improvement terms, rejection needs every splitting-free fixture's aggregate upper bound below it, and a material regression is a negative improvement beyond materialRegressionPct. Getting this backwards turns every win into a regression, so lib/decide.mjs exposes improvementOf() and the contracts pin the sign."
+  },
+  "instrument": {
+    "outerNullEnvelopePct": 5.0,
+    "outerNullEnvelopeSource": "R9 hosted self-null calibration, run 37097245291: maximum absolute self-null 95% CI bound over the whole preregistered matrix",
+    "outerNullEnvelopeAppliesTo": ["baseNull", "optNull", "noopFixtureEffect"],
+    "outerNullEnvelopeMeaning": "An OUTER envelope on NULL quantities only, adopted from the completed calibration as the widest null excursion the hosted rig is known to produce. It says nothing about the effect arm: 5% cannot establish, refute or bound a 1% effect, and no fixture verdict is ever derived from it.",
+    "grossMaxPairLogSd": 0.5,
+    "grossMaxPairLogSdMeaning": "Kept SEPARATE from the envelope and deliberately coarse: a per-runner paired-log-ratio SD above this is a gross instability signal that voids the runner's sample regardless of what its confidence interval says. This is the same value the R9 calibration preregistered.",
+    "perRunnerDecision": "forbidden — no single VM may answer the 1% question"
+  },
+  "settle": {
+    "samples": 3,
+    "intervalMs": 1000,
+    "maxUtilizationPct": 20,
+    "maxWaitMs": 30000,
+    "why": "playwright install --with-deps spikes CPU and disk, and the ambient gate samples immediately. This waits for the runner to go quiet before the gate does, and is adaptive: it returns as soon as three consecutive samples are under the ceiling."
+  },
+  "statistics": {
+    "unit": "one log-point per fresh hosted runner",
+    "ci": "Student-t 95% over the runner-level log points, identical semantics to the calibrated R9 self-null",
+    "pooling": "forbidden — per-call and per-block observations are never pooled across VMs",
+    "heterogeneity": "reported per fixture as Q, df, I², tau² and tau(log), plus the median within-run block SD",
+    "replicates": "never added automatically; INCONCLUSIVE records that the present instrument cannot settle 1%"
   },
   "decision": {
-    "promoteToDesign": "Every splitting-free shadow fixture clears minEffectPct with a clean instrument AND the no-op control is equivalent AND no fixture regresses.",
-    "reject": "No shadow fixture's 95% CI upper bound reaches minEffectPct, OR the instrument is noisy on any fixture, OR the no-op control is not equivalent, OR any fixture regresses by more than minEffectPct.",
-    "incomplete": "A blocked ambient gate, a missing matrix cell, provenance drift, a missing report or an unparseable report. Zero evidence can never look like a promising partition.",
-    "note": "A rejection is a settled question, not a retry with more replicates. Only a promoteToDesign result authorizes building the sound per-root partition, and promoteToDesign is still not a promotion to production."
+    "REJECT_PARTITION": "Every splitting-free shadow fixture has an aggregate 95% CI UPPER bound below practicalFloorPct, OR any aggregate shadow fixture shows a material regression beyond materialRegressionPct, with instrument controls valid.",
+    "PROMISING": "At least one splitting-free shadow fixture has an aggregate 95% CI LOWER bound above practicalFloorPct, controls valid, and no material regression. CONTINUE_TO_ENGINES.",
+    "INCONCLUSIVE": "Neither of the above. The ceiling sits near the floor and this instrument cannot separate it. Do NOT add replicates automatically.",
+    "INCOMPLETE_EVIDENCE": "A blocked settle or ambient gate, a missing matrix cell, an inadmissible cell, or a missing report. Zero evidence can never read as a win.",
+    "PROVENANCE_FAILURE": "Policy, bundle, measurement-hash, fixture-identity or runner-identity drift. Never a performance statement."
   },
-  "purpose": "Falsifier. This policy can reject the per-root partition or authorize DESIGNING it. It can never promote it."
+  "staging": {
+    "chromium": "Primary stage, 8 fresh runners. Produces REJECT_PARTITION, PROMISING or INCONCLUSIVE.",
+    "engines": "Cross-engine guard, Firefox and WebKit 4 fresh runners each. Runs ONLY when chromium returned PROMISING, to save public runner minutes. Aggregated independently per engine and never averaged with chromium or with each other."
+  },
+  "engineGuard": {
+    "requirement": "Per engine, independently: controls valid, no material regression, and direction consistent with the chromium finding.",
+    "onAnyEngineInconclusive": "closeout degrades to INCONCLUSIVE",
+    "averagingAcrossEngines": "forbidden"
+  },
+  "purpose": "Falsifier. It can reject the per-root partition, or authorise DESIGNING it. It can never promote it to production."
 }

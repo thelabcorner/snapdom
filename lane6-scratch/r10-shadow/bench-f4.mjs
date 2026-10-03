@@ -1,26 +1,19 @@
 #!/usr/bin/env node
 /**
- * F4 — hosted wall-clock falsifier for the per-root identity partition.
+ * F4 — hosted wall-clock CEILING measurement for the per-root identity partition.
  *
- * Same protocol machinery as the R9 controlled harness (lane6-scratch/r9/protocol.mjs, reused
- * unmodified): fresh-page AB/BA crossover, micro-interleaved arms, Latin-rotated observation
- * blocks across six physical layouts, a baseline-state A/A control and a candidate-state B/B
- * control, index-block bootstrap of symmetric paired log ratios, raw samples retained, no
- * outlier deletion. R9's own driver is NOT edited: its hash is pinned by the completed R9
- * calibration, so this lane carries its own copy of the driver and its own policy.
+ * Measurement protocol, reused unmodified from lane6-scratch/r9/protocol.mjs (crossoverEffect,
+ * ci helpers, provenance): fresh-page AB/BA crossover, micro-interleaved arms, Latin-rotated
+ * observation blocks across six physical layouts, a baseline-state A/A control and a
+ * candidate-state B/B control, index-block bootstrap of symmetric paired log ratios, raw rows
+ * retained, no outlier deletion. R9's own driver is not edited because its hash is pinned by the
+ * completed R9 calibration, which is why this lane carries its own driver.
  *
- * Three things are different from R9, and all three matter:
- *
- *  - mode is option-pair on ONE bundle. Both arms are the released build and the only difference
- *    is the internal counterfactual option, so any measured difference is attributable to that
- *    option alone.
- *  - the fixtures are the shadow-card family (__tests__/helpers/shadowCards.js, served to the
- *    page as a module) instead of the light-DOM standing suite.
- *  - byte parity between the arms is a DIAGNOSTIC, not a gate. The opt arm is the ceiling
- *    spike: it hands shadow content a per-root identity without scanning that root's own sheets,
- *    so on a root whose sheet splits twins it is expected to diverge. That divergence is a
- *    finding about what a sound partition must add, not a harness failure. A fixture whose two
- *    arms agree byte-for-byte is reported as spikeByteSafe.
+ * What this file is allowed to conclude: nothing. It produces ONE runner's raw observations and a
+ * per-runner summary. The 1% question is a property of eight fresh VMs, so the verdict lives in
+ * aggregate.mjs and per-cell admissibility lives in validate.mjs. The two bands that used to sit
+ * here — a 20% control band and a 20% equivalence band — are gone: a 20% band cannot carry a 1%
+ * question, and pretending otherwise is what made v1 inadmissible.
  *
  * Browser launch is refused outside GitHub Actions.
  */
@@ -31,14 +24,13 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { chromium, firefox, webkit } from 'playwright'
 import {
-  arg, numberArg, parseExtra, sha256File, stats, crossoverEffect, ciWithin,
-  hostedProvenance, stableJson, sha256Text,
+  arg, numberArg, parseExtra, sha256File, stats, crossoverEffect, hostedProvenance, stableJson, sha256Text,
 } from '../r9/protocol.mjs'
 
 if (process.env.GITHUB_ACTIONS !== 'true') {
   throw new Error(
-    'F4 wall measurement is GitHub-Actions-only. ' +
-    'Local browser execution is intentionally blocked by protocol.'
+    'F4 wall measurement is GitHub-Actions-only. '
+    + 'Local browser execution is intentionally blocked by protocol.'
   )
 }
 
@@ -56,7 +48,7 @@ const BATCH = Math.max(1, Math.floor(numberArg('batch', POLICY.sampling.batch)))
 const WARM = Math.max(0, Math.floor(numberArg('warmup', POLICY.sampling.warmup)))
 const BOOT = Math.max(1000, Math.floor(numberArg('bootstrap', POLICY.sampling.bootstrap)))
 const SEED = Math.floor(numberArg('seed', POLICY.sampling.baseSeed))
-const LABEL = arg('label', 'F4 wall falsifier')
+const LABEL = arg('label', 'F4 wall ceiling')
 const OUT_NAME = arg('out', 'f4-' + ENGINE + '-r' + REPLICATE + '.json')
 const ENGINE_OFFSET = { chromium: 0, firefox: 1000003, webkit: 2000003 }
 
@@ -76,11 +68,19 @@ const protocolSha = sha256File(PROTOCOL_MJS)
 const policySha = sha256File(POLICY_PATH)
 
 const BASE_OPTIONS = {
-  scale: 1, dpr: 1, embedFonts: false, cache: 'disabled', burst: false,
+  scale: 1,
+  dpr: 1,
+  embedFonts: false,
+  cache: 'disabled',
+  burst: false,
   ...parseExtra(arg('base', '__styleShareShadowRootTwins=false')),
 }
 const OPT_OPTIONS = {
-  scale: 1, dpr: 1, embedFonts: false, cache: 'disabled', burst: false,
+  scale: 1,
+  dpr: 1,
+  embedFonts: false,
+  cache: 'disabled',
+  burst: false,
   ...parseExtra(arg('opt', '__styleShareShadowRootTwins=true')),
 }
 
@@ -256,7 +256,6 @@ try {
   await new Promise((resolve) => server.close(resolve))
 }
 
-const gates = POLICY.gates
 const fixtures = {}
 for (let i = 0; i < FIXTURES.length; i++) {
   const name = FIXTURES[i]
@@ -266,32 +265,22 @@ for (let i = 0; i < FIXTURES.length; i++) {
   const br = layouts.baseNullReverse[name]
   const of = layouts.optNullForward[name]
   const or = layouts.optNullReverse[name]
-  const effect = crossoverEffect(ef.rows, er.rows, SEED + i * 17 + 1, BOOT)
-  const baseNull = crossoverEffect(bf.rows, br.rows, SEED + i * 17 + 3, BOOT)
-  const optNull = crossoverEffect(of.rows, or.rows, SEED + i * 17 + 5, BOOT)
-  const maxPairLogSd = Math.max(ef.pairLog.sd, er.pairLog.sd, bf.pairLog.sd,
-    br.pairLog.sd, of.pairLog.sd, or.pairLog.sd)
-  const rawMaxCov = Math.max(ef.slot1.cov, ef.slot2.cov, er.slot1.cov, er.slot2.cov,
-    bf.slot1.cov, bf.slot2.cov, br.slot1.cov, br.slot2.cov,
-    of.slot1.cov, of.slot2.cov, or.slot1.cov, or.slot2.cov)
   fixtures[name] = {
     meta: {
       name,
       noop: POLICY.noopFixtures.includes(name),
-      splitting: POLICY.splittingFixtures.includes(name),
+      promotionExcluded: POLICY.promotionExcludedFixtures.includes(name),
+      parityExempt: POLICY.parityExemptFixtures.includes(name),
     },
-    effect,
-    baseNull,
-    optNull,
-    controlsPass: ciWithin(baseNull.ci95, gates.controlBand) && ciWithin(optNull.ci95, gates.controlBand),
-    stabilityPass: maxPairLogSd <= gates.maxPairLogSd,
-    noOpEquivalent: !POLICY.noopFixtures.includes(name) || ciWithin(effect.ci95, gates.equivalenceBand),
-    spikeByteSafe: ef.oracle.parity && er.oracle.parity,
-    reachesMinEffect: effect.ci95[1] >= gates.minEffectPct,
-    clearsMinEffect: effect.ci95[0] >= gates.minEffectPct,
-    regresses: effect.ci95[0] > gates.minEffectPct,
-    maxPairLogSd,
-    rawMaxCov,
+    effect: crossoverEffect(ef.rows, er.rows, SEED + i * 17 + 1, BOOT),
+    baseNull: crossoverEffect(bf.rows, br.rows, SEED + i * 17 + 3, BOOT),
+    optNull: crossoverEffect(of.rows, or.rows, SEED + i * 17 + 5, BOOT),
+    byteParity: { forward: ef.oracle.parity, reverse: er.oracle.parity },
+    maxPairLogSd: Math.max(ef.pairLog.sd, er.pairLog.sd, bf.pairLog.sd,
+      br.pairLog.sd, of.pairLog.sd, or.pairLog.sd),
+    rawMaxCov: Math.max(ef.slot1.cov, ef.slot2.cov, er.slot1.cov, er.slot2.cov,
+      bf.slot1.cov, bf.slot2.cov, br.slot1.cov, br.slot2.cov,
+      of.slot1.cov, of.slot2.cov, or.slot1.cov, or.slot2.cov),
   }
 }
 
@@ -302,7 +291,7 @@ if (playwrightVersion !== POLICY.playwrightVersion) {
 }
 
 const report = {
-  schema: 'snapdom-r10-f4-wall-v1',
+  schema: 'snapdom-r10-f4-wall-report-v2',
   provenance: hostedProvenance({
     protocol: {
       lane: 'F4',
@@ -317,7 +306,8 @@ const report = {
       replicate: REPLICATE,
       fixtureNames: FIXTURES,
       fixtureManifestSha256: sha256Text(stableJson(FIXTURES)),
-      gates,
+      thresholds: POLICY.thresholds,
+      instrument: POLICY.instrument,
     },
     browser: { requested: ENGINE, actualName, actualVersion, playwrightVersion },
     code: {
@@ -331,13 +321,10 @@ const report = {
     },
     bundle: { path: BUNDLE_REL, sha256: bundleSha, bytes: bundleBytes.length },
   }),
-  method: 'hosted-only fresh-page AB/BA crossover; micro-interleaved arms; Latin-rotated observation blocks across six physical layouts; baseline-state A/A and candidate-state B/B nulls; index-block bootstrap of symmetric paired log ratios; raw samples retained; no outlier deletion; arm byte parity reported as a diagnostic of the ceiling spike, not as a gate',
-  global: {
-    controlsPass: Object.values(fixtures).every((fx) => fx.controlsPass),
-    stabilityPass: Object.values(fixtures).every((fx) => fx.stabilityPass),
-    noOpPass: POLICY.noopFixtures.every((name) => fixtures[name].noOpEquivalent),
-    anySpikeByteSafe: Object.values(fixtures).some((fx) => fx.spikeByteSafe),
-  },
+  method: 'hosted-only fresh-page AB/BA crossover; micro-interleaved arms; Latin-rotated observation '
+    + 'blocks across six physical layouts; baseline-state A/A and candidate-state B/B nulls; '
+    + 'index-block bootstrap of symmetric paired log ratios; raw samples retained; no outlier '
+    + 'deletion. This file reports ONE runner and decides nothing.',
   fixtures,
   layouts,
 }
@@ -347,8 +334,8 @@ fs.mkdirSync(outDir, { recursive: true })
 const outPath = path.join(outDir, OUT_NAME)
 fs.writeFileSync(outPath, JSON.stringify(report, null, 2))
 
-console.log(LABEL + ' ' + ENGINE + ' ' + actualVersion + ' r' + REPLICATE + ' N=' + N + ' batch=' + BATCH
-  + ' bundle=' + bundleSha.slice(0, 12))
+console.log(LABEL + ' ' + ENGINE + ' ' + actualVersion + ' r' + REPLICATE
+  + ' N=' + N + ' batch=' + BATCH + ' bundle=' + bundleSha.slice(0, 12))
 console.log('base=' + JSON.stringify(BASE_OPTIONS))
 console.log('opt=' + JSON.stringify(OPT_OPTIONS))
 for (const [name, fx] of Object.entries(fixtures)) {
@@ -358,9 +345,8 @@ for (const [name, fx] of Object.entries(fixtures)) {
     + ' base-null=[' + fx.baseNull.ci95.map((v) => v.toFixed(2)).join(', ') + ']'
     + ' opt-null=[' + fx.optNull.ci95.map((v) => v.toFixed(2)).join(', ') + ']'
     + ' pairLogSD=' + fx.maxPairLogSd.toFixed(3)
-    + ' byteSafe=' + (fx.spikeByteSafe ? 'yes' : 'NO')
-    + ' clears>=' + gates.minEffectPct + '%:' + (fx.clearsMinEffect ? 'yes' : 'no')
-    + ' reaches:' + (fx.reachesMinEffect ? 'yes' : 'no')
+    + ' parity=' + (fx.byteParity.forward && fx.byteParity.reverse ? 'same' : 'DIVERGED')
+    + ' (runner only; no verdict here)'
   )
 }
 console.log('artifact ' + path.relative(ROOT, outPath).replaceAll('\\', '/'))
