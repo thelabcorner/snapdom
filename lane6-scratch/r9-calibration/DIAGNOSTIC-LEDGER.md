@@ -294,3 +294,158 @@ Do not merge `bench-r9-blocked.mjs` on algebra alone. Run it against the current
 work, identity and reversed-order canaries, and a positive treatment control. Freeze the production
 instrument only after one topology shows lower null/control bias without losing treatment
 sensitivity.
+
+## 11. The equal-cost topology challenge — preregistration
+
+Status: **the experiment is designed, proved browser-free, and NOT YET RUN.** Nothing in this
+section is a result. The corrected conclusion of §10 stands unchanged: **a pair-specific
+nonstationary systematic exists in the current six-page control topology, and the promotion policy
+stays unfrozen until one topology wins a controlled A/A at equal cost.**
+
+Implementation: `lane6-scratch/r9-calibration/challenge/`. Hosted workflow:
+`.github/workflows/r9-topology-challenge.yml`. Browser-free contracts:
+`node --test lane6-scratch/r9-calibration/challenge/algebra/topology-challenge.test.mjs`
+(39 assertions; no Playwright import).
+
+### 11.1 The equal-cost algebra
+
+Both schedules spend exactly `2 x batch` timed calls per physical-page observation block — the
+current rig runs `batch` replicate-pairs of 2 calls, the blocked rig runs `batch/2` replicate-pairs
+of 4 calls — so `timedCalls = pages x blocks x 2 x batch` in both. Primary profile:
+
+| lane | topology | pages | blocks | batch | timed calls/fixture |
+|---|---|---:|---:|---:|---:|
+| `current6` | current | 6 | 24 | 9 | 2592 |
+| `blocked6` | blocked | 6 | 18 | 12 | 2592 |
+| `identityCanary` | current | 6 | 24 | 9 | 2592 |
+| `current6Reversed` | current | 6 | 24 | 9 | 2592 |
+| `treatmentCurrent` | current | 8 | 24 | 9 | 3456 |
+| `treatmentBlocked` | blocked | 8 | 12 | 18 | 3456 |
+| per fixture | | | | | 17280 |
+| per runner, 3 focus fixtures | | | | | 51840 |
+
+Four preregistered pairs must balance **exactly**: `current6 vs blocked6`, `current6 vs
+current6Reversed`, `current6 vs identityCanary`, `treatmentCurrent vs treatmentBlocked`. Equality is
+not asserted from a declared constant: the tests count the calls each lane actually executes and
+require the count to equal the budget, the harness re-counts its own artifact and refuses to write a
+report otherwise, and `validate.mjs` re-checks all four pairs plus the runner total on the executed
+artifact.
+
+`blocks = 24, batch = 9` on the current rig is the **shipped calibration configuration**, kept on
+purpose so the new dispersion numbers are comparable with §7's budget and with the corrected run.
+The blocked rig matches it per page at `18 x 12 = 216 = 24 x 9`, with 18 a multiple of the 3-layout
+rotation and an even batch so a block can be balanced rather than alternated. Admissible
+alternatives are enumerated and asserted rather than asserted-and-hoped: `(12,18)`, `(36,6)`, `(9,24)`
+and others also balance, and are rejected in `POLICY.json` for trading away temporal resolution or
+within-block pairing depth.
+
+### 11.2 Two corrections to this ledger, found while building the challenge
+
+1. **§3's "reversing the layout order" row is not a reversal of the canonical list.** The assertion in
+   `algebra/selfnull-algebra.test.mjs` uses
+   `[effectReverse, effectForward, baseNullReverse, baseNullForward, optNullReverse, optNullForward]`,
+   which reverses **within** each pair. A true `.reverse()` of `LAYOUT_ORDER` is
+   `[optNullReverse, optNullForward, baseNullReverse, baseNullForward, effectReverse, effectForward]`,
+   and it is a materially different experiment, because reversing the canonical list maps creation
+   index `i -> 5 - i` and therefore **exchanges the candidate pair with the optNull pair**. The
+   challenge runs the real reversal and preregisters its algebraic consequence: `baseNull` flips sign
+   (the pair's two physical pages swap, and the estimator is `1/2 (v_F - v_R)`), while the candidate
+   and optNull **magnitudes** should exchange. Proved browser-free at ratios 0.9998 and 1.0019. If
+   the hosted run reproduces the corrected offsets WITHOUT that exchange, the asymmetry is not
+   creation-order coupled and §4's mechanism is incomplete. That is falsifier 3.
+2. **§8's "neither a cost win" check was loose.** It compared 2880 blocked calls against 2592 shipped
+   calls and accepted anything within 12%. At equal work the two are equal **to the call**, and the
+   challenge asserts exact integer equality instead.
+
+### 11.3 The six lanes
+
+`current6` (shipped semantics), `blocked6`, `identityCanary`, `current6Reversed`, and the positive
+treatment control measured under **both** topologies at two predeclared doses. Lanes run
+sequentially inside one fresh Chromium runner with execution order rotated by replicate index, so at
+most eight pages are ever live and no lane systematically owns early or late runner time.
+
+`current6Reversed` reverses the **one** canonical layout list that feeds page creation, warm order and
+the Latin rotation base together. There is no second list and no per-knob ordering override, and
+`validate.mjs` refuses an artifact whose reversed lane is not the exact reverse of the unreversed
+lane's list.
+
+### 11.4 What the canary is and is not
+
+`identityCanary` loads both slots from the byte-identical module URL string, so they are one module
+record with one options object: the tightest exact-zero floor browser semantics allow. It is also
+**provably blind to treatment** — proved browser-free at exactly zero response to an 8% arm-keyed
+effect *and* a 3 ms injected cost, while a treatment-sensitive lane responds to both. It is therefore
+a validity instrument for the harness and the estimator, never a treatment comparator, and it is
+excluded from every treatment comparison by construction rather than by convention.
+
+### 11.5 The positive control
+
+A fixed-iteration xorshift stream inside the timed region, **after** the identical `toRaw` call has
+returned, on the candidate arm only, keyed to the arm and never to a position, with the accumulator
+published to a page global so it cannot be elided. No production source is touched.
+
+Preregistered: sign `positive`; effect class *additive positive shift in log(slot2/slot1),
+deterministic in work units, not in milliseconds*; `predictedMagnitudePct: null`; two work counts a
+fixed 4x apart so that at least one dose is expected to land in a detectable class on at least one
+fixture without anyone predicting which. Realised `injectMs` is recorded per call, so the effect
+class is measured rather than assumed, and `captureMs` is recorded separately on every call to prove
+the injection did not perturb snapDOM's own work.
+
+Proved browser-free: both topologies recover the injected cost to within `1e-4` log of each other,
+i.e. **the blocked schedule cannot structurally attenuate an arm-bound treatment**. The hosted run
+then measures whether the real machine agrees.
+
+### 11.6 Primary comparison and success criterion
+
+Runner-level only; `assertRunnerLevelOnly` runs on every decision document before it is written and
+again on every document the closeout reads, so no per-call or per-page row can ever be pooled across
+fresh VMs. Per fixture: absolute mean of each AA/BB control; maximum absolute control CI endpoint;
+between-runner SD(log); treatment-control recovery and CI, differenced **within** each runner; timed
+calls and wall-clock. Plus the reversal diagnostic and the canary floor.
+
+Success stays qualitative and evidence-gated — lower null/control bias **and** lower dispersion
+**and** no attenuation or sign loss of the positive control **and** no higher timed-call budget.
+`attenuation` is a flag, not a gate. No automatic merge, no promotion, and no threshold is invented
+here.
+
+### 11.7 Hosted protocol
+
+GitHub Actions only, `ubuntu-24.04`, exact measured SHA asserted after checkout, every action pinned
+to a 40-hex commit. `algebra` (browser-free contracts) gates `prepare` (compile, freeze, audit both
+sampling profiles for balance, emit the matrix) which gates 8 fresh `challenge` runners, then
+`closeout`. Each cell: adaptive post-install settle (reused from `r9-calibration/settle.mjs`, with
+`prepare.mjs` refusing to emit a plan unless the challenge's settle block is deep-equal to the
+calibration's) -> ambient CPU gate wrapping the benchmark -> harness -> validator. Cell evidence is
+keyed on `github.run_id` with `overwrite: true`, so a cell retry overwrites its own evidence instead
+of creating a second, competing copy of the same matrix cell. `aggregate.mjs` exits non-zero on any
+missing, unusable, duplicated or mis-identified cell.
+
+### 11.8 Falsifiers, preregistered
+
+1. the identity canary reads materially non-zero: the rig or the estimator is wrong and every lane
+   is void;
+2. blocked lowers control bias but its recovery CI sits strictly below the current rig's: it
+   attenuates real treatment sensitivity and is rejected;
+3. the corrected base-null offsets do not move when the canonical `LAYOUT_ORDER` is fully reversed:
+   the asymmetry is not creation-order coupled and §4's mechanism is incomplete;
+4. the asymmetry reproduces identically under both the canonical and the reversed order on every
+   runner: it is a runner-wide property, not a pair-specific one, and this challenge's premise is
+   wrong;
+5. realised `injectMs` is small enough on a fixture that recovery is unresolvable there: that
+   fixture's positive-control cell is INCONCLUSIVE and must be reported as such, not as a null.
+
+### 11.9 What the browser-free pass has and has not established
+
+Established, in 39 assertions: the six lanes execute the call counts they declare; every compared
+pair balances exactly in both sampling profiles; the current lane reproduces
+`bench-r9-controlled.mjs`'s schedule call for call against the existing independent model of it; a
+full canonical reversal flips `baseNull` and exchanges the candidate/optNull magnitudes while
+reversing only the rotation does not; the canary is exactly zero against a module-record channel and
+provably blind to treatment; the blocked schedule drives the §4 hostile world to `< 1e-12` while the
+current rig leaks, at identical total timed calls; both topologies recover the injected control; the
+aggregation is runner-level, fail-closed and threshold-free; and the hosted plan still says what the
+policy says it says.
+
+Not established, and not establishable without hosted runners: which topology has lower real null
+bias, what the position-conditional cost actually is on a hosted VM, whether the corrected offsets
+are creation-order coupled, and whether the injected control is detectable at these doses.

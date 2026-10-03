@@ -1,0 +1,245 @@
+name: snapDOM R9 hosted topology challenge
+
+# Equal-cost hosted A/A challenge of the R9 measurement TOPOLOGY. Evidence only: this workflow
+# cannot produce, freeze or promote a performance threshold, and it never writes to the repository.
+#
+# Six preregistered lanes run sequentially inside each fresh Chromium runner: the shipped six-page
+# self-null rig, the blocked-within-page AB/BA rig, an identity canary, the shipped rig with the one
+# canonical layout list fully reversed, and a positive treatment control at two predeclared work
+# counts measured under BOTH topologies. Every preregistered comparison is made at exactly equal
+# total timed calls, and the harness re-counts the calls that actually executed and refuses to write
+# a report if they differ.
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r9-topology-challenge'
+    paths:
+      - '.github/workflows/r9-topology-challenge.yml'
+      - 'lane6-scratch/r9-calibration/challenge/**'
+      - 'lane6-scratch/r9/protocol.mjs'
+      - 'lane6-scratch/r9-calibration/algebra/**'
+      - 'lane6-scratch/atlas/profiler/fixtures.mjs'
+      - 'lane6-scratch/r5/run-with-timing-gate.mjs'
+      - 'lane6-scratch/r9-calibration/settle.mjs'
+  workflow_dispatch:
+    inputs:
+      sampling:
+        description: 'Acquisition profile. Both spend exactly equal timed calls on every compared pair.'
+        type: choice
+        default: primary
+        options:
+          - primary
+          - reduced
+
+concurrency:
+  group: r9-topology-challenge-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.sha }}
+  NODE_VERSION: '22.21.1'
+  SAMPLING: ${{ inputs.sampling || 'primary' }}
+
+jobs:
+  algebra:
+    name: Browser-free algebra / workflow / aggregate contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Prove the acquisition algebra, the call budget and the aggregation contract
+        run: |
+          set -euo pipefail
+          node --test lane6-scratch/r9-calibration/algebra/selfnull-algebra.test.mjs
+          node --test lane6-scratch/r9-calibration/challenge/algebra/topology-challenge.test.mjs
+
+  prepare:
+    name: Prepare immutable challenge identity
+    needs: algebra
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      policy_sha256: ${{ steps.prepare.outputs.policy_sha256 }}
+      bundle_sha256: ${{ steps.prepare.outputs.bundle_sha256 }}
+      chromium_matrix: ${{ steps.prepare.outputs.chromium_matrix }}
+      max_parallel: ${{ steps.prepare.outputs.max_parallel }}
+      primary_timed_calls_total: ${{ steps.prepare.outputs.primary_timed_calls_total }}
+      reduced_timed_calls_total: ${{ steps.prepare.outputs.reduced_timed_calls_total }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile the measured bundle
+        run: |
+          set -euo pipefail
+          npm run compile
+          mkdir -p lane6-scratch/r9-calibration/bundle
+          cp dist/snapdom.mjs lane6-scratch/r9-calibration/bundle/candidate.mjs
+
+      - name: Freeze challenge identity and audit the plan
+        id: prepare
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+        run: node lane6-scratch/r9-calibration/challenge/prepare.mjs
+
+      - name: Upload immutable prepared evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-tc-prepared-${{ github.run_id }}
+          path: |
+            lane6-scratch/r9-calibration/bundle/
+            lane6-scratch/r9-calibration/challenge/prepared.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  challenge:
+    name: Chromium topology challenge r${{ matrix.replicate }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ needs.prepare.outputs.max_parallel }}
+      matrix:
+        replicate: ${{ fromJSON(needs.prepare.outputs.chromium_matrix) }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download immutable bundle and plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-tc-prepared-${{ github.run_id }}
+          path: lane6-scratch/r9-calibration
+
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Settle, ambient-gate and run the challenge
+        id: bench
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+        run: |
+          set +e
+          node lane6-scratch/r9-calibration/settle.mjs
+          settle=$?
+          if [ "$settle" -ne 0 ]; then
+            code=3
+          else
+            node lane6-scratch/r5/run-with-timing-gate.mjs --               node lane6-scratch/r9-calibration/challenge/run.mjs                 --browser=chromium --replicate="${{ matrix.replicate }}" --profile="$SAMPLING"
+            code=$?
+          fi
+          set -e
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          node lane6-scratch/r9-calibration/challenge/validate.mjs             --browser=chromium --replicate="${{ matrix.replicate }}" --profile="$SAMPLING" --gate-exit="$code"
+
+      - name: Upload the cell's raw evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-tc-sample-chromium-r${{ matrix.replicate }}-${{ github.run_id }}
+          path: |
+            lane6-scratch/r9/results/topology-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r9-calibration/challenge/requests/topology-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r9-calibration/challenge/decisions/topology-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r9-calibration/settle/settle-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r5/results/timing-environment-latest.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+
+  closeout:
+    name: Topology challenge closeout
+    needs: [prepare, challenge]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download immutable plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-tc-prepared-${{ github.run_id }}
+          path: lane6-scratch/r9-calibration
+
+      - name: Download every cell sample
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r9-tc-sample-*-${{ github.run_id }}
+          path: lane6-scratch/r9-calibration/challenge/aggregate-input
+
+      - name: Aggregate at runner level and refuse a partial matrix
+        run: |
+          node lane6-scratch/r9-calibration/challenge/aggregate.mjs             --input-dir=lane6-scratch/r9-calibration/challenge/aggregate-input --profile="$SAMPLING"
+
+      - name: Upload the closeout
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-tc-summary-${{ github.run_id }}
+          path: lane6-scratch/r9-calibration/challenge/topology-summary.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 60

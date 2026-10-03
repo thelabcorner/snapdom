@@ -1,0 +1,117 @@
+{
+  "schema": "snapdom-r9-hosted-topology-challenge-v1",
+  "repository": "thelabcorner/snapdom",
+  "runner": "ubuntu-24.04",
+  "nodeVersion": "22.21.1",
+  "playwrightVersion": "1.55.1",
+  "browser": "chromium",
+  "mode": "option-pair",
+  "baseSeed": 1511506142,
+  "purpose": "Decisive equal-cost hosted A/A challenge of the R9 measurement TOPOLOGY. Diagnostic and evidence-gathering only. This policy cannot produce, promote or freeze a performance threshold.",
+  "fixtures": [
+    "light-20cards",
+    "cards400-safe",
+    "cards400-non-neutral"
+  ],
+  "fixtureRationale": "The three fixtures the ledger names for this challenge. cards400-safe and cards400-non-neutral are the two whose corrected base-null pairs excluded zero in hosted calibration 37090104263; light-20cards is the cheap fixture that keeps the per-runner call budget affordable while still resolving a real per-call cost.",
+  "lanes": [
+    "current6",
+    "blocked6",
+    "identityCanary",
+    "current6Reversed",
+    "treatmentCurrent",
+    "treatmentBlocked"
+  ],
+  "laneOrderRationale": "Lanes execute SEQUENTIALLY, one at a time, so at most six pages are ever live. The execution order is rotated by replicate index (laneExecutionOrder) so that no lane systematically owns early or late runner wall-clock time. Keeping the lanes sequential also keeps a lane's pages inside one settle-to-timing window instead of letting a 32-page browser become its own confound.",
+  "sampling": {
+    "primary": {
+      "warmup": 6,
+      "blocks": {
+        "current6": 24,
+        "current6Reversed": 24,
+        "identityCanary": 24,
+        "blocked6": 18,
+        "treatmentCurrent": 24,
+        "treatmentBlocked": 12
+      },
+      "batch": {
+        "current6": 9,
+        "current6Reversed": 9,
+        "identityCanary": 9,
+        "blocked6": 12,
+        "treatmentCurrent": 9,
+        "treatmentBlocked": 18
+      }
+    },
+    "reduced": {
+      "warmup": 6,
+      "blocks": {
+        "current6": 12,
+        "current6Reversed": 12,
+        "identityCanary": 12,
+        "blocked6": 18,
+        "treatmentCurrent": 16,
+        "treatmentBlocked": 12
+      },
+      "batch": {
+        "current6": 9,
+        "current6Reversed": 9,
+        "identityCanary": 9,
+        "blocked6": 6,
+        "treatmentCurrent": 9,
+        "treatmentBlocked": 12
+      }
+    }
+  },
+  "samplingRationale": {
+    "identity": "The current rig keeps blocks=24, batch=9, exactly the shipped calibration configuration, because the ledger's runner-dispersion budget (section 7) and every reported self-null were measured there. Changing it would make the new dispersion numbers incomparable to the corrected run. blocks=24 is also a multiple of the 6-layout Latin rotation, so the rotation completes exactly four rounds.",
+    "blocked6": "blocks=18, batch=12 spends exactly 24*9=216 units per page, so the blocked rig matches the current rig's total timed calls to the call. 18 is a multiple of the 3-layout rotation (six complete rounds) and batch 12 is even so a block can be balanced rather than merely alternated. Every other admissible (blocks, batch) is enumerated and asserted in the browser-free tests.",
+    "treatmentCurrent": "8 crossover layouts at blocks=24 (three complete 8-layout Latin rounds).",
+    "treatmentBlocked": "4 blocked layouts on 2 pages each at blocks=12, batch=18: also 216 units per page, three complete 4-layout rounds, even batch.",
+    "reduced": "Escape hatch only, for when runner wall-clock makes the primary profile unaffordable. It preserves every equality (same total timed calls per compared pair, complete Latin rotations, even blocked batches) at roughly 57 percent of the primary work. POWER TRADEOFF, stated rather than hidden: the between-runner dispersion metric the challenge turns on is NOT degraded, because runner SD(log) is a between-runner quantity that the iid sampling model makes independent of blocks and batch at fixed product. What IS degraded is the precision of each individual runner's point estimate and the number of complete Latin rounds over which minute-scale runner drift is balanced, so the null CIs get wider and the drift common-modelling gets weaker. It must not be presented as a substitute for the primary profile.",
+    "never": "Runner count is never reduced to buy wall-clock. If the matrix cannot fit, the profile is reduced; the number of fresh Chromium runners is not."
+  },
+  "replicates": {
+    "chromium": 8
+  },
+  "minimumFreshRunners": 8,
+  "maxParallel": 8,
+  "bootstrap": 12000,
+  "settle": {
+    "intervalMs": 1000,
+    "maxWaitMs": 30000,
+    "consecutive": 3,
+    "maxCpuPercent": 20
+  },
+  "settleRationale": "Deliberately IDENTICAL to lane6-scratch/r9-calibration/POLICY.json settle. The adaptive post-install settle phase is reused rather than forked: prepare.mjs asserts the two blocks are deep-equal, so the challenge cannot silently drift onto a different settle threshold than the calibration it is compared against.",
+  "positiveControl": {
+    "mechanism": "Deterministic harness-side synthetic work. A fixed-iteration xorshift stream runs INSIDE the timed region but strictly AFTER the identical snapdom.toRaw call has returned, on the candidate ('opt') arm only, keyed to the arm rather than to a position. The accumulator is written to a page global each call so the work cannot be optimised away. No production source is touched.",
+    "expectedSign": "positive",
+    "expectedEffectClass": "an additive positive shift in log(slot2/slot1), small relative to one capture on cards400 fixtures and potentially large relative to one capture on light-20cards; deterministic in WORK UNITS, not in milliseconds",
+    "predictedMagnitudePct": null,
+    "doses": [
+      { "name": "low", "iterations": 250000 },
+      { "name": "high", "iterations": 1000000 }
+    ],
+    "doseRationale": "Two work counts a fixed 4x apart, both preregistered, so that at least one dose is expected to land in a detectable class on at least one fixture WITHOUT anyone predicting which. The harness records realised injectMs for every timed call, so the effect class is MEASURED rather than assumed, and a reader can tell a real non-detection from a too-small injection.",
+    "assertions": [
+      "the injected arm's mean injectMs is greater than zero and the control arm's is not",
+      "the recovery sign is positive under BOTH topologies",
+      "blocked recovery is not strictly below current recovery once their runner-level CIs are read",
+      "captureMs (snapdom's own work) is unchanged between the treated and control arms, which is what proves the injection did not perturb the library"
+    ],
+    "forbidden": [
+      "no calibrated millisecond magnitude is asserted anywhere",
+      "no post-hoc correction, trimming, winsorising or outlier deletion",
+      "no subtraction of one null from another to produce a reported effect"
+    ]
+  },
+  "successCriterion": "Qualitative and evidence-gated, never a number. The alternative topology is admissible only if it LOWERs null/control bias AND LOWERS between-runner dispersion AND does NOT attenuate or lose the sign of the positive control AND spends no MORE timed calls. Nothing is merged or promoted automatically; a human reads the evidence.",
+  "openFalsifiers": [
+    "the identity canary reads materially non-zero: the rig or the estimator is wrong, and every lane is void",
+    "blocked lowers control bias but its recovery CI sits strictly below the current rig's: the design attenuates real treatment sensitivity and is rejected",
+    "base-null offsets do not move when the canonical LAYOUT_ORDER is fully reversed: the corrected asymmetry is not creation-order coupled, and the mechanism in ledger section 4 is incomplete",
+    "the corrected asymmetry reproduces identically under both the canonical and the reversed order on every runner: it is a runner-wide property, not a pair-specific one, and this challenge's premise is wrong",
+    "the realised injectMs on a fixture is small enough that recovery is unresolvable there: that fixture's positive-control cell is INCONCLUSIVE and must be reported as such, not as a null result"
+  ]
+}
