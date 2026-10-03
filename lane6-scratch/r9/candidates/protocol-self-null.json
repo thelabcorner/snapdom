@@ -1,0 +1,66 @@
+{
+  "schema": "snapdom-r9-candidate-v1",
+  "id": "protocol-self-null",
+  "description": "Calibration run: the exact same compiled bundle and exact same options are measured in both arms. Any non-equivalent effect falsifies the measurement protocol before optimization claims are admitted.",
+  "mode": "option-pair",
+  "suite": "standing",
+  "expect": "equivalence",
+  "baselineRef": null,
+  "base": {},
+  "opt": {},
+  "playwrightVersion": "1.55.1",
+  "primaryFixtures": [
+    "light-20cards",
+    "cards400-safe",
+    "cards400-neutral-unsafe",
+    "cards400-non-neutral"
+  ],
+  "guardFixtures": [],
+  "knownNoOpFixtures": [
+    "light-20cards",
+    "cards400-safe",
+    "cards400-neutral-unsafe",
+    "cards400-non-neutral"
+  ],
+  "phases": {
+    "scout": {
+      "browsers": ["chromium"],
+      "n": 16,
+      "batch": 2,
+      "warmup": 2,
+      "bootstrap": 8000,
+      "epsilon": 0.02,
+      "controlBand": 0.04,
+      "equivalenceBand": 0.04,
+      "maxCov": 0.18,
+      "seed": 39457,
+      "replicates": 1
+    },
+    "confirm": {
+      "browsers": ["chromium"],
+      "n": 28,
+      "batch": 3,
+      "warmup": 3,
+      "bootstrap": 16000,
+      "epsilon": 0.02,
+      "controlBand": 0.03,
+      "equivalenceBand": 0.03,
+      "maxCov": 0.15,
+      "seed": 78731,
+      "replicates": 3
+    },
+    "engineGuard": {
+      "browsers": ["firefox", "webkit"],
+      "n": 12,
+      "batch": 2,
+      "warmup": 2,
+      "bootstrap": 6000,
+      "epsilon": 0.03,
+      "controlBand": 0.05,
+      "equivalenceBand": 0.05,
+      "maxCov": 0.20,
+      "seed": 118087,
+      "replicates": 1
+    }
+  }
+}

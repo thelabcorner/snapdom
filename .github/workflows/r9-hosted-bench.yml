@@ -1,0 +1,470 @@
+name: snapDOM v3 R9 hosted benchmark
+
+# Browser benchmarks in this workflow are deliberately GitHub-hosted only.
+# The measured identity is the committed lane6-scratch/r9/ACTIVE_CANDIDATE.json;
+# there is no event-dependent benchmark fallback and no pull_request default.
+#
+# Scientific stages:
+#   1. prepare immutable candidate/baseline bundles + build provenance
+#   2. one fresh-runner Chromium scout
+#   3. three independent fresh-runner Chromium confirmations
+#   4. runner-level aggregate CI (no raw-sample pooling across VMs)
+#   5. Firefox/WebKit guard runs only after Chromium confirmation clears
+#
+# A scientifically negative result is a valid green workflow with NO_CLAIM.
+# Missing/mismatched evidence, provenance, browser identity, or artifacts is red.
+
+on:
+  push:
+    branches:
+      - "perf/v3-r9-*"
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "esbuild.config.mjs"
+      - "lane6-scratch/r5/run-with-timing-gate.mjs"
+      - "lane6-scratch/atlas/profiler/fixtures.mjs"
+      - "lane6-scratch/r9/**"
+      - ".github/workflows/r9-hosted-bench.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "esbuild.config.mjs"
+      - "lane6-scratch/r5/run-with-timing-gate.mjs"
+      - "lane6-scratch/atlas/profiler/fixtures.mjs"
+      - "lane6-scratch/r9/**"
+      - ".github/workflows/r9-hosted-bench.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r9-hosted-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.21.1"
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  prepare:
+    name: Prepare immutable benchmark bundles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      candidate_id: ${{ steps.resolve.outputs.candidate_id }}
+      candidate_manifest: ${{ steps.resolve.outputs.candidate_manifest }}
+      candidate_manifest_sha256: ${{ steps.resolve.outputs.candidate_manifest_sha256 }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      baseline_ref: ${{ steps.resolve.outputs.baseline_ref }}
+      suite: ${{ steps.resolve.outputs.suite }}
+      expect: ${{ steps.resolve.outputs.expect }}
+      playwright_version: ${{ steps.resolve.outputs.playwright_version }}
+      confirm_replicates: ${{ steps.resolve.outputs.confirm_replicates }}
+      confirm_matrix: ${{ steps.resolve.outputs.confirm_matrix }}
+      engine_guard_matrix: ${{ steps.resolve.outputs.engine_guard_matrix }}
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$CANDIDATE_SHA"
+          echo "candidate=$actual"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Resolve committed benchmark identity
+        id: resolve
+        run: node lane6-scratch/r9/resolve-candidate.mjs
+
+      - name: Compile exact candidate bundle
+        run: |
+          set -euo pipefail
+          npm run compile
+          mkdir -p lane6-scratch/r9/bundles
+          cp dist/snapdom.mjs lane6-scratch/r9/bundles/candidate.mjs
+
+      - name: Checkout frozen baseline
+        if: steps.resolve.outputs.mode == 'bundle-diff'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.resolve.outputs.baseline_ref }}
+          path: __r9_baseline
+          fetch-depth: 1
+
+      - name: Verify and compile frozen baseline
+        if: steps.resolve.outputs.mode == 'bundle-diff'
+        working-directory: __r9_baseline
+        shell: bash
+        env:
+          EXPECTED_BASELINE: ${{ steps.resolve.outputs.baseline_ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_BASELINE"
+          npm ci --no-audit --no-fund
+          npm run compile
+          cp dist/snapdom.mjs ../lane6-scratch/r9/bundles/baseline.mjs
+
+      - name: Materialize same-bundle baseline for option pairs
+        if: steps.resolve.outputs.mode == 'option-pair'
+        run: cp lane6-scratch/r9/bundles/candidate.mjs lane6-scratch/r9/bundles/baseline.mjs
+
+      - name: Record cryptographic build provenance
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ steps.resolve.outputs.baseline_ref }}
+        run: node lane6-scratch/r9/build-provenance.mjs
+
+      - name: Upload immutable prepared evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-prepared-${{ steps.resolve.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r9/bundles/
+            lane6-scratch/r9/resolved-plan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  scout:
+    name: Chromium scout
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      eligible: ${{ steps.decision.outputs.eligible }}
+      state: ${{ steps.decision.outputs.state }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download immutable prepared bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run ambient gate + hosted scout
+        id: bench
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+          SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
+        run: |
+          set +e
+          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9/run-candidate.mjs --phase=scout --replicate=0 --browser=chromium
+          code=$?
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark/gate exit=$code"
+          exit 0
+
+      - name: Adjudicate scout
+        id: decision
+        if: always()
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+        run: |
+          node lane6-scratch/r9/decide-run.mjs             --phase=scout --replicate=0 --browser=chromium             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
+
+      - name: Upload scout evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-scout-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r9/results/
+            lane6-scratch/r9/decisions/
+            lane6-scratch/r5/results/timing-environment-latest.json
+            lane6-scratch/r9/bundles/build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  confirm:
+    name: Chromium confirmation r${{ matrix.replicate }}
+    needs: [prepare, scout]
+    if: needs.scout.outputs.eligible == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        replicate: ${{ fromJSON(needs.prepare.outputs.confirm_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download immutable prepared bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run ambient gate + confirmation
+        id: bench
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+          SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
+        run: |
+          set +e
+          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9/run-candidate.mjs               --phase=confirm --replicate="${{ matrix.replicate }}" --browser=chromium
+          code=$?
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Adjudicate confirmation
+        if: always()
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+        run: |
+          node lane6-scratch/r9/decide-run.mjs             --phase=confirm --replicate="${{ matrix.replicate }}" --browser=chromium             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
+
+      - name: Upload confirmation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r9/results/
+            lane6-scratch/r9/decisions/
+            lane6-scratch/r5/results/timing-environment-latest.json
+            lane6-scratch/r9/bundles/build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: Aggregate fresh Chromium runners
+    needs: [prepare, scout, confirm]
+    if: always() && needs.scout.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      eligible: ${{ steps.aggregate.outputs.eligible }}
+      state: ${{ steps.aggregate.outputs.state }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Download prepared plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Download all confirmation decisions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r9-confirm-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/aggregate-input
+
+      - name: Aggregate without cross-runner raw-sample pooling
+        id: aggregate
+        run: node lane6-scratch/r9/aggregate.mjs --phase=confirm
+
+      - name: Upload aggregate decision
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/decisions/aggregate-confirm.json
+          if-no-files-found: error
+          retention-days: 60
+
+  engine-guard:
+    name: Engine guard · ${{ matrix.browser }}
+    needs: [prepare, aggregate]
+    if: needs.aggregate.outputs.eligible == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJSON(needs.prepare.outputs.engine_guard_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download immutable prepared bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Install pinned browser
+        run: npx playwright install --with-deps "${{ matrix.browser }}"
+
+      - name: Run ambient gate + engine guard
+        id: bench
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+          SNAPDOM_BENCH_MANIFEST_SHA256: ${{ needs.prepare.outputs.candidate_manifest_sha256 }}
+        run: |
+          set +e
+          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9/run-candidate.mjs               --phase=engineGuard --replicate=0 --browser="${{ matrix.browser }}"
+          code=$?
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Adjudicate engine guard
+        if: always()
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ needs.prepare.outputs.baseline_ref }}
+        run: |
+          node lane6-scratch/r9/decide-run.mjs             --phase=engineGuard --replicate=0 --browser="${{ matrix.browser }}"             --gate-exit="${{ steps.bench.outputs.exit || '1' }}"
+
+      - name: Upload engine-guard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-engine-${{ needs.prepare.outputs.candidate_id }}-${{ matrix.browser }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r9/results/
+            lane6-scratch/r9/decisions/
+            lane6-scratch/r5/results/timing-environment-latest.json
+            lane6-scratch/r9/bundles/build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  engine-aggregate:
+    name: Aggregate cross-engine guards
+    needs: [prepare, aggregate, engine-guard]
+    if: always() && needs.aggregate.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      eligible: ${{ steps.aggregate.outputs.eligible }}
+      state: ${{ steps.aggregate.outputs.state }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Download prepared plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r9-prepared-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9
+
+      - name: Download engine decisions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r9-engine-${{ needs.prepare.outputs.candidate_id }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/aggregate-input
+
+      - name: Aggregate engine guards
+        id: aggregate
+        run: |
+          node lane6-scratch/r9/aggregate.mjs             --phase=engineGuard             --out=lane6-scratch/r9/decisions/aggregate-engineGuard.json
+
+      - name: Upload cross-engine aggregate
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r9-engine-aggregate-${{ needs.prepare.outputs.candidate_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r9/decisions/aggregate-engineGuard.json
+          if-no-files-found: error
+          retention-days: 60
+
+  closeout:
+    name: Benchmark closeout
+    needs: [prepare, scout, aggregate, engine-aggregate]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Final fail-closed summary
+        shell: bash
+        env:
+          CANDIDATE_ID: ${{ needs.prepare.outputs.candidate_id }}
+          SCOUT_STATE: ${{ needs.scout.outputs.state }}
+          CHROMIUM_STATE: ${{ needs.aggregate.outputs.state }}
+          ENGINE_STATE: ${{ needs.engine-aggregate.outputs.state }}
+          CHROMIUM_ELIGIBLE: ${{ needs.aggregate.outputs.eligible }}
+          ENGINE_ELIGIBLE: ${{ needs.engine-aggregate.outputs.eligible }}
+        run: |
+          {
+            echo "### snapDOM R9 hosted benchmark closeout"
+            echo
+            echo "- candidate: \`$CANDIDATE_ID\`"
+            echo "- scout: \`${SCOUT_STATE:-not-run}\`"
+            echo "- fresh-runner Chromium aggregate: \`${CHROMIUM_STATE:-not-run}\`"
+            echo "- cross-engine guard: \`${ENGINE_STATE:-not-run}\`"
+            echo
+            if [ "$CHROMIUM_ELIGIBLE" = "true" ] && [ "$ENGINE_ELIGIBLE" = "true" ]; then
+              echo "**FULL HOSTED GATES CLEARED.** This is evidence eligibility, not an automatic code promotion."
+            else
+              echo "**NO PERFORMANCE CLAIM.** The pipeline stopped or one of the preregistered gates did not clear."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
