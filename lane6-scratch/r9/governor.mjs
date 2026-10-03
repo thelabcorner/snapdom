@@ -41,6 +41,23 @@ export const POLICY_SCHEMA = 'snapdom-r9-governor-policy-v2'
 export const CANDIDATE_SCHEMA = 'snapdom-r9-candidate-v2'
 export const PLAN_SCHEMA = 'snapdom-r9-resolved-plan-v2'
 export const RUN_DECISION_SCHEMA = 'snapdom-r9-run-decision-v2'
+export const SEED_STRIDE = 104729
+
+/**
+ * Deterministic fresh-runner acquisition seed.
+ *
+ * Policy owns the base seed; replicate identity owns the only offset. The same replicate uses the
+ * same seed across browser engines so engine guards observe the same acquisition ordering.
+ */
+export function deriveSeed(baseSeed, replicate) {
+  if (!Number.isInteger(baseSeed) || baseSeed < 0) {
+    throw new GovernorRefusal('base seed must be an integer >= 0', { baseSeed })
+  }
+  if (!Number.isInteger(replicate) || replicate < 0) {
+    throw new GovernorRefusal('replicate must be an integer >= 0 for seed derivation', { replicate })
+  }
+  return (baseSeed + replicate * SEED_STRIDE) >>> 0
+}
 export const AGGREGATE_SCHEMA = 'snapdom-r9-aggregate-decision-v2'
 export const CLOSEOUT_SCHEMA = 'snapdom-r9-closeout-v2'
 
@@ -540,7 +557,7 @@ export function verifyRunIdentities({ plan, report, build, gate, policy, env = p
     batch: acquisition.batch,
     warmup: acquisition.warmup,
     bootstrap: acquisition.bootstrap,
-    seed: acquisition.seed,
+    seed: deriveSeed(acquisition.seed, replicate),
   })) {
     if (provenance.protocol?.[key] !== expected) hard.push(`policy acquisition drift: ${key} ${provenance.protocol?.[key]} != ${expected}`)
   }

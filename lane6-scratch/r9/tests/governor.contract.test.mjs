@@ -24,6 +24,7 @@ import {
   assertHostedEnvironment,
   closeoutSummary,
   closeoutVerdict,
+  deriveSeed,
   hostedEnvironmentProblems,
   judgeRunEvidence,
   mergeRefProblems,
@@ -284,7 +285,7 @@ function report(policyRef, { phase = 'confirm', browser = 'chromium', replicate 
         batch: acquisition.batch,
         warmup: acquisition.warmup,
         bootstrap: acquisition.bootstrap,
-        seed: acquisition.seed,
+        seed: deriveSeed(acquisition.seed, replicate),
         epsilon: policyRef.promotion.epsilon,
         controlBand: policyRef.promotion.controlBand,
         noopBand: policyRef.promotion.equivalenceBand,
@@ -295,6 +296,15 @@ function report(policyRef, { phase = 'confirm', browser = 'chromium', replicate 
     fixtures,
   }
 }
+
+test('replicate seeds are derived once from the policy base seed and remain engine-independent', () => {
+  assert.equal(deriveSeed(78731, 0), 78731)
+  assert.equal(deriveSeed(78731, 1), 183460)
+  assert.equal(deriveSeed(78731, 2), 288189)
+  assert.equal(deriveSeed(118087, 3), 432274)
+  assert.throws(() => deriveSeed(-1, 0), GovernorRefusal)
+  assert.throws(() => deriveSeed(78731, -1), GovernorRefusal)
+})
 
 /* ------------------------------------------------------------------ policy ownership -------- */
 

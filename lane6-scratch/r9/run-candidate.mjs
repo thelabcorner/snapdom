@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { arg, sha256File } from './protocol.mjs'
-import { GovernorRefusal, assertHostedEnvironment } from './governor.mjs'
+import { GovernorRefusal, assertHostedEnvironment, deriveSeed } from './governor.mjs'
 
 const ROOT = process.cwd()
 const PLAN_PATH = path.resolve(ROOT, 'lane6-scratch/r9/resolved-plan.json')
@@ -75,7 +75,7 @@ if (candidate.mode === 'bundle-diff' && !fs.existsSync(baselineBundle)) fail('ba
 const acquisition = plan.acquisition[PHASE]
 const selection = [...plan.selection.selected]
 const expectation = plan.phaseExpectations[PHASE]
-const seed = (acquisition.seed + REPLICATE * 104729) >>> 0
+const seed = deriveSeed(acquisition.seed, REPLICATE)
 const outName = `${candidate.id}-${PHASE}-${browser}-r${REPLICATE}.json`
 
 const args = [
