@@ -13,9 +13,13 @@ import path from 'node:path'
 import { runnerCi, heterogeneity, mean, sd, t975, pct, withinEnvelope, envelopeBreachesPct } from '../lib/stats.mjs'
 import { auditCells, expectedCells, cellKey, USABLE_STATE } from '../lib/matrix.mjs'
 import { decideStage, decideEngines, decideCloseout, STATES } from '../lib/decide.mjs'
-import { preparedArtifact, cellArtifact, stageArtifact, mergeCells, duplicateRunIds } from '../lib/artifacts.mjs'
+import { preparedArtifact, cellArtifact, stageArtifact, mergeCells, duplicateRunIds, resolveStageCells } from '../lib/artifacts.mjs'
 import { createSettlePlan, evaluateSettle, shouldStop } from '../lib/settle.mjs'
-import { readWorkflow, jobs, stepNames, findStep, stepIndex, allText, declaredArtifactNames, artifactUses } from '../lib/workflow.mjs'
+import {
+  readWorkflow, jobs, steps, stepNames, findStep, stepIndex, allText, declaredArtifactNames, artifactUses,
+  uploadSteps, downloadSteps, canonical, uploadSearchPaths, artifactLayout, layoutContains, producerLayouts,
+  producerFor, harvestPlan, entryUnder, harvestDirFor, harvestSource,
+} from '../lib/workflow.mjs'
 import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
@@ -635,4 +639,326 @@ test('the pure libraries import on their own, with no side effects', async () =>
     const mod = await import(pathToFileURL(abs).href)
     assert.ok(Object.keys(mod).length > 0, rel + ' exports nothing')
   }
+})
+test('the pure libraries import on their own, with no side effects', async () => {
+  for (const rel of ['lib/stats.mjs', 'lib/matrix.mjs', 'lib/decide.mjs', 'lib/artifacts.mjs', 'lib/settle.mjs', 'lib/workflow.mjs']) {
+    const abs = path.join(ROOT, 'lane6-scratch/r10-shadow', rel)
+    const mod = await import(pathToFileURL(abs).href)
+    assert.ok(Object.keys(mod).length > 0, rel + ' exports nothing')
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// The artifact layout contract: the bug run 37146183681 actually had
+// ---------------------------------------------------------------------------------------------
+//
+// prepare and all eight chromium cells were green and the stage still collected 0/8 decisions. The
+// producers were right, the consumers were wrong, and every existing contract asserted names rather
+// than paths, so the mismatch was invisible until a run spent the minutes. These pin the layout.
+
+const LANE_REL = workflow.env.LANE
+const cellUpload = (engine) => uploadSteps(workflow).find(
+  (s) => canonical(String(s.with.name)).includes(engine === 'chromium' ? 'sample-chromium' : 'sample-' + engine + '-')
+)
+const RUN_ID = '37146183681'
+
+test('an artifact is rooted at the least common ancestor of its search paths', () => {
+  // One directory search path plus one file beside it: the prepared artifact, whose consumer path
+  // happened to equal its root, which is why prepare and all eight cells ran at all.
+  const prepared = uploadSteps(workflow).find((s) => canonical(String(s.with.name)).startsWith('r10-f4-prepared-'))
+  const layout = artifactLayout(prepared)
+  assert.deepEqual(uploadSearchPaths(prepared), [
+    'lane6-scratch/r10-shadow/bundle',
+    'lane6-scratch/r10-shadow/prepared.json',
+  ])
+  assert.equal(layout.root, 'lane6-scratch/r10-shadow')
+  assert.deepEqual(layout.directories, ['bundle'])
+  assert.deepEqual(layout.files, ['prepared.json'])
+  // A directory at the root is listed as itself; a sibling file keeps its basename. Neither carries
+  // the lane prefix, because the lane directory IS the root.
+  assert.ok(layoutContains(layout, 'prepared.json'))
+  assert.ok(layoutContains(layout, 'bundle/candidate.mjs'))
+  assert.ok(!layoutContains(layout, 'lane6-scratch/r10-shadow/prepared.json'))
+})
+
+test('the cell artifact stores results/, requests/ and decisions/ at its root', () => {
+  // Three sibling directories under the lane directory, so the lane directory is the root. This is
+  // the exact layout the harvest used to miss by one level.
+  const layout = artifactLayout(cellUpload('chromium'))
+  assert.equal(layout.root, LANE_REL)
+  assert.deepEqual(layout.files, [
+    'results/f4-chromium-r{{replicate}}.json',
+    'results/settle-chromium-r{{replicate}}.json',
+    'requests/f4-chromium-r{{replicate}}.json',
+    'decisions/f4-chromium-r{{replicate}}.json',
+  ])
+  assert.equal(layout.files.length, 4)
+})
+
+test('the entry the 0/8 harvest looked for is not an entry the producer can produce', () => {
+  // Stated as a negative so this contract has teeth: if the layout ever changed to carry the lane
+  // prefix, THIS assertion fails and forces the harvest to be re-derived rather than left stale.
+  const layout = artifactLayout(cellUpload('chromium'))
+  assert.equal(layoutContains(layout, 'decisions/f4-chromium-r{{replicate}}.json'), true)
+  assert.equal(layoutContains(layout, 'lane6-scratch/r10-shadow/decisions/f4-chromium-r{{replicate}}.json'), false)
+  assert.equal(layoutContains(layout, 'results/f4-chromium-r9.json'), false)
+})
+
+test('a single-file artifact is rooted at that file\'s own directory', () => {
+  // The stage verdict producers. One literal file, so the root is its directory and the archive entry
+  // is the bare filename — which is why the closeout reads `chromium.json`, not
+  // `closeout/chromium.json`.
+  for (const stage of ['chromium', 'engines']) {
+    const producer = producerFor(workflow, stageArtifact({ stage, runId: '${{ github.run_id }}' }))
+    assert.ok(producer, 'no producer for the ' + stage + ' stage verdict')
+    const layout = artifactLayout(producer)
+    assert.equal(layout.root, LANE_REL + '/closeout')
+    assert.deepEqual(layout.files, [stage + '.json'])
+    assert.equal(layoutContains(layout, stage + '.json'), true)
+    assert.equal(layoutContains(layout, 'lane6-scratch/r10-shadow/closeout/' + stage + '.json'), false)
+  }
+})
+
+test('every gh run download consumer path exists inside the artifact it harvested', () => {
+  // THE regression test. Each `src="$dir/<entry>"` is paired with the `gh run download --dir` that
+  // created `$dir`, and `<entry>` must be a file that artifact actually carries.
+  const plans = harvestPlan(workflow)
+  let checked = 0
+  for (const plan of plans) {
+    for (const entry of plan.entries) {
+      const source = harvestSource(plan, entry.src)
+      assert.ok(source, plan.job + ': ' + entry.src + ' is read from no harvested directory')
+      const producer = producerFor(workflow, source.download.artifact)
+      assert.ok(producer, plan.job + ' harvests ' + source.download.artifact + ', which no job uploads')
+      assert.ok(
+        layoutContains(artifactLayout(producer), source.entry),
+        plan.job + ' reads ' + source.entry + ' out of ' + source.download.artifact +
+          ', which carries ' + JSON.stringify(artifactLayout(producer).files)
+      )
+      checked++
+    }
+  }
+  // Loops execute many runtime cells from a finite set of path templates. The exact matrix
+  // cardinality is asserted separately; here every distinct harvested entry template must resolve.
+  assert.ok(checked >= 6, 'the harvest shrank: only ' + checked + ' consumer path templates were checked')
+})
+
+test('no harvested entry repeats the lane prefix under its own download directory', () => {
+  // A direct, readable restatement of the same bug, pinned so a re-introduced prefix fails on the
+  // line that introduced it rather than on a computed layout.
+  for (const plan of harvestPlan(workflow)) {
+    for (const entry of plan.entries) {
+      const source = harvestSource(plan, entry.src)
+      assert.ok(source, plan.job + ': ' + entry.src + ' resolves to no harvest')
+      assert.ok(
+        !source.entry.startsWith(LANE_REL + '/'),
+        plan.job + ' spells ' + source.entry + ' with the lane prefix under ' + source.dir
+      )
+    }
+  }
+})
+
+test('every download-artifact path equals the LCA root of the artifact it fetches', () => {
+  // The step that already worked, pinned so it cannot quietly become the next 0/8: the prepared
+  // artifact is extracted straight into the lane directory, which is exactly its root.
+  const downloads = downloadSteps(workflow)
+  assert.ok(downloads.length >= 4)
+  for (const step of downloads) {
+    const producer = producerFor(workflow, String(step.with.name))
+    assert.ok(producer, 'no producer for downloaded artifact ' + step.with.name)
+    assert.equal(
+      canonical(String(step.with.path)),
+      artifactLayout(producer).root,
+      step.with.name + ' must be extracted into its own root'
+    )
+  }
+})
+
+test('every artifact a job harvests has an upload producer somewhere in the workflow', () => {
+  // Catches the two stage artifacts the closeout downloaded and no job had ever created.
+  const harvested = harvestPlan(workflow).flatMap((p) => p.downloads.map((d) => canonical(d.artifact)))
+  // Loops execute many runtime downloads from a small number of artifact-name templates.
+  // Count templates here; exact cell cardinality is covered independently by the matrix contracts.
+  assert.ok(harvested.length >= 4, 'only ' + harvested.length + ' artifact download templates found')
+  for (const artifact of harvested) {
+    assert.ok(producerFor(workflow, artifact), 'harvested ' + artifact + ' with no producer')
+  }
+  const actionDownloads = downloadSteps(workflow).map((s) => canonical(String(s.with.name)))
+  for (const stage of ['chromium', 'engines']) {
+    const name = canonical(stageArtifact({ stage, runId: '${{ github.run_id }}' }))
+    assert.ok(
+      harvested.includes(name) || actionDownloads.includes(canonical(name)),
+      'the ' + stage + ' stage verdict is never harvested back'
+    )
+  }
+})
+
+test('each stage verdict is produced by the job that owns the aggregation', () => {
+  const chromium = producerFor(workflow, stageArtifact({ stage: 'chromium', runId: '${{ github.run_id }}' }))
+  const engines = producerFor(workflow, stageArtifact({ stage: 'engines', runId: '${{ github.run_id }}' }))
+  assert.equal(chromium.job, 'stage_chromium')
+  assert.equal(engines.job, 'stage_engines')
+  for (const stage of [chromium, engines]) {
+    assert.equal(stage.name.includes('run_attempt'), false)
+    const step = steps(jobs(workflow)[stage.job]).find((s) => s.name === stage.step)
+    assert.equal(step.with.overwrite, true, stage.step + ' must overwrite in place')
+    assert.equal(step.if, 'always()', stage.step + ' must upload even on a red stage')
+    assert.equal(step.with['if-no-files-found'], 'error', stage.step + ' must fail closed')
+  }
+})
+
+test('the cross-engine verdict is aggregated by one job, not recomputed by the closeout', () => {
+  assert.ok(jobs(workflow).stage_engines, 'no job owns the cross-engine stage verdict')
+  const closeout = jobs(workflow).closeout
+  assert.match(String(closeout.needs), /stage_engines/)
+  const stageJob = steps(jobs(workflow).stage_engines).map((s) => s.run || '').join('\n')
+  assert.match(stageJob, /aggregate\.mjs --stage=engines/)
+  const closeoutRuns = steps(closeout).map((s) => s.run || '').join('\n')
+  assert.ok(!/aggregate\.mjs --stage=engines/.test(closeoutRuns), 'the closeout must not re-answer the guard')
+})
+
+test('every workflow artifact name is the run_id-keyed template in lib/artifacts.mjs', () => {
+  // Names live in two places, so they are pinned to the one place that defines them.
+  const names = uploadSteps(workflow).map((s) => canonical(String(s.with.name)).replace('{{run_id}}', RUN_ID))
+  const r0Names = names.map((n) => n.replace('{{replicate}}', '0'))
+  assert.ok(r0Names.includes(preparedArtifact(RUN_ID)))
+  assert.ok(r0Names.includes(cellArtifact({ engine: 'chromium', replicate: 0, runId: RUN_ID })))
+  assert.ok(r0Names.includes(stageArtifact({ stage: 'chromium', runId: RUN_ID })))
+  assert.ok(r0Names.includes(stageArtifact({ stage: 'engines', runId: RUN_ID })))
+  const generic = r0Names.find((n) => n.includes('{{engine}}'))
+  assert.ok(generic, 'no cross-engine cell producer')
+  assert.equal(generic.replace('{{engine}}', 'firefox'), cellArtifact({ engine: 'firefox', replicate: 0, runId: RUN_ID }))
+  assert.equal(generic.replace('{{engine}}', 'webkit'), cellArtifact({ engine: 'webkit', replicate: 0, runId: RUN_ID }))
+  for (const name of names) {
+    assert.ok(!/attempt/i.test(name), 'attempt leaked into an artifact name: ' + name)
+    assert.ok(name.includes(RUN_ID), 'artifact not keyed on run_id: ' + name)
+  }
+})
+
+test('a harvested cell is copied into the directory the aggregate reads', () => {
+  const laneDecisions = LANE_REL + '/decisions'
+  const laneCloseout = LANE_REL + '/closeout'
+  for (const plan of harvestPlan(workflow)) {
+    for (const target of plan.copyTargets) {
+      const resolved = canonical(target).replace('$LANE', LANE_REL)
+      assert.ok(
+        resolved === laneDecisions || resolved === laneCloseout,
+        plan.job + ' copies into ' + resolved + ', which nothing aggregates'
+      )
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// A cell job may be red, and it must be red for the right reason
+// ---------------------------------------------------------------------------------------------
+
+test('a cell propagates its admission decision instead of exiting 0 after validation', () => {
+  for (const name of ['chromium', 'engines']) {
+    const admit = findStep(jobs(workflow)[name], 'Admit or reject this cell')
+    assert.ok(admit, name + ' has no admission step')
+    assert.ok(!/^\s*exit 0\s*$/m.test(admit.run), name + ' exits 0 whatever validate decided')
+    assert.match(admit.run, /validate\.mjs/)
+    assert.match(admit.run, /exit \$code/, name + ' must propagate the decision exit code')
+  }
+})
+
+test('a blocked settle is recorded rather than raised, so admission still runs', () => {
+  // `exit 3` here made the step red, which skipped admission, which wrote no decision document,
+  // which is the 0/N harvest shape all over again.
+  for (const name of ['chromium', 'engines']) {
+    const bench = findStep(jobs(workflow)[name], 'Run hosted F4 ceiling measurement')
+    assert.ok(!/^\s*exit 3\s*$/m.test(bench.run), name + ' raises a blocked settle instead of recording it')
+    assert.match(bench.run, /echo "exit=3" >> "\$GITHUB_OUTPUT"/)
+  }
+})
+
+test('the raw evidence upload is always() and follows admission', () => {
+  for (const name of ['chromium', 'engines']) {
+    const job = jobs(workflow)[name]
+    const upload = findStep(job, 'Upload raw F4 evidence')
+    assert.equal(upload.if, 'always()')
+    assert.ok(
+      stepIndex(job, 'Upload raw F4 evidence') > stepIndex(job, 'Admit or reject this cell'),
+      name + ' must upload after admission has written the decision'
+    )
+  }
+})
+
+test('a stage aggregates and publishes a verdict even when its matrix is incomplete', () => {
+  for (const name of ['stage_chromium', 'stage_engines']) {
+    const job = jobs(workflow)[name]
+    assert.match(String(job.if), /always\(\)/)
+    assert.ok(findStep(job, 'Aggregate'), name + ' does not aggregate')
+    const upload = findStep(job, 'Upload')
+    assert.equal(upload.if, 'always()')
+    assert.match(job['runs-on'] ? String(job['runs-on']) : '', /ubuntu/)
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// The retry helpers have a caller on the real harvest path
+// ---------------------------------------------------------------------------------------------
+
+test('resolveStageCells supersedes a retried cell and reports the rest', () => {
+  const runId = '999'
+  const expected = expectedCells(policy, ['chromium'])
+  const docs = [
+    ...expected.map((k) => doc(k.split(':')[0], Number(k.split(':')[1]), USABLE_STATE, { runId, attemptIndex: 0 })),
+    doc('chromium', 5, USABLE_STATE, { runId, attemptIndex: 2 }),
+  ]
+  const resolved = resolveStageCells({ docs, expected, runId })
+  assert.deepEqual(resolved.foreign, [])
+  assert.deepEqual(resolved.duplicated, [])
+  assert.deepEqual(resolved.ambiguous, [])
+  assert.deepEqual(resolved.missing, [])
+  assert.equal(resolved.docs.length, 8)
+  assert.equal(resolved.docs.find((d) => d.replicate === 5).attemptIndex, 2)
+})
+
+test('resolveStageCells refuses a document from another run instead of aggregating it', () => {
+  const runId = '999'
+  const expected = expectedCells(policy, ['chromium'])
+  const docs = [
+    ...expected.map((k) => doc(k.split(':')[0], Number(k.split(':')[1]), USABLE_STATE, { runId })),
+    doc('chromium', 0, USABLE_STATE, { runId: 'other-run' }),
+  ]
+  const resolved = resolveStageCells({ docs, expected, runId })
+  assert.deepEqual(resolved.foreign, ['other-run|chromium:0'])
+  assert.equal(resolved.docs.length, 8, 'the foreign document must not join the matrix')
+})
+
+test('resolveStageCells reports two files claiming the same (runId, cell)', () => {
+  const runId = '999'
+  const resolved = resolveStageCells({
+    docs: [
+      doc('chromium', 0, USABLE_STATE, { runId, attemptIndex: 1 }),
+      doc('chromium', 0, STATES.INCOMPLETE, { runId, attemptIndex: 1 }),
+    ],
+    expected: ['chromium:0'],
+    runId,
+  })
+  assert.deepEqual(resolved.ambiguous, ['chromium:0'])
+  assert.deepEqual(resolved.duplicated, ['chromium:0'])
+})
+
+test('resolveStageCells reports the cells a retried run never produced', () => {
+  const resolved = resolveStageCells({ docs: [], expected: ['chromium:0', 'chromium:1'], runId: '999' })
+  assert.deepEqual(resolved.missing, ['chromium:0', 'chromium:1'])
+  assert.deepEqual(resolved.docs, [])
+})
+
+test('the aggregate runs harvested documents through the retry helpers, not straight to the audit', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'lane6-scratch/r10-shadow/aggregate.mjs'), 'utf8')
+  assert.match(src, /from '\.\/lib\/artifacts\.mjs'/)
+  assert.match(src, /resolveStageCells/)
+  // Foreign-run documents and ambiguous filenames are provenance failures, not evidence.
+  assert.match(src, /failClosed\(STATES\.PROVENANCE/)
+  assert.ok(!/auditCells\(\{\s*docs,\s*expected/.test(src), 'the audit must not see raw directory contents')
+  assert.ok(!/auditCells\(\{\s*docs:\s*docs\b/.test(src), 'the audit must see the resolved cells')
+})
+
+test('the pure libraries still import with the new helper attached', async () => {
+  const mod = await import(pathToFileURL(path.join(ROOT, 'lane6-scratch/r10-shadow/lib/artifacts.mjs')).href)
+  assert.equal(typeof mod.resolveStageCells, 'function')
 })

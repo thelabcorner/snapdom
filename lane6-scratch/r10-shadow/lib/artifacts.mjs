@@ -101,3 +101,35 @@ export function mergeCells(expected, docs, runId) {
     missing: expected.filter((key) => !out.has(key)),
   }
 }
+// ---------------------------------------------------------------------------------------------
+// The harvest composition, so the retry rules above have a caller on the real path
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The composition `aggregate.mjs` actually runs on a harvested decisions directory: supersede by
+ * attempt index, refuse documents belonging to another run, and report any filename pair claiming the
+ * same (runId, cell) twice.
+ *
+ * This exists so the retry rules are not merely documented. The aggregate used to hand every file in
+ * the decisions directory straight to the matrix audit, which left the run-id check and the duplicate
+ * check living in a library with no caller: a decision document copied in from a different run passed
+ * the identity audit as long as its policy and bundle hashes matched, and two documents claiming one
+ * cell were resolved by `auditCells` on directory order rather than refused.
+ *
+ * @param {object} input
+ * @param {object[]} input.docs every decision document found on disk
+ * @param {string[]} input.expected the exact cell list for the stage
+ * @param {string|null} input.runId the run whose cells are wanted
+ */
+export function resolveStageCells({ docs, expected, runId }) {
+  const merged = mergeCells(expected, docs, runId)
+  return {
+    docs: [...merged.cells.values()],
+    foreign: merged.rejected,
+    duplicated: merged.duplicated,
+    // A higher-attempt copy is an expected retry and is superseded by mergeCells. Only two copies
+    // claiming the SAME attempt are ambiguous/conflicting.
+    ambiguous: merged.duplicated,
+    missing: merged.missing,
+  }
+}

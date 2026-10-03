@@ -11,6 +11,16 @@ name: snapDOM R10 F4 wall falsifier
 # cell in place and keeps the prepared artifact from the earlier attempt. The closeout combines
 # prior-good and retried cells and fails closed on anything absent or duplicated.
 #
+# A consumer never spells an archive entry with the producer's own prefix. actions/upload-artifact
+# roots an artifact at the least common ancestor of its `path:` search paths, and both
+# actions/download-artifact and `gh run download` extract the archive CONTENTS into their
+# destination directory. The cell artifact therefore carries `decisions/f4-chromium-rN.json` at its
+# root, not `lane6-scratch/r10-shadow/decisions/...`. Run 37146183681 prepared and ran all eight
+# chromium cells green and still collected 0/8 decisions, purely because the harvest read one
+# directory too deep. lane6-scratch/r10-shadow/lib/workflow.mjs reconstructs that root from this
+# file and contracts.test.mjs asserts every consumer path against it, so the producer and consumer
+# halves cannot drift apart again. Each stage verdict is uploaded by the job that owns it.
+#
 # Gate logic lives in lane6-scratch/r10-shadow/validate.mjs (per cell: SAMPLE_VALID / INCOMPLETE /
 # PROVENANCE_FAILURE only) and lane6-scratch/r10-shadow/aggregate.mjs (the only place the 1%
 # question is answered). Thresholds live in F4_POLICY.json, hashed by prepare.mjs along with every
@@ -154,7 +164,11 @@ jobs:
           set +e
           if [ "${{ steps.settle.outputs.exit }}" = "3" ]; then
             echo "settle never cleared; cell observes nothing"
-            exit 3
+            echo "exit=3" >> "$GITHUB_OUTPUT"
+            # Recorded rather than raised: a red step here skips admission entirely, and a cell with
+            # no decision document is exactly the 0/N harvest this lane must never produce.
+            # validate.mjs maps gate-exit 3 to INCOMPLETE_EVIDENCE, which turns the cell red below.
+            exit 0
           fi
           node lane6-scratch/r5/run-with-timing-gate.mjs -- \
             node lane6-scratch/r10-shadow/run.mjs \
@@ -169,21 +183,16 @@ jobs:
           SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
         run: |
           set +e
-          code=2
-          if [ "${{ steps.bench.outputs.exit }}" != "3" ]; then
-            node lane6-scratch/r10-shadow/validate.mjs \
-              --browser=chromium --replicate="${{ matrix.replicate }}" \
-              --gate-exit="${{ steps.bench.outputs.exit }}"
-            code=$?
-          else
-            node lane6-scratch/r10-shadow/validate.mjs \
-              --browser=chromium --replicate="${{ matrix.replicate }}" --gate-exit=3
-            code=$?
-          fi
+          node lane6-scratch/r10-shadow/validate.mjs \
+            --browser=chromium --replicate="${{ matrix.replicate }}" \
+            --gate-exit="${{ steps.bench.outputs.exit }}"
+          code=$?
           set -e
-          # INCOMPLETE and PROVENANCE are non-zero from validate, which makes this cell red. That is
-          # intended: zero evidence is never green, and the closeout still runs on always().
-          exit 0
+          # The one step in a cell that may be red, and its exit code IS the decision: SAMPLE_VALID is
+          # 0, INCOMPLETE_EVIDENCE is 2, PROVENANCE_FAILURE is 1. Exiting 0 here unconditionally is
+          # what let a cell with no admissible evidence read as a passing job. The upload below is
+          # `always()`, so this redness never costs the closeout its evidence.
+          exit $code
 
       - name: Upload raw F4 evidence
         if: always()
@@ -235,22 +244,16 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          mkdir -p "$LANE/harvest/chromium"
+          mkdir -p "$LANE/harvest/chromium" "$LANE/decisions"
+          found=0
           for r in $(seq 0 7); do
             gh run download "$GITHUB_RUN_ID" \
               --name "r10-f4-sample-chromium-r${r}-$GITHUB_RUN_ID" \
-              --dir "$LANE/harvest/chromium/r${r}" || echo "cell r${r} absent"
-          done
-
-      - name: Aggregate the chromium stage
-        id: aggregate
-        shell: bash
-        run: |
-          set -uo pipefail
-          mkdir -p "$LANE/decisions"
-          found=0
-          for r in $(seq 0 7); do
-            src="$LANE/harvest/chromium/r${r}/lane6-scratch/r10-shadow/decisions/f4-chromium-r${r}.json"
+              --dir "$LANE/harvest/chromium/r${r}" || echo "cell r${r} artifact absent"
+            # Archive entry, relative to the artifact root. results/, requests/ and decisions/ are
+            # siblings under the lane directory, so that directory is the root and no lane prefix
+            # belongs on this path. This is the path run 37146183681 got wrong, for 0/8.
+            src="$LANE/harvest/chromium/r${r}/decisions/f4-chromium-r${r}.json"
             if [ -f "$src" ]; then
               cp "$src" "$LANE/decisions/"
               found=$((found + 1))
@@ -259,8 +262,34 @@ jobs:
             fi
           done
           echo "chromium decisions collected: $found/8"
+
+      - name: Aggregate the chromium stage
+        id: aggregate
+        shell: bash
+        run: |
+          set +e
           node lane6-scratch/r10-shadow/aggregate.mjs --stage=chromium \
             --input-dir=lane6-scratch/r10-shadow/decisions
+          code=$?
+          set -e
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          # An incomplete matrix is a red stage. The verdict document is written either way, so the
+          # closeout reads the reason instead of rediscovering an empty harvest.
+          exit $code
+
+      # This job owns the chromium stage verdict, so this job uploads it. The closeout reads it back
+      # by archive entry instead of recomputing it, which is what lets a closeout rerun see the stage
+      # result from the attempt that produced it. overwrite: true, because a rerun of this stage must
+      # replace its own verdict rather than accumulate a second one.
+      - name: Upload chromium stage verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-f4-stage-chromium-${{ github.run_id }}
+          path: lane6-scratch/r10-shadow/closeout/chromium.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
 
   engines:
     name: ${{ matrix.entry.engine }} F4 r${{ matrix.entry.replicate }}
@@ -318,7 +347,8 @@ jobs:
           set +e
           if [ "${{ steps.settle.outputs.exit }}" = "3" ]; then
             echo "settle never cleared; cell observes nothing"
-            exit 3
+            echo "exit=3" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           node lane6-scratch/r5/run-with-timing-gate.mjs -- \
             node lane6-scratch/r10-shadow/run.mjs \
@@ -339,7 +369,8 @@ jobs:
           code=$?
           set -e
           echo "cell exit=$code"
-          exit 0
+          # Propagated, not swallowed: zero evidence is never green. See the chromium cell above.
+          exit $code
 
       - name: Upload raw F4 evidence
         if: always()
@@ -355,9 +386,81 @@ jobs:
           overwrite: true
           retention-days: 30
 
+  stage_engines:
+    name: Cross-engine stage verdict
+    needs: [prepare, chromium, stage_chromium, engines]
+    # Only reached when chromium promised, which is the only situation in which the guard ran at all.
+    # always() so an incomplete engine matrix is aggregated and diagnosed rather than never reported.
+    if: always() && needs.prepare.result == 'success' && needs.stage_chromium.outputs.state == 'PROMISING'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      state: ${{ steps.aggregate.outputs.state }}
+      complete: ${{ steps.aggregate.outputs.complete }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Download prepared evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-f4-prepared-${{ github.run_id }}
+          path: lane6-scratch/r10-shadow
+
+      # Same harvest discipline as the chromium stage, over the same run_id-keyed cell names, so a
+      # retried guard cell overwrites in place and a cell that never ran stays visibly absent.
+      - name: Collect engine cells
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$LANE/decisions"
+          for e in firefox webkit; do
+            for r in $(seq 0 3); do
+              gh run download "$GITHUB_RUN_ID" \
+                --name "r10-f4-sample-${e}-r${r}-$GITHUB_RUN_ID" \
+                --dir "$LANE/harvest/${e}/r${r}" || echo "${e} cell r${r} artifact absent"
+              src="$LANE/harvest/${e}/r${r}/decisions/f4-${e}-r${r}.json"
+              [ -f "$src" ] && cp "$src" "$LANE/decisions/" || echo "${e} cell r${r} has no decision"
+            done
+          done
+
+      - name: Aggregate the cross-engine guard
+        id: aggregate
+        shell: bash
+        run: |
+          set +e
+          node lane6-scratch/r10-shadow/aggregate.mjs --stage=engines \
+            --input-dir=lane6-scratch/r10-shadow/decisions
+          code=$?
+          set -e
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      # This job owns the cross-engine stage verdict, so this job uploads it. Before this producer
+      # existed the closeout downloaded an artifact that no job had ever created.
+      - name: Upload cross-engine stage verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-f4-stage-engines-${{ github.run_id }}
+          path: lane6-scratch/r10-shadow/closeout/engines.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
   closeout:
     name: F4 closeout
-    needs: [prepare, chromium, stage_chromium, engines]
+    needs: [prepare, chromium, stage_chromium, engines, stage_engines]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -410,25 +513,24 @@ jobs:
           set -uo pipefail
           mkdir -p "$LANE/decisions" "$LANE/closeout"
           for r in $(seq 0 7); do
-            src="$LANE/harvest/chromium/r${r}/lane6-scratch/r10-shadow/decisions/f4-chromium-r${r}.json"
+            src="$LANE/harvest/chromium/r${r}/decisions/f4-chromium-r${r}.json"
             [ -f "$src" ] && cp "$src" "$LANE/decisions/" || echo "chromium cell r${r} has no decision"
           done
           if [ "${{ needs.stage_chromium.outputs.state }}" = "PROMISING" ]; then
             gh run download "$GITHUB_RUN_ID" --name "r10-f4-stage-chromium-$GITHUB_RUN_ID" \
               --dir "$LANE/harvest/stage-chromium" || echo "stage artifact absent"
-            cp "$LANE/harvest/stage-chromium/lane6-scratch/r10-shadow/closeout/chromium.json" \
-              "$LANE/closeout/" 2>/dev/null || echo "chromium stage verdict absent"
+            src="$LANE/harvest/stage-chromium/chromium.json"
+            [ -f "$src" ] && cp "$src" "$LANE/closeout/" || echo "chromium stage verdict absent"
             for e in firefox webkit; do
               for r in $(seq 0 3); do
-                src="$LANE/harvest/${e}/r${r}/lane6-scratch/r10-shadow/decisions/f4-${e}-r${r}.json"
+                src="$LANE/harvest/${e}/r${r}/decisions/f4-${e}-r${r}.json"
                 [ -f "$src" ] && cp "$src" "$LANE/decisions/" || echo "${e} cell r${r} has no decision"
               done
             done
-            node lane6-scratch/r10-shadow/aggregate.mjs --stage=engines \
-              --input-dir=lane6-scratch/r10-shadow/decisions \
-              --out=lane6-scratch/r10-shadow/closeout/engines.json || true
             gh run download "$GITHUB_RUN_ID" --name "r10-f4-stage-engines-$GITHUB_RUN_ID" \
-              --dir "$LANE/harvest/stage-engines" || true
+              --dir "$LANE/harvest/stage-engines" || echo "engine stage artifact absent"
+            src="$LANE/harvest/stage-engines/engines.json"
+            [ -f "$src" ] && cp "$src" "$LANE/closeout/" || echo "cross-engine stage verdict absent"
           fi
 
       - name: Combine prior-good and retried cells into one state

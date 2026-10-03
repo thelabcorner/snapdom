@@ -15,15 +15,17 @@
  *                     independently. Never averaged together and never pooled with chromium.
  *   --stage=closeout  combines the two into one machine state. Zero evidence is never green.
  *
- * Every stage is fail-closed: an absent cell, an inadmissible cell, a duplicate cell or identity
- * drift yields INCOMPLETE_EVIDENCE or PROVENANCE_FAILURE and a non-zero exit, never a verdict.
- *
+* Every stage is fail-closed: an absent cell, an inadmissible cell, a duplicate cell, a document
+ * belonging to another run or identity drift yields INCOMPLETE_EVIDENCE or PROVENANCE_FAILURE and a
+ * non-zero exit, never a verdict. Harvested documents go through lib/artifacts.mjs first, so a
+ * retried cell supersedes its own earlier copy instead of being counted twice.
  *   node lane6-scratch/r10-shadow/aggregate.mjs --stage=chromium
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { runnerCi, heterogeneity, median, pct, withinEnvelope } from './lib/stats.mjs'
 import { auditCells, expectedCells } from './lib/matrix.mjs'
+import { resolveStageCells } from './lib/artifacts.mjs'
 import { decideStage, decideEngines, decideCloseout, STATES } from './lib/decide.mjs'
 
 const ROOT = process.cwd()
@@ -150,10 +152,34 @@ function failClosed(state, doc) {
 
 const docs = harvest(INPUT)
 
+/**
+ * The harvested documents put through the retry rules before the matrix audit ever sees them.
+ *
+ * run_id-keyed names mean a rerun overwrites its own earlier copy rather than adding a second file,
+ * so the common case is one document per cell. The rules still have to run: a document belonging to
+ * another run is provenance drift rather than evidence, two documents claiming one cell at the same
+ * attempt index are a conflict rather than a retry, and the highest attempt index supersedes.
+ */
+function stageCells(expected) {
+  const resolved = resolveStageCells({ docs, expected, runId })
+  if (resolved.ambiguous.length) {
+    failClosed(STATES.PROVENANCE, {
+      reasons: ['two files claim the same (runId, cell): ' + resolved.ambiguous.join(', ')],
+    })
+  }
+  if (resolved.foreign.length) {
+    failClosed(STATES.PROVENANCE, {
+      reasons: ['documents belonging to another run: ' + resolved.foreign.join(', ')],
+    })
+  }
+  return resolved
+}
+
 // ---- chromium stage ----------------------------------------------------------------------------
 if (STAGE === 'chromium') {
   const expected = expectedCells(policy, ['chromium'])
-  const audit = auditCells({ docs, expected, identity })
+  const cells = stageCells(expected)
+  const audit = auditCells({ docs: cells.docs, expected, identity })
   if (audit.wrongIdentity.length) {
     failClosed(STATES.PROVENANCE, { reasons: ['cell identity drift: ' + audit.wrongIdentity.join(', ')] })
   }
@@ -161,9 +187,9 @@ if (STAGE === 'chromium') {
     failClosed(STATES.INCOMPLETE, {
       reasons: ['matrix incomplete'],
       expectedSamples: expected.length,
-      discoveredSamples: docs.length,
-      missing: audit.missing,
-      duplicate: audit.duplicate,
+      discoveredSamples: cells.docs.length,
+      missing: cells.missing.length ? cells.missing : audit.missing,
+      duplicate: [...new Set([...audit.duplicate, ...cells.duplicated])],
       unusable: audit.unusable,
       stray: audit.stray,
     })
@@ -224,7 +250,8 @@ if (STAGE === 'chromium') {
 // ---- engine guard ------------------------------------------------------------------------------
 if (STAGE === 'engines') {
   const expected = expectedCells(policy, ENGINE_GUARD)
-  const audit = auditCells({ docs, expected, identity })
+  const picked = stageCells(expected)
+  const audit = auditCells({ docs: picked.docs, expected, identity })
   if (audit.wrongIdentity.length) {
     failClosed(STATES.PROVENANCE, { reasons: ['cell identity drift: ' + audit.wrongIdentity.join(', ')] })
   }
@@ -232,9 +259,9 @@ if (STAGE === 'engines') {
     failClosed(STATES.INCOMPLETE, {
       reasons: ['engine matrix incomplete'],
       expectedSamples: expected.length,
-      discoveredSamples: docs.length,
-      missing: audit.missing,
-      duplicate: audit.duplicate,
+      discoveredSamples: picked.docs.length,
+      missing: picked.missing.length ? picked.missing : audit.missing,
+      duplicate: [...new Set([...audit.duplicate, ...picked.duplicated])],
       unusable: audit.unusable,
       stray: audit.stray,
     })
