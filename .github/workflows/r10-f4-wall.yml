@@ -1,0 +1,209 @@
+name: snapDOM R10 F4 wall falsifier
+
+# Hosted-only, and deliberately narrow: this workflow answers ONE preregistered question about
+# the per-root identity partition for shadow content. It cannot promote anything. A rejected
+# partition is a settled answer, not a reason to add replicates. The gate lives in
+# lane6-scratch/r10-shadow/validate.mjs; the thresholds live in F4_POLICY.json, whose hash is
+# pinned by prepare.mjs along with every measurement file.
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r10-*'
+    paths:
+      - '.github/workflows/r10-f4-wall.yml'
+      - 'lane6-scratch/r10-shadow/**'
+      - 'lane6-scratch/r9/protocol.mjs'
+      - 'lane6-scratch/r5/run-with-timing-gate.mjs'
+      - '__tests__/helpers/shadowCards.js'
+  workflow_dispatch:
+
+concurrency:
+  group: r10-f4-wall-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.sha }}
+  NODE_VERSION: '22.21.1'
+
+jobs:
+  prepare:
+    name: Prepare immutable F4 bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      policy_sha256: ${{ steps.prepare.outputs.policy_sha256 }}
+      bundle_sha256: ${{ steps.prepare.outputs.bundle_sha256 }}
+      chromium_matrix: ${{ steps.prepare.outputs.chromium_matrix }}
+      engine_matrix: ${{ steps.prepare.outputs.engine_matrix }}
+      max_parallel: ${{ steps.prepare.outputs.max_parallel }}
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile measured bundle
+        run: |
+          set -euo pipefail
+          npm run compile
+          mkdir -p lane6-scratch/r10-shadow/bundle
+          cp dist/snapdom.mjs lane6-scratch/r10-shadow/bundle/candidate.mjs
+
+      - name: Freeze F4 identity
+        id: prepare
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+        run: node lane6-scratch/r10-shadow/prepare.mjs
+
+      - name: Upload immutable prepared evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-f4-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r10-shadow/bundle/
+            lane6-scratch/r10-shadow/prepared.json
+          if-no-files-found: error
+          retention-days: 30
+
+  chromium:
+    name: Chromium F4 r${{ matrix.replicate }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        replicate: ${{ fromJSON(needs.prepare.outputs.chromium_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download prepared evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-f4-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10-shadow
+
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run hosted F4 wall falsifier
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+        run: |
+          set +e
+          node lane6-scratch/r5/run-with-timing-gate.mjs -- \
+            node lane6-scratch/r10-shadow/run.mjs \
+            --browser=chromium --replicate="${{ matrix.replicate }}"
+          code=$?
+          set -e
+          node lane6-scratch/r10-shadow/validate.mjs \
+            --browser=chromium --replicate="${{ matrix.replicate }}" --gate-exit="$code"
+
+      - name: Upload raw F4 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-f4-sample-chromium-r${{ matrix.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r10-shadow/results/f4-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r10-shadow/requests/f4-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r10-shadow/decisions/f4-chromium-r${{ matrix.replicate }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  engines:
+    name: ${{ matrix.entry.engine }} F4 r${{ matrix.entry.replicate }}
+    needs: [prepare, chromium]
+    if: always() && needs.prepare.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        entry: ${{ fromJSON(needs.prepare.outputs.engine_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download prepared evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r10-f4-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10-shadow
+
+      - name: Install pinned engine
+        run: npx playwright install --with-deps "${{ matrix.entry.engine }}"
+
+      - name: Run hosted F4 wall falsifier
+        shell: bash
+        env:
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+        run: |
+          set +e
+          node lane6-scratch/r5/run-with-timing-gate.mjs -- \
+            node lane6-scratch/r10-shadow/run.mjs \
+            --browser="${{ matrix.entry.engine }}" --replicate="${{ matrix.entry.replicate }}"
+          code=$?
+          set -e
+          node lane6-scratch/r10-shadow/validate.mjs \
+            --browser="${{ matrix.entry.engine }}" --replicate="${{ matrix.entry.replicate }}" --gate-exit="$code"
+
+      - name: Upload raw F4 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-f4-sample-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            lane6-scratch/r10-shadow/results/f4-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
+            lane6-scratch/r10-shadow/requests/f4-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
+            lane6-scratch/r10-shadow/decisions/f4-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
+          if-no-files-found: warn
+          retention-days: 30

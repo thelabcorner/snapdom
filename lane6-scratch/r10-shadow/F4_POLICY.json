@@ -1,0 +1,51 @@
+{
+  "schema": "snapdom-r10-f4-wall-policy-v1",
+  "repository": "thelabcorner/snapdom",
+  "runner": "ubuntu-24.04",
+  "nodeVersion": "22.21.1",
+  "playwrightVersion": "1.55.1",
+  "question": "Does a per-root identity partition for shadow content earn its cost in wall time?",
+  "arms": {
+    "base": "same bundle, __styleShareShadowRootTwins:false — released behavior, shadow content reads in full",
+    "opt": "same bundle, __styleShareShadowRootTwins:true — the CEILING spike: per-root identity token, no per-root sheet scan"
+  },
+  "ceiling": "The opt arm is deliberately the cheapest thing that could capture the whole win, and it is deliberately unsound on a root whose own sheet splits twins. A sound partition needs a per-root scan on top, so the opt arm measures an UPPER BOUND on the win and the sound build can only be smaller. That is what makes a sub-threshold result falsifying rather than merely discouraging.",
+  "fixtures": [
+    "uniform-shadow-cards",
+    "heterogeneous-shadow-cards",
+    "adopted-shadow-cards",
+    "host-split-shadow-cards",
+    "slotted-split-shadow-cards",
+    "pseudo-split-shadow-cards",
+    "document-uniform-cards"
+  ],
+  "noopFixtures": ["document-uniform-cards"],
+  "splittingFixtures": ["host-split-shadow-cards", "slotted-split-shadow-cards"],
+  "sampling": {
+    "n": 24,
+    "batch": 9,
+    "warmup": 6,
+    "bootstrap": 12000,
+    "baseSeed": 881234567
+  },
+  "replicates": {
+    "chromium": 8,
+    "firefox": 4,
+    "webkit": 4
+  },
+  "maxParallel": 8,
+  "gates": {
+    "minEffectPct": 1.0,
+    "controlBand": 0.20,
+    "equivalenceBand": 0.20,
+    "maxPairLogSd": 0.50,
+    "epsilon": 0.02
+  },
+  "decision": {
+    "promoteToDesign": "Every splitting-free shadow fixture clears minEffectPct with a clean instrument AND the no-op control is equivalent AND no fixture regresses.",
+    "reject": "No shadow fixture's 95% CI upper bound reaches minEffectPct, OR the instrument is noisy on any fixture, OR the no-op control is not equivalent, OR any fixture regresses by more than minEffectPct.",
+    "incomplete": "A blocked ambient gate, a missing matrix cell, provenance drift, a missing report or an unparseable report. Zero evidence can never look like a promising partition.",
+    "note": "A rejection is a settled question, not a retry with more replicates. Only a promoteToDesign result authorizes building the sound per-root partition, and promoteToDesign is still not a promotion to production."
+  },
+  "purpose": "Falsifier. This policy can reject the per-root partition or authorize DESIGNING it. It can never promote it."
+}
