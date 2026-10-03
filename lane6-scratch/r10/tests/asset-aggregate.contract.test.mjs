@@ -4,26 +4,30 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { sha256 } from '../asset-bench-lib.mjs'
 
 const ROOT = process.cwd()
 const script = path.resolve(ROOT, 'lane6-scratch/r10/asset-aggregate.mjs')
 
-function fixtureDir(count = 6) {
+function fixtureDir(count = 6, mutate = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'snapdom-r10-aggregate-'))
   const input = path.join(dir, 'input')
   fs.mkdirSync(input, { recursive: true })
 
   const prepared = {
     schema: 'snapdom-r10-asblob-prepared-v1',
+    measurementGitSha: 'f'.repeat(40),
     candidateGitSha: 'a'.repeat(40),
     baselineGitSha: 'b'.repeat(40),
     playwrightVersion: '1.55.1',
     candidate: { sha256: 'C'.repeat(64) },
     baseline: { sha256: 'D'.repeat(64) },
     mechanism: { workerMinPayloadChars: 65536, maxImageBlobBytes: 67108864, retentionCapStatus: 'HYPOTHESIS' },
+    measurementFiles: { 'lane6-scratch/r10/assets-bench.mjs': 'E'.repeat(64) },
   }
   const preparedPath = path.join(dir, 'prepared.json')
   fs.writeFileSync(preparedPath, JSON.stringify(prepared))
+  const preparedSha256 = sha256(fs.readFileSync(preparedPath))
 
   for (let r = 0; r < count; r++) {
     const condition = (role, logPoint, rss) => ({
@@ -31,7 +35,7 @@ function fixtureDir(count = 6) {
       fixture: 'large',
       csp: 'none',
       sweep: role === 'null-memo' ? 'same' : 'scale',
-      timing: { logPoint },
+      timing: { logPoint, totalLogPoint: logPoint / 2 },
       memory: {
         candidateMinusBaselineRetentionKb: rss,
         candidateMinusBaselineSweepKb: 10 + r,
@@ -48,10 +52,13 @@ function fixtureDir(count = 6) {
       schema: 'snapdom-r10-asblob-runner-v1',
       replicate: r,
       provenance: {
+        measurementGitSha: prepared.measurementGitSha,
         candidateGitSha: prepared.candidateGitSha,
         baselineGitSha: prepared.baselineGitSha,
         candidateBundleSha256: prepared.candidate.sha256,
         baselineBundleSha256: prepared.baseline.sha256,
+        preparedSha256,
+        measurementFiles: prepared.measurementFiles,
         playwrightVersion: prepared.playwrightVersion,
         github: { runAttempt: '1' },
         runner: { imageVersion: 'test' },
@@ -63,6 +70,7 @@ function fixtureDir(count = 6) {
         'large-scale': condition('claim', -0.08 + 0.002 * r, 100 + r),
       },
     }
+    if (mutate) mutate(doc, r, prepared)
     const nested = path.join(input, 'runner-' + r)
     fs.mkdirSync(nested, { recursive: true })
     fs.writeFileSync(path.join(nested, 'runner-r' + r + '.json'), JSON.stringify(doc))
@@ -70,38 +78,62 @@ function fixtureDir(count = 6) {
   return { dir, input, preparedPath, out: path.join(dir, 'summary.json') }
 }
 
-test('aggregate CLI consumes one point per runner and emits a complete summary', () => {
-  const f = fixtureDir(6)
-  const p = spawnSync(process.execPath, [
+function runAggregate(f, expected = 6) {
+  return spawnSync(process.execPath, [
     script,
     '--input-dir=' + f.input,
     '--prepared=' + f.preparedPath,
     '--out=' + f.out,
-    '--expected=6',
+    '--expected=' + expected,
   ], { cwd: ROOT, encoding: 'utf8' })
+}
+
+test('aggregate CLI consumes exactly one complete point per runner', () => {
+  const f = fixtureDir(6)
+  const p = runAggregate(f)
 
   assert.equal(p.status, 0, p.stderr)
   const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
   assert.equal(summary.state, 'EXPERIMENT_COMPLETE')
   assert.equal(summary.observedRunners, 6)
-  assert.equal(summary.conditions['large-scale'].timing.n, 6)
-  assert.ok(summary.conditions['large-scale'].timing.pct < 0)
+  assert.equal(summary.measurementGitSha, 'f'.repeat(40))
+  assert.equal(summary.conditions['large-scale'].timing.capture.n, 6)
+  assert.equal(summary.conditions['large-scale'].timing.endToEnd.n, 6)
+  assert.ok(summary.conditions['large-scale'].timing.capture.pct < 0)
+  assert.ok(summary.conditions['large-scale'].timing.endToEnd.pct < 0)
+  assert.equal(summary.conditions['large-scale'].memory.candidateMinusBaselineRetentionKb.n, 6)
   assert.equal(summary.performanceClaim, false)
 })
 
 test('aggregate CLI fails closed when a preregistered runner is missing', () => {
   const f = fixtureDir(5)
-  const p = spawnSync(process.execPath, [
-    script,
-    '--input-dir=' + f.input,
-    '--prepared=' + f.preparedPath,
-    '--out=' + f.out,
-    '--expected=6',
-  ], { cwd: ROOT, encoding: 'utf8' })
+  const p = runAggregate(f)
 
   assert.notEqual(p.status, 0)
   const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
   assert.equal(summary.state, 'INCOMPLETE_EVIDENCE')
   assert.deepEqual(summary.missing, [5])
   assert.equal(summary.performanceClaim, false)
+})
+
+test('aggregate CLI fails closed on wrong measurement identity', () => {
+  const f = fixtureDir(6, (doc, r) => {
+    if (r === 4) doc.provenance.measurementGitSha = '0'.repeat(40)
+  })
+  const p = runAggregate(f)
+
+  assert.notEqual(p.status, 0)
+  const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
+  assert.deepEqual(summary.wrongIdentity, [4])
+})
+
+test('aggregate CLI refuses a runner with missing or non-finite primary evidence', () => {
+  const f = fixtureDir(6, (doc, r) => {
+    if (r === 2) delete doc.conditions['large-scale'].timing.totalLogPoint
+  })
+  const p = runAggregate(f)
+
+  assert.notEqual(p.status, 0)
+  const summary = JSON.parse(fs.readFileSync(f.out, 'utf8'))
+  assert.ok(summary.invalidEvidence.some((x) => x.includes('r2/large-scale')))
 })

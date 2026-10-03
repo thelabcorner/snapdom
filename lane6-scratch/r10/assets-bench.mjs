@@ -45,11 +45,13 @@ if (process.platform !== 'linux' || !fs.existsSync('/proc/self/status')) {
 const PREPARED = path.resolve(ROOT, arg('prepared', 'lane6-scratch/r10/prepared.json'))
 const REPLICATE = Number(arg('replicate', '0'))
 const OUT = path.resolve(ROOT, arg('out', 'lane6-scratch/r10/results/runner-r' + REPLICATE + '.json'))
-const REPEATS = Number(arg('repeats', '7'))
+const REPEATS = Number(arg('repeats', '8'))
 const WARMUP = 2
 
 if (!Number.isInteger(REPLICATE) || REPLICATE < 0) throw new Error('replicate must be a nonnegative integer')
-if (!Number.isInteger(REPEATS) || REPEATS < 3) throw new Error('repeats must be an integer >= 3')
+if (!Number.isInteger(REPEATS) || REPEATS < 4 || (REPEATS & 1)) {
+  throw new Error('repeats must be an even integer >= 4 so every runner is internally AB/BA balanced')
+}
 if (!fs.existsSync(PREPARED)) throw new Error('prepared.json missing')
 
 const prepared = JSON.parse(fs.readFileSync(PREPARED, 'utf8'))
@@ -60,15 +62,17 @@ const candidatePath = path.resolve(ROOT, prepared.candidate.path)
 if (sha256(fs.readFileSync(baselinePath)) !== prepared.baseline.sha256) throw new Error('baseline bundle digest mismatch')
 if (sha256(fs.readFileSync(candidatePath)) !== prepared.candidate.sha256) throw new Error('candidate bundle digest mismatch')
 
-for (const rel of ['lane6-scratch/r10/assets-bench.mjs', 'lane6-scratch/r10/asset-bench-lib.mjs']) {
+for (const [rel, expected] of Object.entries(prepared.measurementFiles || {})) {
   const observed = sha256(fs.readFileSync(path.resolve(ROOT, rel)))
-  if (observed !== prepared.measurementFiles[rel]) throw new Error('measurement file digest mismatch: ' + rel)
+  if (observed !== expected) throw new Error('measurement file digest mismatch: ' + rel)
 }
 if (prepared.mechanism.workerMinPayloadChars !== WORKER_MIN_PAYLOAD_CHARS) throw new Error('worker threshold drifted after prepare')
 if (prepared.mechanism.maxImageBlobBytes !== MAX_IMAGE_BLOB_BYTES) throw new Error('retention cap drifted after prepare')
 
-const candidateEnv = process.env.SNAPDOM_CANDIDATE_GIT_SHA || process.env.GITHUB_SHA || ''
+const measurementEnv = process.env.SNAPDOM_MEASUREMENT_GIT_SHA || process.env.GITHUB_SHA || ''
+const candidateEnv = process.env.SNAPDOM_CANDIDATE_GIT_SHA || ''
 const baselineEnv = process.env.SNAPDOM_BASELINE_GIT_SHA || prepared.baselineGitSha
+if (measurementEnv !== prepared.measurementGitSha) throw new Error('measurement git SHA mismatch')
 if (candidateEnv !== prepared.candidateGitSha) throw new Error('candidate git SHA mismatch')
 if (baselineEnv !== prepared.baselineGitSha) throw new Error('baseline git SHA mismatch')
 
@@ -134,7 +138,7 @@ function htmlFor(side, fixtureName, cspName) {
 function scriptFor(side) {
   const bundle = side === 'candidate' ? '/candidate.mjs' : '/baseline.mjs'
   return [
-    "import snapdom from '" + bundle + "'",
+    "import { snapdom } from '" + bundle + "'",
     "window.__ready = false",
     "window.__routes = null",
     "const routeReader = { name: 'r10-route-reader', afterRender(context) {",
@@ -146,8 +150,10 @@ function scriptFor(side) {
     "  const result = await snapdom(document.getElementById('asset'), {",
     "    cache: 'soft', burst: false, compress: true, embedFonts: false, plugins: [routeReader], ...opts",
     "  })",
+    "  const t1 = performance.now()",
     "  await result.toCanvas()",
-    "  return { ms: performance.now() - t0, routes: window.__routes }",
+    "  const t2 = performance.now()",
+    "  return { captureMs: t1 - t0, renderMs: t2 - t1, totalMs: t2 - t0, routes: window.__routes }",
     "}",
     "document.getElementById('asset').decode().then(() => { window.__ready = true })",
   ].join('\n')
@@ -220,8 +226,22 @@ async function serve() {
 async function openPage(browser, side, condition) {
   const context = await browser.newContext()
   const page = await context.newPage()
+  const bootstrapErrors = []
+  page.on('pageerror', (error) => bootstrapErrors.push('pageerror: ' + error.message))
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') bootstrapErrors.push('console: ' + msg.text())
+  })
   await page.goto(origin + '/?side=' + side + '&fixture=' + condition.fixture + '&csp=' + condition.csp)
-  await page.waitForFunction(() => window.__ready === true)
+  try {
+    await page.waitForFunction(() => window.__ready === true)
+  } catch (error) {
+    await context.close().catch(() => {})
+    throw new Error(
+      condition.id + '/' + side + ': page bootstrap did not reach __ready; ' +
+      (bootstrapErrors.length ? bootstrapErrors.join(' | ') : 'no page error was reported'),
+      { cause: error },
+    )
+  }
   return { context, page }
 }
 
@@ -278,16 +298,26 @@ async function timingCondition(browser, condition, conditionIndex) {
         sample: i,
         order,
         geometry,
-        baselineMs: observed.baseline.ms,
-        candidateMs: observed.candidate.ms,
-        logRatio: Math.log(observed.candidate.ms / observed.baseline.ms),
+        baselineCaptureMs: observed.baseline.captureMs,
+        candidateCaptureMs: observed.candidate.captureMs,
+        baselineRenderMs: observed.baseline.renderMs,
+        candidateRenderMs: observed.candidate.renderMs,
+        baselineTotalMs: observed.baseline.totalMs,
+        candidateTotalMs: observed.candidate.totalMs,
+        logRatio: Math.log(observed.candidate.captureMs / observed.baseline.captureMs),
+        totalLogRatio: Math.log(observed.candidate.totalMs / observed.baseline.totalMs),
         candidateRoutes: observed.candidate.routes,
       })
     }
+    const logPoint = mean(pairs.map((x) => x.logRatio))
+    const totalLogPoint = mean(pairs.map((x) => x.totalLogRatio))
     return {
       pairs,
-      logPoint: mean(pairs.map((x) => x.logRatio)),
-      pct: (Math.exp(mean(pairs.map((x) => x.logRatio))) - 1) * 100,
+      logPoint,
+      pct: (Math.exp(logPoint) - 1) * 100,
+      totalLogPoint,
+      totalPct: (Math.exp(totalLogPoint) - 1) * 100,
+      primary: 'capture',
     }
   } finally {
     await Promise.all(Object.values(sides).map((x) => x.context.close().catch(() => {})))
@@ -413,6 +443,7 @@ try {
     generatedAt: new Date().toISOString(),
     replicate: REPLICATE,
     provenance: {
+      measurementGitSha: prepared.measurementGitSha,
       candidateGitSha: prepared.candidateGitSha,
       baselineGitSha: prepared.baselineGitSha,
       candidateBundleSha256: prepared.candidate.sha256,
@@ -438,7 +469,9 @@ try {
       acquisition: {
         repeats: REPEATS,
         warmup: WARMUP,
-        timingOrder: 'AB/BA crossed by replicate + condition + sample parity',
+        timingPrimary: 'snapdom capture/compression time',
+        timingSecondary: 'capture + toCanvas end-to-end time',
+        timingOrder: 'AB/BA crossed by replicate + condition + sample parity; even repeats gives 4/4 balance per runner',
         memory: 'fresh BrowserServer per side/condition; settled Linux Chromium process-tree VmRSS at pre-capture, post-warmup, and post-sweep states',
         rssSettle: { deltaKb: 2048, consecutive: 3, intervalMs: 250, maxSamples: 120 },
       },
@@ -463,14 +496,4 @@ try {
     schema: doc.schema,
     replicate: REPLICATE,
     out: path.relative(ROOT, OUT).replaceAll('\\', '/'),
-    conditions: Object.fromEntries(Object.entries(conditions).map(([id, x]) => [id, {
-      pct: x.timing.pct,
-      candidateMinusBaselineRetentionKb: x.memory.candidateMinusBaselineRetentionKb,
-      candidateMinusBaselineSweepKb: x.memory.candidateMinusBaselineSweepKb,
-      candidateMinusBaselineTotalKb: x.memory.candidateMinusBaselineTotalKb,
-    }])),
-  }, null, 2))
-} finally {
-  if (timingBrowser) await timingBrowser.close().catch(() => {})
-  await new Promise((resolve) => server.close(resolve))
-}
+    conditions: Object.f

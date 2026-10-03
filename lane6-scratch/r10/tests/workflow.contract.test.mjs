@@ -12,10 +12,17 @@ test('R10 workflow has prepare, fresh-runner and aggregate stages only', () => {
   assert.equal(source.includes('pull_request:'), false)
 })
 
-test('baseline identity is an exact frozen commit and candidate is exact github.sha', () => {
-  assert.match(source, /CANDIDATE_SHA: \$\{\{ github\.sha \}\}/)
+test('measurement head is separate from exact frozen candidate and baseline mechanisms', () => {
+  assert.match(source, /MEASUREMENT_SHA: \$\{\{ github\.sha \}\}/)
+  assert.match(source, /CANDIDATE_SHA: d391556b80be7a6d97bc4834d2ce6e24137515b2/)
   assert.match(source, /BASELINE_SHA: c523ddb6e141846d55af1c8f315f65babbc32a7e/)
+  assert.match(source, /test "\$\(git rev-parse HEAD\)" = "\$MEASUREMENT_SHA"/)
+  assert.match(source, /test "\$\(git rev-parse HEAD\)" = "\$CANDIDATE_SHA"/)
   assert.match(source, /test "\$\(git rev-parse HEAD\)" = "\$BASELINE_SHA"/)
+  assert.match(source, /git diff --exit-code "\$CANDIDATE_SHA"/)
+  assert.match(source, /src\/core\/cache\.js/)
+  assert.match(source, /src\/modules\/compress\.js/)
+  assert.match(source, /src\/modules\/images\.js/)
 })
 
 test('fresh-runner matrix is six independent Chromium replicas', () => {

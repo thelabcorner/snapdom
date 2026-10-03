@@ -23,14 +23,20 @@ for (const file of [baseline, candidate]) {
   if (!fs.existsSync(file)) throw new Error('prepared bundle missing: ' + path.relative(ROOT, file))
 }
 
-const candidateGitSha = process.env.SNAPDOM_CANDIDATE_GIT_SHA || process.env.GITHUB_SHA || ''
+const measurementGitSha = process.env.SNAPDOM_MEASUREMENT_GIT_SHA || process.env.GITHUB_SHA || ''
+const candidateGitSha = process.env.SNAPDOM_CANDIDATE_GIT_SHA || ''
 const baselineGitSha = process.env.SNAPDOM_BASELINE_GIT_SHA || ''
+if (!/^[0-9a-f]{40}$/i.test(measurementGitSha)) throw new Error('exact measurement git SHA missing')
 if (!/^[0-9a-f]{40}$/i.test(candidateGitSha)) throw new Error('exact candidate git SHA missing')
 if (!/^[0-9a-f]{40}$/i.test(baselineGitSha)) throw new Error('exact baseline git SHA missing')
 
 const require = createRequire(import.meta.url)
 const playwrightVersion = require('playwright/package.json').version
 const measurementFiles = [
+  '.github/workflows/r10-asset-bench.yml',
+  'lane6-scratch/r5/run-with-timing-gate.mjs',
+  'lane6-scratch/r10/prepare.mjs',
+  'lane6-scratch/r10/host-settle.mjs',
   'lane6-scratch/r10/assets-bench.mjs',
   'lane6-scratch/r10/asset-bench-lib.mjs',
   'lane6-scratch/r10/asset-aggregate.mjs',
@@ -45,6 +51,7 @@ for (const rel of measurementFiles) {
 const doc = {
   schema: 'snapdom-r10-asblob-prepared-v1',
   generatedAt: new Date().toISOString(),
+  measurementGitSha,
   candidateGitSha,
   baselineGitSha,
   playwrightVersion,
