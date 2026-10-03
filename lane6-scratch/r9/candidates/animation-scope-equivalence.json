@@ -1,0 +1,70 @@
+{
+  "schema": "snapdom-r9-candidate-v1",
+  "id": "animation-scope-equivalence",
+  "description": "R10-ANIM1 no-regression arm on the standing suite: the SAME compiled bundle measured with __animationScope:false (historical document-wide animation veto) against __animationScope:true (per-consumer scope). The standing suite has no live animation, so this candidate is EXPECTED TO BE EQUIVALENT, and its whole purpose is to prove the lane is a true no-op when nothing is animated — including that adding the scope lookup costs nothing on the hot path. The opportunity itself is measured by lane6-scratch/r10/probe-r10-anim-scope.mjs, whose fixtures actually place a live animation; this candidate cannot see it by construction.",
+  "mode": "option-pair",
+  "suite": "standing",
+  "expect": "equivalence",
+  "baselineRef": null,
+  "base": {
+    "__animationScope": false
+  },
+  "opt": {
+    "__animationScope": true
+  },
+  "playwrightVersion": "1.55.1",
+  "primaryFixtures": [
+    "light-20cards",
+    "cards400-safe",
+    "cards400-neutral-unsafe",
+    "cards400-non-neutral"
+  ],
+  "guardFixtures": [],
+  "knownNoOpFixtures": [
+    "light-20cards",
+    "cards400-safe",
+    "cards400-neutral-unsafe",
+    "cards400-non-neutral"
+  ],
+  "phases": {
+    "scout": {
+      "browsers": ["chromium"],
+      "n": 24,
+      "batch": 4,
+      "warmup": 5,
+      "bootstrap": 12000,
+      "epsilon": 0.02,
+      "controlBand": 0.05,
+      "equivalenceBand": 0.05,
+      "maxPairLogSd": 0.20,
+      "seed": 39457,
+      "replicates": 1
+    },
+    "confirm": {
+      "browsers": ["chromium"],
+      "n": 30,
+      "batch": 4,
+      "warmup": 6,
+      "bootstrap": 20000,
+      "epsilon": 0.02,
+      "controlBand": 0.03,
+      "equivalenceBand": 0.03,
+      "maxPairLogSd": 0.15,
+      "seed": 78731,
+      "replicates": 3
+    },
+    "engineGuard": {
+      "browsers": ["firefox", "webkit"],
+      "n": 18,
+      "batch": 3,
+      "warmup": 4,
+      "bootstrap": 8000,
+      "epsilon": 0.03,
+      "controlBand": 0.05,
+      "equivalenceBand": 0.05,
+      "maxPairLogSd": 0.20,
+      "seed": 118087,
+      "replicates": 1
+    }
+  }
+}

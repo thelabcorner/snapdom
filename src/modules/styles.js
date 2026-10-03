@@ -673,9 +673,105 @@ function scanFor(doc) {
   return rec
 }
 
+/**
+ * R10-ANIM1 consumer-specific animation scope.
+ *
+ * `scanAuthorStyles` collapses the document's live animations into one boolean, so a single
+ * unrelated spinner used to force every capture onto every conservative path. Each consumer's
+ * actual question is local, and the scope it needs follows from what that consumer reads:
+ *
+ *  - ANIM_SCOPE_SELF — the consumer reads only the element's OWN computed values, for properties
+ *    that do not inherit (background/mask/border-image, mask layout, margins). An animation on an
+ *    ancestor cannot produce such a value here, so only the element itself can.
+ *  - ANIM_SCOPE_SELF_OR_ANCESTOR — the consumer also depends on INHERITED values (any computed
+ *    property read at all; a font epoch re-resolving em/rem lengths). An animation on an ancestor
+ *    moves those, so ancestors join the scope. Registered custom properties are inherited, so the
+ *    same ancestor arm covers them.
+ *  - ANIM_SCOPE_SUBTREE — the consumer's decision covers a whole subtree (the truncation prepass),
+ *    so the scope is that subtree plus the ancestors of its root.
+ *
+ * Every arm is answered from the two sets built by buildAnimationScope, so a scoped check is two
+ * Set lookups. When the document has no live animation the index is null and the answer is "not
+ * blocked" — which is what the historical boolean already said, at the same cost.
+ *
+ * `options.__animationScope === false` restores the document-wide veto mechanism for mechanism,
+ * which is the counterfactual both the parity fixtures and the hosted A/B arm against.
+ */
+const ANIM_SCOPE_SELF = 1
+const ANIM_SCOPE_SELF_OR_ANCESTOR = 2
+const ANIM_SCOPE_SUBTREE = 3
+
+/** Caller-supplied counter sink. Absent in production, so the hot path pays one optional-chaining
+ *  read and nothing else. Keys: one record per consumer name, plus `reads` for CSSOM crossings. */
+function noteAnimationScope(options, name, blocked) {
+  const sink = options?.__animationScopeCounters
+  if (!sink) return
+  const rec = sink[name] || (sink[name] = { blocked: 0, released: 0 })
+  if (blocked) rec.blocked++
+  else rec.released++
+}
+
+/** One CSSOM property crossing inside the snapshot read, counted only when a sink is present. */
+function noteAnimationRead(options) {
+  const sink = options?.__animationScopeCounters
+  if (sink) sink.reads = (sink.reads || 0) + 1
+}
+
+/**
+ * Whether a live animation can reach `el` for the question `scope` asks.
+ * @param {object} scan scanFor() record
+ * @param {Element} el
+ * @param {1|2|3} scope one of the ANIM_SCOPE_* constants
+ * @param {object} [options] capture options (counter sink + the false counterfactual)
+ * @param {string} [name] consumer name for the counter record
+ * @returns {boolean}
+ */
+function animationBlocks(scan, el, scope, options, name) {
+  if (!scan.hasAnimations) return false
+  const index = options?.__animationScope === false ? null : scan.animationScope
+  if (!index) {
+    noteAnimationScope(options, name, true)
+    return true
+  }
+  let blocked
+  if (index.unresolvable) blocked = true
+  else if (scope === ANIM_SCOPE_SELF) blocked = index.targets.has(el)
+  else if (scope === ANIM_SCOPE_SELF_OR_ANCESTOR) {
+    blocked = index.targets.has(el) || index.ancestors.has(el)
+  } else {
+    blocked = index.ancestors.has(el)
+    if (!blocked) {
+      for (const target of index.targets) {
+        if (target === el || el.contains(target)) { blocked = true; break }
+      }
+    }
+  }
+  const sink = options?.__animationScopeCounters
+  if (sink && sink.index === undefined) {
+    sink.index = {
+      animations: index.count,
+      targets: index.targets.size,
+      ancestors: index.ancestors.size,
+      unresolvable: index.unresolvable,
+    }
+  }
+  noteAnimationScope(options, name, blocked)
+  return blocked
+}
+
 /** Whether a font completion could change background/mask/border-image layout values for this
  * element. The document scanner covers authored sheets; inline declarations are checked here.
- * Shadow-host/slotted/shadow-tree styling is outside that scanner and therefore fails closed. */
+ * Shadow-host/slotted/shadow-tree styling is outside that scanner and therefore fails closed.
+ *
+ * R10-ANIM1 deliberately leaves this one document-wide, unlike its five scoped siblings. Its
+ * question is "can a FONT EPOCH invalidate a stored background snapshot", which is only asked on
+ * the rare font-completion path (see backgroundSnapshotIsCurrent), and no option object exists at
+ * any level of its call chain — reaching one means threading options through background.js and
+ * backgroundSnapshotFor. Its own document-wide `backgroundFontSensitive` term already vetoes every
+ * page that authors a font-metric-dependent background, so scoping the animation term could only
+ * help the narrow slice of pages that animate something AND author no font-sensitive background
+ * AND cross a font epoch. Deferred rather than paid for; recorded here so the omission reads as a
+ * decision rather than an oversight. */
 function backgroundFontSensitiveFor(el) {
   try {
     const doc = el.ownerDocument || document
@@ -710,17 +806,25 @@ function backgroundFontSensitiveFor(el) {
  * shadow root, or an inline target declaration. UA/presentational HTML defaults cannot enable
  * these truncation properties.
  *
+ * R10-ANIM1 scopes the animation arm, because this pass covers a whole subtree: the only
+ * animations that can make it necessary are ones inside that subtree or on one of its root's
+ * ancestors (`text-overflow` is inherited, and `display` can be stepped discretely by an
+ * animation). An animation on an unrelated sibling cannot add or remove a truncation anywhere
+ * below this root, so the historical document-wide veto is strictly wider than the question.
+ *
  * This is intentionally evaluated immediately before lineClampTree(), with no await between
  * proof and historical observation point. It must not be reused for later preparation phases.
  * @param {Element} root
+ * @param {object} [options]
  * @returns {boolean} true when the historical truncation pass is required
  */
-export function needsTextTruncationPrepass(root) {
+export function needsTextTruncationPrepass(root, options) {
   if (!root?.querySelectorAll) return true
   try {
     const scan = scanFor(root.ownerDocument || document)
-    if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations ||
+    if (!scan.elementRules || scan.elementUniverseBlocked ||
         (scan.elementAllRules && scan.elementAllRules.length)) return true
+    if (animationBlocks(scan, root, ANIM_SCOPE_SUBTREE, options, 'textTruncationPrepass')) return true
     const props = scan.elementDeclaredProps
     if (!props) return true
     if (props.has('line-clamp') || props.has('-webkit-line-clamp') || props.has('text-overflow')) return true
@@ -1471,7 +1575,13 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   } catch { return universe }
 
   const scan = scanFor(doc)
-  if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations) return universe
+  if (!scan.elementRules || scan.elementUniverseBlocked) return universe
+  // R10-ANIM1: narrowing is only exact while no animation can move this element's computed style.
+  // The element's own animations do that directly; an ancestor's do it for INHERITED properties
+  // (including registered custom properties). Anything else in the document — a sibling spinner, a
+  // carousel elsewhere on the page — is unreachable from here, and today it costs this element the
+  // full document universe anyway.
+  if (animationBlocks(scan, el, ANIM_SCOPE_SELF_OR_ANCESTOR, options, 'elementUniverse')) return universe
   const st = elementUniverseStateFor(doc, scan)
   if (st.blocked) return universe
   const seen = st.seen
@@ -1717,6 +1827,10 @@ function snapshotComputedStyleFull(style, options = {}, el = null, universe = nu
       if (excludeStyleProps instanceof RegExp && excludeStyleProps.test(prop)) return
       if (typeof excludeStyleProps === 'function' && excludeStyleProps(prop)) return
     }
+    // R10-ANIM1: the one CSSOM property crossing this snapshot can make. Counted at the crossing
+    // itself rather than per iteration, so the number is the work the Amdahl ceiling is computed
+    // from and not a proxy for it. No sink in production, so this is one optional-chaining read.
+    noteAnimationRead(options)
     let val = style.getPropertyValue(prop)
     if (!val) return
     if ((prop === 'background-image' || prop === 'content') && val.includes('url(') && !val.includes('data:')) {
@@ -1985,7 +2099,7 @@ function canSkipBackgroundInlineStateProbe(el, options, docUniverse) {
     const scan = scanFor(doc)
     let safe = scan.__backgroundStateProbeSafe
     if (safe === undefined) {
-      safe = !!scan.elementRules && !scan.elementUniverseBlocked && !scan.hasAnimations &&
+      safe = !!scan.elementRules && !scan.elementUniverseBlocked &&
         Array.isArray(scan.elementAllRules) && scan.elementAllRules.length === 0 &&
         !!scan.elementDeclaredProps
       if (safe) {
@@ -1996,6 +2110,10 @@ function canSkipBackgroundInlineStateProbe(el, options, docUniverse) {
       Object.defineProperty(scan, '__backgroundStateProbeSafe', { value: safe, configurable: true })
     }
     if (!safe) return false
+    // R10-ANIM1: the probe reads this element's own background/mask/border-image, none of which
+    // inherit, so only an animation targeting this element can make the answer true. Moved out of
+    // the memoized document arm above so the per-element question is asked per element.
+    if (animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'backgroundStateProbe')) return false
 
     const inline = el.style
     if (inline?.length) {
@@ -2034,16 +2152,20 @@ const maskInitialsByDoc = new WeakMap()
  * when folding is not proven. The first node of a tag pays the live reads; every later
  * node of that tag reuses the same strings.
  * @param {Element} el
+ * @param {object} [options]
  * @returns {Map<string,string>|null}
  */
-export function maskLayoutInitialValues(el) {
+export function maskLayoutInitialValues(el, options) {
   try {
     const doc = el.ownerDocument || document
     if (typeof el.getRootNode !== 'function' || el.getRootNode() !== doc) return null
     if (el.shadowRoot || el.assignedSlot) return null
     if (el.hasAttribute?.('mask')) return null
     const scan = scanFor(doc)
-    if (!scan.elementRules || scan.elementUniverseBlocked || scan.hasAnimations) return null
+    if (!scan.elementRules || scan.elementUniverseBlocked) return null
+    // R10-ANIM1: mask longhands are all non-inherited, so an ancestor's animation cannot give THIS
+    // node a mask to fold away. Only its own animation can.
+    if (animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'maskLayoutInitials')) return null
     let safe = scan.__maskLayoutInitialSafe
     if (safe === undefined) {
       safe = Array.isArray(scan.elementAllRules) && scan.elementAllRules.length === 0 && !!scan.elementDeclaredProps
@@ -2821,7 +2943,14 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
         if (!outsideDocumentScan) {
           const scan = scanFor(doc)
           const inline = el.getAttribute?.('style') || ''
-          probeAutoMargin = !!scan.marginMayBeAuto || !!scan.hasAnimations ||
+          // R10-ANIM1: margins do not inherit, so only an animation targeting THIS element can
+          // give it an `auto` margin whose animated value currently reads as 0px. The probe is a
+          // strict no-op when its Typed OM lookups cannot return 'auto' — it only rewrites a
+          // margin and pushes to `dyn` when it actually finds one — so scoping the veto here
+          // changes cost, never bytes. Evaluated unconditionally (not inside the || chain) so the
+          // counter records the question rather than its short-circuit.
+          const animated = animationBlocks(scan, el, ANIM_SCOPE_SELF, options, 'autoMarginProbe')
+          probeAutoMargin = !!scan.marginMayBeAuto || animated ||
             UA_AUTO_MARGIN_TAGS.has(el.tagName) || hasPresentationalAutoMargin(el) ||
             AUTO_MARGIN_INLINE_RE.test(inline) || AUTO_MARGIN_INLINE_ALL_RE.test(inline)
         }

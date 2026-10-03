@@ -162,6 +162,12 @@ export function createContext(options = {}) {
     // Internal test/benchmark control: false keeps the historical document-level property
     // universe while leaving the DOM, CSS and every other capture option unchanged.
     __elementUniverse: options.__elementUniverse,
+    // Internal R10-ANIM1 counterfactual: false restores the document-wide animation veto that
+    // every style gate inherited before the veto was resolved per consumer, leaving the DOM, CSS,
+    // rendering and every other capture option untouched. The counter sink is a caller-supplied
+    // object, absent in production, so the hot path pays one optional read per crossing.
+    __animationScope: options.__animationScope,
+    __animationScopeCounters: options.__animationScopeCounters,
     // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
     // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
     __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,

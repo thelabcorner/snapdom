@@ -824,6 +824,70 @@ export function collectSubjectAlternativeKeys(sel, primary, out) {
   return out
 }
 
+const NO_ANIMATION_TARGETS = new Set()
+
+/**
+ * R10-ANIM1 sentinel for "animations exist but nothing about them is attributable".
+ *
+ * An unreliable scan already reports `hasAnimations: true`, which every consumer reads as the
+ * historical document-wide veto. Scoping must not turn that into "no animation is in scope", so
+ * the unreliable path carries this pre-unresolvable scope instead of null.
+ */
+export const UNRESOLVED_ANIMATION_SCOPE = Object.freeze({
+  count: 0,
+  targets: NO_ANIMATION_TARGETS,
+  ancestors: NO_ANIMATION_TARGETS,
+  unresolvable: true,
+})
+
+/**
+ * R10-ANIM1: attribute the document's live animations to the elements they can actually reach.
+ *
+ * `hasAnimations` is document-wide, so one animation anywhere collapses the whole capture onto
+ * its conservative paths. That is only sound because every consumer's question is LOCAL:
+ *
+ *  - A CSS animation, transition or WAAPI animation has exactly ONE effect target, and it
+ *    participates in the cascade at that target only. It cannot move another element's computed
+ *    style.
+ *  - The one cross-element channel is INHERITANCE: an animation on an ancestor changes that
+ *    ancestor's computed value of an inherited property, and descendants inherit the result.
+ *    Registered custom properties (the `@property` family) are inherited too, so this channel
+ *    covers them as well.
+ *
+ * So the two sets that answer "could this animation reach me?" are the animation's own target
+ * element and the closure of that target's ancestors. `pseudoElement` needs no special case: a
+ * pseudo animation's `effect.target` is its originating element, so `::before`/`::first-letter`
+ * targets land on the host — the conservative direction for every consumer.
+ *
+ * `unresolvable` fails closed. An animation with no usable element target (null effect, a
+ * non-element target) or one rooted outside this document (shadow content, a foreign document)
+ * cannot be placed in either set, so it blocks every consumer exactly as it blocks them today.
+ *
+ * `ancestors` is built with a monotone walk that stops at the first node already present: the
+ * first target contributes the whole chain to the root, so every later walk stops where the
+ * existing closure already covers it and the cost is O(animations x depth) once per scan.
+ *
+ * @param {Document} doc
+ * @param {Array<Animation>} animations
+ * @returns {{count: number, targets: Set<Element>, ancestors: Set<Element>, unresolvable: boolean}}
+ */
+function buildAnimationScope(doc, animations) {
+  const targets = new Set()
+  const ancestors = new Set()
+  let unresolvable = false
+  for (const anim of animations) {
+    const target = anim?.effect?.target
+    if (!target || target.nodeType !== 1) { unresolvable = true; continue }
+    if (target.getRootNode && target.getRootNode() !== doc) { unresolvable = true; continue }
+    targets.add(target)
+    for (let a = target.parentElement; a; a = a.parentElement) {
+      if (ancestors.has(a)) break
+      ancestors.add(a)
+    }
+  }
+  return { count: animations.length, targets, ancestors, unresolvable }
+}
+
 /** One matches()/querySelector-ready selector list from collected parts: '' when there are
  *  none, null when the joined result cannot be trusted. A & that survived resolution
  *  (top-level nesting) parses but can never match — worse than no gate, so null. */
@@ -890,9 +954,14 @@ const SHARE_UNSAFE_RE = /:(nth-|first-child|last-child|only-|first-of-type|last-
  *   unreliable scan; `elementAllRules` carries selector-scoped `all` resets,
  *   `elementUniverseBlocked` is reserved for unresolvable reset/nesting cases, and
  *   `hasAnimations` covers live CSS/WAAPI animation state.
+ * - `animationScope`: R10-ANIM1. The same live animations `hasAnimations` summarizes, resolved to
+ *   the elements they can reach (`targets` plus the `ancestors` closure), so each consumer asks its
+ *   own local question instead of inheriting one document-wide veto. Null when the document has no
+ *   live animation; UNRESOLVED_ANIMATION_SCOPE when the scan cannot be trusted or an animation
+ *   cannot be attributed, which blocks exactly as `hasAnimations` does today.
  * Pinned by __tests__/module.styleScan.test.js.
  * @param {Document} doc
- * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean}}
+ * @returns {{universe: Set<string>|null, pseudoUniverse: Set<string>|null, pseudoGates: {before: string|null, after: string|null, firstLetter: string|null, marker: string|null, firstLine: string|null}, usesHas: boolean, shareGate: Array<{sel: string, key: string|null}>|null, sharePartition: {blocked: boolean, containerSels: Set<string>}|null, styleIdentityDataAttrs: Set<string>|null, marginUnstable: boolean, marginMayBeAuto: boolean, paddingUnstable: boolean, insetUnstable: boolean, importantProps: Set<string>|null, elementRules: Array<{sel:string,key:string|null,props:string[]}>|null, elementKeyedRuleCount: number, elementAllRules: Array<{sel:string,key:string|null}>|null, elementDeclaredProps: Set<string>|null, elementAlwaysProps: Set<string>|null, elementUniverseBlocked: boolean, hasAnimations: boolean, animationScope: {count: number, targets: Set<Element>, ancestors: Set<Element>, unresolvable: boolean}|null}}
  */
 export function scanAuthorStyles(doc) {
   // usesHas true on the unreliable path: a scan that could not read every rule cannot promise
@@ -904,6 +973,7 @@ export function scanAuthorStyles(doc) {
     pseudoGates: { before: null, after: null, firstLetter: null, marker: null, firstLine: null },
     elementRules: null, elementKeyedRuleCount: 0, elementAllRules: null, elementDeclaredProps: null, elementAlwaysProps: null,
     elementUniverseBlocked: true, hasAnimations: true, backgroundFontSensitive: true,
+    animationScope: UNRESOLVED_ANIMATION_SCOPE,
   }
   try {
     const universe = new Set(ALWAYS_PROPS)
@@ -925,6 +995,7 @@ export function scanAuthorStyles(doc) {
       pseudoProps: new Set(),
       elementRules: [], elementKeyedRuleCount: 0, elementAllRules: [], elementDeclaredProps: new Set(), elementAlwaysProps: new Set(),
       elementUniverseBlocked: false, hasAnimations: false, backgroundFontSensitive: false,
+      animationScope: null,
     }
     for (const sheet of doc.styleSheets) {
       if (!scanSheet(sheet, universe, pseudoSels, state)) return unreliable
@@ -939,6 +1010,10 @@ export function scanAuthorStyles(doc) {
     if (typeof doc.getAnimations === 'function') {
       const animations = doc.getAnimations()
       state.hasAnimations = animations.length > 0
+      // The scope index is derived from the very list whose keyframes become the document universe
+      // below, so R10-ANIM1 adds no live query and cannot disagree with that union about which
+      // instant was sampled.
+      if (state.hasAnimations) state.animationScope = buildAnimationScope(doc, animations)
       for (const anim of animations) {
         const frames = anim.effect?.getKeyframes?.() || []
         for (const frame of frames) {
@@ -979,6 +1054,7 @@ export function scanAuthorStyles(doc) {
       elementUniverseBlocked: state.elementUniverseBlocked,
       hasAnimations: state.hasAnimations,
       backgroundFontSensitive: state.backgroundFontSensitive,
+      animationScope: state.animationScope,
     }
   } catch {
     return unreliable

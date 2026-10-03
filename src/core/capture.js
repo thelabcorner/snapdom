@@ -155,7 +155,7 @@ export async function captureDOM(element, options) {
     options.__styleShareSelectors = null
   }
 
-  const needsClampPass = options.__lineClampPassGate === false || needsTextTruncationPrepass(state.element)
+  const needsClampPass = options.__lineClampPassGate === false || needsTextTruncationPrepass(state.element, options)
   const undoClamp = needsClampPass
     ? lineClampTree(
         state.element,

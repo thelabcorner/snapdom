@@ -1,0 +1,248 @@
+name: snapDOM v3 R10 animation-scope causal probe
+
+# R10-ANIM1: the document-wide `hasAnimations` veto, resolved per consumer.
+#
+# GitHub-hosted only, by construction and by policy:
+#   - probe-r10-anim-scope.mjs calls assertHostedBrowser() and exits non-zero off a runner;
+#   - this workflow never installs a browser locally and never runs on self-hosted labels.
+#
+# This is NOT a wall-clock benchmark. The lane's claim is about WORK — CSSOM property crossings and
+# gate vetoes — and work is counted deterministically, so there is no timing adjudication here, no
+# ambient-CPU gate and no warmup schedule. What IS gated is fidelity: every fixture must produce
+# byte-identical raw output between the historical and candidate arms of the SAME bundle, and every
+# falsifier/control fixture must show ZERO read reduction. A falsifier that saves reads means the
+# scope released a veto it was supposed to keep, and that is a red build.
+#
+# Red conditions:
+#   - the copied ancestor-closure algorithm drifts from the shipped source, or its randomized
+#     closure equivalence / scope-arm invariants fail (browser-free `logic` job);
+#   - any fixture's raw output differs between arms (fidelity regression);
+#   - any ancestor/self/subtree/shadow fixture reduces CSSOM crossings (over-broad scope);
+#   - any sibling fixture fails to reduce crossings (the opportunity does not exist);
+#   - counter disagreement between the out-of-band getPropertyValue patch and the internal sink;
+#   - a missing engine, a missing artifact, or browser identity that is not the pinned Playwright.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'perf/v3-r10-animation-scope'
+    paths:
+      - 'src/modules/styleScan.js'
+      - 'src/modules/styles.js'
+      - 'src/modules/background.js'
+      - 'src/core/context.js'
+      - 'src/core/capture.js'
+      - '__tests__/module.styles.animationScope.test.js'
+      - 'lane6-scratch/r10/**'
+      - '.github/workflows/r10-animation-scope.yml'
+  pull_request:
+    paths:
+      - 'src/modules/styleScan.js'
+      - 'src/modules/styles.js'
+      - 'src/modules/background.js'
+      - 'src/core/context.js'
+      - 'src/core/capture.js'
+      - '__tests__/module.styles.animationScope.test.js'
+      - 'lane6-scratch/r10/**'
+      - '.github/workflows/r10-animation-scope.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r10-anim-scope-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  logic:
+    name: ancestor-closure invariants (no browser)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify the copied algorithm still matches the shipped source
+        run: node lane6-scratch/r10/check-r10-anim-scope-algorithm.mjs
+
+  probe:
+    name: ${{ matrix.engine }} causal probe
+    needs: logic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - name: Refuse to run off a GitHub-hosted runner
+        run: |
+          if [ "${GITHUB_ACTIONS}" != "true" ]; then
+            echo "R10 animation-scope probes are GitHub-Actions-only." >&2
+            exit 1
+          fi
+
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Verify exact candidate identity
+        run: |
+          set -euo pipefail
+          echo "head=$(git rev-parse HEAD)"
+          echo "expected=${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Assert pinned Playwright matches the manifest
+        run: |
+          set -euo pipefail
+          resolved="$(node -p "require('playwright/package.json').version")"
+          pinned="$(node -p "require('./package.json').devDependencies.playwright")"
+          echo "resolved=${resolved} pinned=${pinned}"
+          test "${resolved}" = "${pinned}"
+
+      - name: Compile the exact candidate bundle
+        run: npm run compile
+
+      - name: Install pinned ${{ matrix.engine }}
+        run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      - name: Run hosted causal probe
+        env:
+          BROWSER: ${{ matrix.engine }}
+        run: node lane6-scratch/r10/probe-r10-anim-scope.mjs
+
+      - name: Assert probe adjudication
+        run: |
+          set -euo pipefail
+          report="lane6-scratch/r10/results/anim-scope-${{ matrix.engine }}.json"
+          test -f "${report}"
+          node -e "
+            const r = require('./${report}');
+            const f = Object.entries(r.fixtures);
+            if (!f.length) throw new Error('no fixtures ran');
+            const bad = f.filter(([, v]) => !v.rawParity);
+            if (bad.length) throw new Error('raw parity failed: ' + bad.map(([k]) => k).join(','));
+            const lost = f.filter(([, v]) => v.role !== 'opportunity' && v.gpv.saved !== 0);
+            if (lost.length) throw new Error('falsifier/control saved reads: ' + lost.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
+            const missed = f.filter(([, v]) => v.role === 'opportunity' && v.gpv.saved <= 0);
+            if (missed.length) throw new Error('opportunity saved nothing: ' + missed.map(([k]) => k).join(','));
+            if (r.provenance?.github?.actions !== true) throw new Error('missing hosted provenance');
+            if (r.engine !== '${{ matrix.engine }}') throw new Error('engine identity mismatch');
+            console.log('adjudicated ' + f.length + ' fixtures on ${{ matrix.engine }}');
+          "
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-anim-scope-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lane6-scratch/r10/results/anim-scope-${{ matrix.engine }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  parity:
+    name: cross-engine counter agreement
+    needs: probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Refuse to run off a GitHub-hosted runner
+        run: |
+          if [ "${GITHUB_ACTIONS}" != "true" ]; then
+            echo "R10 animation-scope probes are GitHub-Actions-only." >&2
+            exit 1
+          fi
+
+      - name: Checkout exact measured head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download every engine's evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r10-anim-scope-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          merge-multiple: true
+
+      - name: Assert all three engines reported and agreed on direction
+        run: |
+          set -euo pipefail
+          ls -1 evidence
+          node -e "
+            const fs = require('node:fs');
+            const reports = fs.readdirSync('evidence')
+              .filter((f) => f.endsWith('.json'))
+              .map((f) => JSON.parse(fs.readFileSync('evidence/' + f, 'utf8')));
+            const engines = new Set(reports.map((r) => r.engine));
+            for (const want of ['chromium', 'firefox', 'webkit']) {
+              if (!engines.has(want)) throw new Error('missing engine evidence: ' + want);
+            }
+            const bundles = new Set(reports.map((r) => r.bundleSha256));
+            if (bundles.size !== 1) throw new Error('engines measured different bundles');
+            // Every engine must classify every fixture into the same role, and every engine must
+            // agree that falsifiers/controls saved nothing. Absolute saved counts may differ per
+            // engine (their CSSOM enumerates different property sets); the SIGN is the invariant.
+            const byName = new Map();
+            for (const r of reports) {
+              for (const [name, v] of Object.entries(r.fixtures)) {
+                if (!byName.has(name)) byName.set(name, []);
+                byName.get(name).push([r.engine, v]);
+              }
+            }
+            for (const [name, rows] of byName) {
+              if (rows.length !== reports.length) throw new Error(name + ' missing on some engine');
+              if (!rows.every(([, v]) => v.rawParity)) throw new Error(name + ' parity failed on some engine');
+              const roles = new Set(rows.map(([, v]) => v.role));
+              if (roles.size !== 1) throw new Error(name + ' role disagreement across engines');
+              const role = [...roles][0];
+              if (role !== 'opportunity' && rows.some(([, v]) => v.gpv.saved !== 0)) {
+                throw new Error(name + ' falsifier saved reads on some engine');
+              }
+              if (role === 'opportunity' && rows.some(([, v]) => v.gpv.saved <= 0)) {
+                throw new Error(name + ' opportunity saved nothing on some engine');
+              }
+              console.log(name.padEnd(32), rows.map(([e, v]) => e + ':' + v.gpv.saved).join(' '));
+            }
+          "
+
+      - name: Upload aggregated evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r10-anim-scope-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30

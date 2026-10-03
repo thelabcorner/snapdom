@@ -190,7 +190,7 @@ async function inlineBackgroundForNode(srcNode, cloneNode, styleCache, options) 
     // per (document, tag) and reuse the exact strings. The false arm restores historical reads.
     const maskInitials = snap && !strictSnap && !maskLayoutRepresented && !hasLiveMaskSource &&
       options?.__maskLayoutInitialDefaults !== false
-      ? maskLayoutInitialValues(srcNode)
+      ? maskLayoutInitialValues(srcNode, options)
       : null
     for (const prop of MASK_LAYOUT_PROPS) {
       let val
