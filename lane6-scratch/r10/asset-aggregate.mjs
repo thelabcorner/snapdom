@@ -75,6 +75,7 @@ for (const item of docs) {
     p.github?.runId !== prepared.github?.runId ||
     p.acquisition?.repeats !== prepared.acquisition?.repeats ||
     p.acquisition?.warmup !== prepared.acquisition?.warmup ||
+    JSON.stringify(p.acquisition?.memorySettlePolicy) !== JSON.stringify(prepared.acquisition?.memorySettlePolicy) ||
     JSON.stringify(p.measurementFiles || {}) !== JSON.stringify(prepared.measurementFiles || {})
   ) {
     wrongIdentity.push(d.replicate)
@@ -119,17 +120,51 @@ if (runners.length && !conditionIds.length) invalidEvidence.push('runner artifac
 const fixtureIdentity = runners.length ? JSON.stringify(runners[0].fixtures || {}) : ''
 if (runners.length && fixtureIdentity === '{}') invalidEvidence.push('runner artifact has no fixture identity')
 
+const browserVersions = [...new Set(runners.map((d) => d.provenance?.browser?.version).filter(Boolean))]
+const runnerImages = [...new Set(runners.map((d) => {
+  const r = d.provenance?.runner || {}
+  return r.imageOs && r.imageVersion ? r.imageOs + '@' + r.imageVersion : null
+}).filter(Boolean))]
+const runAttempts = [...new Set(runners.map((d) => d.provenance?.github?.runAttempt).filter(Boolean))].sort()
+if (runners.length && browserVersions.length !== 1) invalidEvidence.push('Chromium version is not homogeneous across fresh runners')
+if (runners.length && runnerImages.length !== 1) invalidEvidence.push('GitHub runner image is not homogeneous across fresh runners')
+
+const settlePolicy = prepared.acquisition?.memorySettlePolicy || {}
+const memoryStateValid = (state) => (
+  state?.stable === true &&
+  Number.isFinite(state?.pssKb) &&
+  Number.isFinite(state?.rendererPssKb) &&
+  Number.isFinite(state?.settleRangePssKb) &&
+  Number.isFinite(state?.settleDriftPssKb) &&
+  state.settleRangePssKb <= settlePolicy.deltaKb &&
+  state.settleDriftPssKb <= settlePolicy.maxDriftKb &&
+  Array.isArray(state?.rendererPids) &&
+  state.rendererPids.length >= 1 &&
+  typeof state?.identityKey === 'string' &&
+  state.identityKey.length > 0
+)
+
 const finiteEvidence = (d, id) => {
   const c = d.conditions?.[id]
-  return [
+  const scalars = [
     c?.timing?.logPoint,
+    c?.timing?.renderLogPoint,
     c?.timing?.totalLogPoint,
+    c?.timing?.orderBiasLog,
     c?.memory?.candidateMinusBaselineRetentionKb,
     c?.memory?.candidateMinusBaselineSweepKb,
     c?.memory?.candidateMinusBaselineTotalKb,
     c?.memory?.baseline?.warmupDeltaKb,
     c?.memory?.candidate?.warmupDeltaKb,
-  ].every(Number.isFinite)
+  ]
+  if (!scalars.every(Number.isFinite)) return false
+
+  for (const side of ['baseline', 'candidate']) {
+    const m = c?.memory?.[side]
+    if (!memoryStateValid(m?.initial) || !memoryStateValid(m?.warmed) || !memoryStateValid(m?.final)) return false
+    if (m.initial.identityKey !== m.warmed.identityKey || m.warmed.identityKey !== m.final.identityKey) return false
+  }
+  return true
 }
 
 for (const d of runners) {

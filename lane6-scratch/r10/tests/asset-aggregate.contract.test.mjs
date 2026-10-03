@@ -45,24 +45,60 @@ function fixtureDir(count = 6, mutate = null) {
   const preparedSha256 = sha256(fs.readFileSync(preparedPath))
 
   for (let r = 0; r < count; r++) {
-    const condition = (role, logPoint, rss) => ({
-      role,
-      fixture: 'large',
-      csp: 'none',
-      sweep: role === 'null-memo' ? 'same' : 'scale',
-      timing: { logPoint, totalLogPoint: logPoint / 2 },
-      memory: {
-        candidateMinusBaselineRetentionKb: rss,
-        candidateMinusBaselineSweepKb: 10 + r,
-        candidateMinusBaselineTotalKb: rss + 10 + r,
-        baseline: { warmupDeltaKb: 1000 + r, sweepDeltaKb: 50 + r, totalDeltaKb: 1050 + 2 * r },
-        candidate: {
-          warmupDeltaKb: 1000 + r + rss,
-          sweepDeltaKb: 60 + 2 * r,
-          totalDeltaKb: 1060 + 3 * r + rss,
-        },
-      },
+    const memoryState = (side, stage, pssKb) => ({
+      stable: true,
+      pssKb,
+      rendererPssKb: Math.round(pssKb * 0.6),
+      rssKb: pssKb * 2,
+      anonShmemKb: pssKb,
+      settleRangePssKb: 128,
+      settleDriftPssKb: 32,
+      rendererPids: [side === 'baseline' ? 21 : 31],
+      identityKey: side + ':10,' + side + ':11',
+      processCount: 2,
+      stage,
     })
+    const condition = (role, logPoint, rss) => {
+      const baselineInitial = 100000 + r
+      const candidateInitial = 100000 + r
+      const baselineWarm = baselineInitial + 1000 + r
+      const candidateWarm = candidateInitial + 1000 + r + rss
+      const baselineFinal = baselineWarm + 50 + r
+      const candidateFinal = candidateWarm + 60 + 2 * r
+      return {
+        role,
+        fixture: 'large',
+        csp: 'none',
+        sweep: role === 'null-memo' ? 'same' : 'scale',
+        timing: {
+          logPoint,
+          renderLogPoint: logPoint / 3,
+          totalLogPoint: logPoint / 2,
+          orderBiasLog: 0.001 * (r - 2.5),
+        },
+        memory: {
+          candidateMinusBaselineRetentionKb: rss,
+          candidateMinusBaselineSweepKb: 10 + r,
+          candidateMinusBaselineTotalKb: rss + 10 + r,
+          baseline: {
+            initial: memoryState('baseline', 'initial', baselineInitial),
+            warmed: memoryState('baseline', 'warmed', baselineWarm),
+            final: memoryState('baseline', 'final', baselineFinal),
+            warmupDeltaKb: 1000 + r,
+            sweepDeltaKb: 50 + r,
+            totalDeltaKb: 1050 + 2 * r,
+          },
+          candidate: {
+            initial: memoryState('candidate', 'initial', candidateInitial),
+            warmed: memoryState('candidate', 'warmed', candidateWarm),
+            final: memoryState('candidate', 'final', candidateFinal),
+            warmupDeltaKb: 1000 + r + rss,
+            sweepDeltaKb: 60 + 2 * r,
+            totalDeltaKb: 1060 + 3 * r + rss,
+          },
+        },
+      }
+    }
     const doc = {
       schema: 'snapdom-r10-asblob-runner-v1',
       replicate: r,
@@ -78,8 +114,12 @@ function fixtureDir(count = 6, mutate = null) {
         playwrightVersion: prepared.playwrightVersion,
         browser: { name: 'chromium', version: '140.0.0' },
         github: { repository: prepared.github.repository, runId: prepared.github.runId, runAttempt: '1' },
-        acquisition: { repeats: prepared.acquisition.repeats, warmup: prepared.acquisition.warmup },
-        runner: { imageVersion: 'test' },
+        acquisition: {
+          repeats: prepared.acquisition.repeats,
+          warmup: prepared.acquisition.warmup,
+          memorySettlePolicy: prepared.acquisition.memorySettlePolicy,
+        },
+        runner: { imageOs: 'ubuntu24', imageVersion: 'test' },
       },
       fixtures: { large: { width: 1200, height: 800, bytes: 123, sha256: 'E'.repeat(64) } },
       conditions: {

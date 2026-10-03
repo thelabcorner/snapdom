@@ -325,6 +325,17 @@ function assertCandidateRoute(condition, routes, label) {
   }
 }
 
+function assertColdWorkerBlob(condition, telemetry, label) {
+  if (
+    telemetry.blobPayloadPosts !== 1 ||
+    telemetry.blobPayloadBytes !== fixtures[condition.fixture].bytes.length ||
+    telemetry.stringPayloadPosts !== 0 ||
+    telemetry.badBlobDataUrlPosts !== 0
+  ) {
+    throw new Error(label + ': cold capture did not post exactly one fetched source Blob: ' + JSON.stringify(telemetry))
+  }
+}
+
 function assertWorkerPayload(side, condition, telemetry, label) {
   if (!['baseline', 'candidate'].includes(side)) throw new Error(label + ': invalid worker side ' + side)
   if (side === 'baseline') {
@@ -360,9 +371,11 @@ function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, 
 
   if (firstWarm && workerExpected) {
     if (posts !== 1 || messages !== 1 || errors !== 0 || errorPosts !== 0) {
-      throw new Error(label + ': warm worker did not complete one successful request/response: ' + JSON.stringify(telemetry))
+      throw new Error(label + ': cold warmup worker did not complete one successful request/response: ' + JSON.stringify(telemetry))
     }
-    assertWorkerPayload(side, condition, telemetry, label)
+    // c523ddb already forwards the Blob produced by the cold fetch. AS-BLOB's mechanism begins
+    // only on a later capture whose image memo preserves the data URL but, on baseline, not Blob.
+    assertColdWorkerBlob(condition, telemetry, label)
     return
   }
   if (firstWarm && condition.role === 'worker-negative') {
@@ -666,8 +679,10 @@ try {
         timingPrimary: 'snapdom capture/compression time',
         timingSecondary: 'capture + toCanvas end-to-end time',
         timingOrder: 'AB/BA crossed by replicate + condition + sample parity; even repeats gives 4/4 balance per runner',
-        memory: 'fresh BrowserServer per side/condition; primary=sum process-tree smaps_rollup PSS, with VmRSS and RssAnon+RssShmem diagnostics at pre-capture, post-warmup, and post-sweep states',
-        rssSettle: { primary: 'PSS', windowRangeKb: 1024, consecutiveTransitions: 5, intervalMs: 500, maxSamples: 60, identity: 'pid:starttime set must remain constant' },
+        memory: 'fresh BrowserServer per side/condition; primary=sum process-tree smaps_rollup PSS, renderer PSS + VmRSS + RssAnon+RssShmem retained as diagnostics',
+        memorySettlePolicy: prepared.acquisition.memorySettlePolicy,
+        memoryIdentity: 'exact pid:starttime process set must remain constant within and across initial/warmed/final states',
+        memoryRepresentative: 'median PSS of accepted stable window',
       },
     },
     fixtures: Object.fromEntries(Object.entries(fixtures).map(([name, f]) => [name, {
