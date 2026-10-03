@@ -315,6 +315,229 @@ export function processTreeRss(rootPid, readText, readDir) {
   }
 }
 
+
+/**
+ * Normalize Chromium's browser-level SystemInfo.getProcessInfo response.
+ *
+ * CDP owns membership/type identity. Linux /proc remains the memory source of truth.
+ */
+export function normalizeCdpProcessInfo(payload) {
+  const rows = Array.isArray(payload) ? payload : payload?.processInfo
+  if (!Array.isArray(rows)) throw new TypeError('CDP processInfo must be an array')
+
+  const seen = new Set()
+  const out = rows.map((row, index) => {
+    const pid = Number(row?.id)
+    const type = String(row?.type || '').trim().toLowerCase()
+    const cpuTime = Number(row?.cpuTime)
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error('CDP processInfo[' + index + '] has invalid pid')
+    }
+    if (!type) throw new Error('CDP processInfo[' + index + '] has empty type')
+    if (seen.has(pid)) throw new Error('CDP processInfo contains duplicate pid ' + pid)
+    if (!Number.isFinite(cpuTime) || cpuTime < 0) {
+      throw new Error('CDP processInfo[' + index + '] has invalid cpuTime')
+    }
+    seen.add(pid)
+    return { pid, type, cpuTime }
+  })
+
+  return out.sort((a, b) => a.pid - b.pid)
+}
+
+/**
+ * Read PSS/RSS for an exact CDP-owned Chromium process set.
+ *
+ * Any /proc race invalidates the whole snapshot. The settle loop will reset and retry; it must
+ * never silently omit a process because that would manufacture an apparent memory reduction.
+ */
+export function cdpProcessSetPss(processInfo, readText = readFsText) {
+  const membership = normalizeCdpProcessInfo(processInfo)
+  if (!membership.length) throw new Error('CDP returned an empty Chromium process set')
+
+  const processes = []
+  for (const member of membership) {
+    let status
+    let stat
+    let smaps
+    try {
+      status = readText('/proc/' + member.pid + '/status')
+      stat = readText('/proc/' + member.pid + '/stat')
+      smaps = readText('/proc/' + member.pid + '/smaps_rollup')
+    } catch (error) {
+      const wrapped = new Error('CDP-owned Chromium process ' + member.pid + ' disappeared while sampling /proc', { cause: error })
+      wrapped.code = 'R10_PROC_RACE'
+      throw wrapped
+    }
+
+    const memory = parseProcStatusMemory(status)
+    const startTime = parseProcStartTime(stat)
+    const pssKb = parseSmapsRollupPssKb(smaps)
+    if (
+      !Number.isFinite(memory.vmRssKb) ||
+      !Number.isFinite(memory.rssAnonKb) ||
+      !Number.isFinite(memory.rssFileKb) ||
+      !Number.isFinite(memory.rssShmemKb) ||
+      !Number.isFinite(startTime) ||
+      !Number.isFinite(pssKb)
+    ) {
+      throw new Error('CDP-owned Chromium process ' + member.pid + ' exposed incomplete /proc memory identity')
+    }
+
+    processes.push({
+      pid: member.pid,
+      startTime,
+      processType: member.type,
+      cpuTime: member.cpuTime,
+      pssKb,
+      ...memory,
+      anonShmemKb: memory.rssAnonKb + memory.rssShmemKb,
+    })
+  }
+
+  const browsers = processes.filter((p) => p.processType === 'browser')
+  const renderers = processes.filter((p) => p.processType === 'renderer')
+  const identities = processes
+    .map((p) => p.pid + ':' + p.startTime + ':' + p.processType)
+    .sort()
+
+  return {
+    membershipSource: 'cdp:SystemInfo.getProcessInfo',
+    processCount: processes.length,
+    identityKey: identities.join(','),
+    browserPids: browsers.map((p) => p.pid).sort((a, b) => a - b),
+    rendererPids: renderers.map((p) => p.pid).sort((a, b) => a - b),
+    pssKb: processes.reduce((sum, p) => sum + p.pssKb, 0),
+    rendererPssKb: renderers.reduce((sum, p) => sum + p.pssKb, 0),
+    rssKb: processes.reduce((sum, p) => sum + p.vmRssKb, 0),
+    anonShmemKb: processes.reduce((sum, p) => sum + p.anonShmemKb, 0),
+    processes,
+  }
+}
+
+export async function settleCdpProcessPss(cdp, {
+  deltaKb = PSS_SETTLE_POLICY.deltaKb,
+  maxDriftKb = PSS_SETTLE_POLICY.maxDriftKb,
+  consecutive = PSS_SETTLE_POLICY.consecutive,
+  intervalMs = PSS_SETTLE_POLICY.intervalMs,
+  maxSamples = PSS_SETTLE_POLICY.maxSamples,
+  readText = readFsText,
+} = {}) {
+  if (!cdp || typeof cdp.send !== 'function') throw new TypeError('browser-level CDP session required')
+
+  const samples = []
+  let window = []
+  let lastGood = null
+  let procRaceCount = 0
+
+  const summarizeWindow = (latest) => {
+    const pssValues = window.map((x) => x.pssKb)
+    const rssValues = window.map((x) => x.rssKb)
+    const anonValues = window.map((x) => x.anonShmemKb)
+    const rendererValues = window.map((x) => x.rendererPssKb)
+    const range = pssValues.length ? Math.max(...pssValues) - Math.min(...pssValues) : Infinity
+    const drift = pssValues.length > 1 ? Math.abs(pssValues.at(-1) - pssValues[0]) : Infinity
+    return {
+      ...latest,
+      pssKb: median(pssValues),
+      rssKb: median(rssValues),
+      anonShmemKb: median(anonValues),
+      rendererPssKb: median(rendererValues),
+      settleRangePssKb: range,
+      settleDriftPssKb: drift,
+      settleWindowPssKb: pssValues,
+      procRaceCount,
+    }
+  }
+
+  for (let i = 0; i < maxSamples; i++) {
+    let next
+    try {
+      const response = await cdp.send('SystemInfo.getProcessInfo')
+      next = cdpProcessSetPss(response, readText)
+    } catch (error) {
+      if (error?.code !== 'R10_PROC_RACE') throw error
+      procRaceCount++
+      window = []
+      samples.push({ at: Date.now(), valid: false, reason: error.message })
+      if (intervalMs > 0) await sleep(intervalMs)
+      continue
+    }
+
+    const requiredTypesPresent = next.browserPids.length >= 1 && next.rendererPids.length >= 1
+    const sameIdentity = lastGood?.identityKey === next.identityKey
+    samples.push({
+      at: Date.now(),
+      valid: requiredTypesPresent,
+      pssKb: next.pssKb,
+      rendererPssKb: next.rendererPssKb,
+      rssKb: next.rssKb,
+      anonShmemKb: next.anonShmemKb,
+      processCount: next.processCount,
+      browserPids: next.browserPids,
+      rendererPids: next.rendererPids,
+      identityKey: next.identityKey,
+      identityStable: !!sameIdentity,
+    })
+
+    if (!requiredTypesPresent) {
+      window = []
+      lastGood = next
+      if (intervalMs > 0) await sleep(intervalMs)
+      continue
+    }
+
+    if (!sameIdentity) window = [next]
+    else {
+      window.push(next)
+      if (window.length > consecutive + 1) window.shift()
+    }
+
+    const summary = summarizeWindow(next)
+    if (
+      window.length >= consecutive + 1 &&
+      summary.settleRangePssKb <= deltaKb &&
+      summary.settleDriftPssKb <= maxDriftKb
+    ) {
+      return {
+        ...summary,
+        stable: true,
+        terminalStableSamples: consecutive,
+        samples,
+      }
+    }
+
+    lastGood = next
+    if (intervalMs > 0) await sleep(intervalMs)
+  }
+
+  const fallback = lastGood || {
+    membershipSource: 'cdp:SystemInfo.getProcessInfo',
+    processCount: 0,
+    identityKey: '',
+    browserPids: [],
+    rendererPids: [],
+    pssKb: NaN,
+    rendererPssKb: NaN,
+    rssKb: NaN,
+    anonShmemKb: NaN,
+    processes: [],
+  }
+  const summary = window.length ? summarizeWindow(fallback) : {
+    ...fallback,
+    settleRangePssKb: Infinity,
+    settleDriftPssKb: Infinity,
+    settleWindowPssKb: [],
+    procRaceCount,
+  }
+  return {
+    ...summary,
+    stable: false,
+    terminalStableSamples: Math.max(0, window.length - 1),
+    samples,
+  }
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function settleProcessTreeRss(rootPid, {

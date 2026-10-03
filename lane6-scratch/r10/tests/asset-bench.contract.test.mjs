@@ -4,11 +4,13 @@ import {
   aggregateLinear,
   aggregateLogPoints,
   candidateWarmRouteValid,
+  cdpProcessSetPss,
   collectProcessTree,
   crc32,
   dataUrlCharsForBytes,
   geometrySweep,
   makeDeterministicPng,
+  normalizeCdpProcessInfo,
   pairOrder,
   parseProcChildren,
   parseProcStartTime,
@@ -17,6 +19,7 @@ import {
   parseSmapsRollupPssKb,
   parseVmRssKb,
   processTreeRss,
+  settleCdpProcessPss,
   settleProcessTreeRss,
   sha256,
 } from '../asset-bench-lib.mjs'
@@ -141,6 +144,141 @@ test('process-tree sampling refuses a vanished Chromium root pid', () => {
     () => processTreeRss(10, () => { throw new Error('gone') }),
     /root process disappeared/,
   )
+})
+
+
+test('CDP process membership drives exact Chromium PSS/type accounting', () => {
+  const info = {
+    processInfo: [
+      { id: 12, type: 'GPU', cpuTime: 0.2 },
+      { id: 10, type: 'browser', cpuTime: 1.5 },
+      { id: 11, type: 'renderer', cpuTime: 0.8 },
+    ],
+  }
+  assert.deepEqual(normalizeCdpProcessInfo(info).map((x) => [x.pid, x.type]), [
+    [10, 'browser'],
+    [11, 'renderer'],
+    [12, 'gpu'],
+  ])
+
+  const files = new Map([
+    ['/proc/10/status', status({ vm: 1000, anon: 600, file: 300, shmem: 100 })],
+    ['/proc/10/stat', stat(10, 100)],
+    ['/proc/10/smaps_rollup', smaps(800)],
+    ['/proc/11/status', status({ vm: 2000, anon: 1400, file: 400, shmem: 200 })],
+    ['/proc/11/stat', stat(11, 110)],
+    ['/proc/11/smaps_rollup', smaps(1500)],
+    ['/proc/12/status', status({ vm: 3000, anon: 2000, file: 700, shmem: 300 })],
+    ['/proc/12/stat', stat(12, 120)],
+    ['/proc/12/smaps_rollup', smaps(2200)],
+  ])
+  const read = (p) => {
+    if (!files.has(p)) throw new Error('gone')
+    return files.get(p)
+  }
+
+  const memory = cdpProcessSetPss(info, read)
+  assert.equal(memory.membershipSource, 'cdp:SystemInfo.getProcessInfo')
+  assert.deepEqual(memory.browserPids, [10])
+  assert.deepEqual(memory.rendererPids, [11])
+  assert.equal(memory.pssKb, 4500)
+  assert.equal(memory.rendererPssKb, 1500)
+  assert.equal(memory.rssKb, 6000)
+  assert.equal(memory.anonShmemKb, 4600)
+  assert.match(memory.identityKey, /10:100:browser/)
+  assert.match(memory.identityKey, /11:110:renderer/)
+})
+
+test('CDP PSS settle resets on a proc race and process-set churn', async () => {
+  const snapshots = [
+    {
+      info: [
+        { id: 10, type: 'browser', cpuTime: 1 },
+        { id: 11, type: 'renderer', cpuTime: 1 },
+        { id: 12, type: 'utility', cpuTime: 1 },
+      ],
+      pss: { 10: 1000, 11: 2000 },
+      starts: { 10: 100, 11: 110 },
+    },
+    {
+      info: [
+        { id: 10, type: 'browser', cpuTime: 1.1 },
+        { id: 11, type: 'renderer', cpuTime: 1.1 },
+      ],
+      pss: { 10: 1000, 11: 2000 },
+      starts: { 10: 100, 11: 110 },
+    },
+    {
+      info: [
+        { id: 10, type: 'browser', cpuTime: 1.2 },
+        { id: 11, type: 'renderer', cpuTime: 1.2 },
+      ],
+      pss: { 10: 1001, 11: 2000 },
+      starts: { 10: 100, 11: 110 },
+    },
+    {
+      info: [
+        { id: 10, type: 'browser', cpuTime: 1.3 },
+        { id: 11, type: 'renderer', cpuTime: 1.3 },
+      ],
+      pss: { 10: 1001, 11: 2001 },
+      starts: { 10: 100, 11: 110 },
+    },
+  ]
+  let current = -1
+  const cdp = {
+    async send(method) {
+      assert.equal(method, 'SystemInfo.getProcessInfo')
+      current = Math.min(current + 1, snapshots.length - 1)
+      return { processInfo: snapshots[current].info }
+    },
+  }
+  const read = (p) => {
+    const m = p.match(/^\/proc\/(10|11|12)\/(status|stat|smaps_rollup)$/)
+    if (!m) throw new Error('missing ' + p)
+    const pid = Number(m[1])
+    const snap = snapshots[current]
+    if (!(pid in snap.pss)) throw new Error('gone')
+    if (m[2] === 'status') return status({ vm: snap.pss[pid], anon: snap.pss[pid], file: 0, shmem: 0 })
+    if (m[2] === 'stat') return stat(pid, snap.starts[pid])
+    return smaps(snap.pss[pid])
+  }
+
+  const settled = await settleCdpProcessPss(cdp, {
+    deltaKb: 5,
+    maxDriftKb: 5,
+    consecutive: 2,
+    intervalMs: 0,
+    maxSamples: 4,
+    readText: read,
+  })
+  assert.equal(settled.stable, true)
+  assert.equal(settled.procRaceCount, 1)
+  assert.deepEqual(settled.browserPids, [10])
+  assert.deepEqual(settled.rendererPids, [11])
+  assert.equal(settled.samples[0].valid, false)
+  assert.equal(settled.samples.at(-1).identityStable, true)
+})
+
+test('CDP membership validation refuses duplicate pids and missing renderer remains observable', () => {
+  assert.throws(
+    () => normalizeCdpProcessInfo([
+      { id: 10, type: 'browser', cpuTime: 0 },
+      { id: 10, type: 'renderer', cpuTime: 0 },
+    ]),
+    /duplicate pid/,
+  )
+
+  const files = new Map([
+    ['/proc/10/status', status()],
+    ['/proc/10/stat', stat(10, 100)],
+    ['/proc/10/smaps_rollup', smaps(800)],
+  ])
+  const memory = cdpProcessSetPss(
+    [{ id: 10, type: 'browser', cpuTime: 0 }],
+    (p) => files.get(p) ?? (() => { throw new Error('gone') })(),
+  )
+  assert.deepEqual(memory.rendererPids, [])
 })
 
 test('PSS settle requires a stable pid:starttime set, not merely a flat total', async () => {

@@ -4,7 +4,8 @@
  *
  * Timing and memory are deliberately separate:
  *  - timing: baseline and candidate pages share one Chromium process and are crossed AB/BA;
- *  - memory: each side gets a fresh Chromium BrowserServer and Linux process-tree PSS.
+ *  - memory: each side gets a fresh Chromium BrowserServer; Chromium CDP owns process membership/type
+ *    and Linux /proc smaps_rollup owns the PSS measurement.
  *
  * This script is GitHub-Actions-only. It produces one runner-level point per condition; raw browser
  * samples stay in the artifact and are never pooled across VMs by asset-aggregate.mjs.
@@ -23,7 +24,7 @@ import {
   mean,
   pairOrder,
   PSS_SETTLE_POLICY,
-  settleProcessTreeRss,
+  settleCdpProcessPss,
   sha256,
 } from './asset-bench-lib.mjs'
 import { MAX_IMAGE_BLOB_BYTES, WORKER_MIN_PAYLOAD_CHARS } from '../../src/core/cache.js'
@@ -41,7 +42,7 @@ if (process.env.GITHUB_ACTIONS !== 'true') {
   process.exit(1)
 }
 if (process.platform !== 'linux' || !fs.existsSync('/proc/self/status')) {
-  console.error('R10 asset benchmark requires Linux /proc for authoritative process-tree PSS')
+  console.error('R10 asset benchmark requires Linux /proc for authoritative Chromium-process PSS')
   process.exit(1)
 }
 
@@ -504,9 +505,15 @@ async function timingCondition(browser, condition, conditionIndex) {
 }
 
 function assertMemoryState(state, label) {
-  if (!state?.stable) throw new Error(label + ': process-tree PSS did not settle')
+  if (!state?.stable) throw new Error(label + ': CDP-owned Chromium PSS did not settle')
+  if (state.membershipSource !== 'cdp:SystemInfo.getProcessInfo') {
+    throw new Error(label + ': unexpected Chromium membership source')
+  }
+  if (!Array.isArray(state.browserPids) || state.browserPids.length < 1) {
+    throw new Error(label + ': CDP process set contains no browser process')
+  }
   if (!Array.isArray(state.rendererPids) || state.rendererPids.length < 1) {
-    throw new Error(label + ': settled Chromium tree contains no renderer process')
+    throw new Error(label + ': CDP process set contains no renderer process')
   }
   if (state.settleRangePssKb > PSS_SETTLE_POLICY.deltaKb) {
     throw new Error(label + ': PSS settle range exceeds preregistered policy')
@@ -521,17 +528,20 @@ async function memorySide(side, condition) {
   const proc = server.process()
   if (!proc || !Number.isInteger(proc.pid)) {
     await server.close().catch(() => {})
-    throw new Error('BrowserServer did not expose a Chromium root pid')
+    throw new Error('BrowserServer did not expose a Chromium launcher pid')
   }
 
   const browser = await chromium.connect(server.wsEndpoint())
+  const cdp = await browser.newBrowserCDPSession()
   let sidePage
   try {
     sidePage = await openPage(browser, side, condition)
 
-    // State 0: page + source image are loaded, but snapDOM has never captured. This is the only
-    // baseline that can observe the memory AS-BLOB retains during the first warm capture.
-    const initial = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    // State 0: page + source image are loaded, but snapDOM has never captured. Chromium itself
+    // supplies the authoritative browser/renderer/GPU/utility PID set through CDP; Linux /proc
+    // supplies PSS for those exact PIDs. Parentage is diagnostic only because Chromium may fork
+    // through zygotes/threads in ways that are not preserved as a simple BrowserServer subtree.
+    const initial = await settleCdpProcessPss(cdp, PSS_SETTLE_POLICY)
     assertMemoryState(initial, condition.id + '/' + side + '/initial')
 
     const warmObservations = await warm(
@@ -543,7 +553,7 @@ async function memorySide(side, condition) {
 
     // State 1: image cache and same-geometry compress memo are warm. Candidate Blob retention has
     // already happened here, so warmupDelta is the direct retained-memory signal.
-    const warmed = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    const warmed = await settleCdpProcessPss(cdp, PSS_SETTLE_POLICY)
     assertMemoryState(warmed, condition.id + '/' + side + '/warmed')
 
     const routeSamples = []
@@ -560,14 +570,15 @@ async function memorySide(side, condition) {
 
     // State 2: after the unique geometry sweep. This separates "memory retained merely by caching
     // the Blob" from incremental decode/encode/process memory created by the claim workload.
-    const final = await settleProcessTreeRss(proc.pid, PSS_SETTLE_POLICY)
+    const final = await settleCdpProcessPss(cdp, PSS_SETTLE_POLICY)
     assertMemoryState(final, condition.id + '/' + side + '/final')
     if (initial.identityKey !== warmed.identityKey || warmed.identityKey !== final.identityKey) {
-      throw new Error(condition.id + '/' + side + ': Chromium process identity changed across memory states')
+      throw new Error(condition.id + '/' + side + ': Chromium CDP process identity changed across memory states')
     }
     return {
-      rootPid: proc.pid,
-      primaryMemoryMetric: 'whole Chromium process-tree PSS',
+      launcherPid: proc.pid,
+      launcherPidMatchesCdpBrowser: initial.browserPids.includes(proc.pid),
+      primaryMemoryMetric: 'CDP-owned Chromium process-set PSS from /proc/smaps_rollup',
       pssInitialKb: initial.pssKb,
       pssWarmedKb: warmed.pssKb,
       pssFinalKb: final.pssKb,
@@ -588,6 +599,7 @@ async function memorySide(side, condition) {
       routeSamples,
     }
   } finally {
+    await cdp.detach().catch(() => {})
     if (sidePage) await sidePage.context.close().catch(() => {})
     await browser.close().catch(() => {})
     await server.close().catch(() => {})
