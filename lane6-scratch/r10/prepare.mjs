@@ -77,7 +77,7 @@ const doc = {
     warmup: 2,
     timingPrimary: 'capture',
     timingSecondary: 'capture+toCanvas',
-    memoryPrimary: 'pre-capture to post-warmup process-tree VmRSS growth',
+    memoryPrimary: 'pre-capture to post-warmup process-tree PSS growth',
   },
   measurementFiles: fileIdentity,
   github: {

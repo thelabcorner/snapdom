@@ -4,7 +4,7 @@
  *
  * Timing and memory are deliberately separate:
  *  - timing: baseline and candidate pages share one Chromium process and are crossed AB/BA;
- *  - memory: each side gets a fresh Chromium BrowserServer and Linux process-tree VmRSS.
+ *  - memory: each side gets a fresh Chromium BrowserServer and Linux process-tree PSS.
  *
  * This script is GitHub-Actions-only. It produces one runner-level point per condition; raw browser
  * samples stay in the artifact and are never pooled across VMs by asset-aggregate.mjs.
@@ -38,7 +38,7 @@ if (process.env.GITHUB_ACTIONS !== 'true') {
   process.exit(1)
 }
 if (process.platform !== 'linux' || !fs.existsSync('/proc/self/status')) {
-  console.error('R10 asset benchmark requires Linux /proc for authoritative process-tree VmRSS')
+  console.error('R10 asset benchmark requires Linux /proc for authoritative process-tree PSS')
   process.exit(1)
 }
 
@@ -116,14 +116,14 @@ if (fixtures.small.dataUrlChars >= WORKER_MIN_PAYLOAD_CHARS) throw new Error('sm
 const CONDITIONS = [
   { id: 'large-same', fixture: 'large', csp: 'none', sweep: 'same', role: 'null-memo' },
   { id: 'large-scale', fixture: 'large', csp: 'none', sweep: 'scale', role: 'claim' },
-  { id: 'large-dpr', fixture: 'large', csp: 'none', sweep: 'dpr', role: 'claim' },
+  { id: 'large-width', fixture: 'large', csp: 'none', sweep: 'width', role: 'claim' },
   { id: 'small-scale', fixture: 'small', csp: 'none', sweep: 'scale', role: 'small-negative' },
   { id: 'large-csp', fixture: 'large', csp: 'worker-none', sweep: 'scale', role: 'worker-negative' },
 ].map((c) => ({ ...c, warm: { scale: 1, dpr: 1 }, samples: geometrySweep(c.sweep, REPEATS) }))
 
 const CSP = {
   none: null,
-  'worker-none': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; worker-src 'none'",
+  'worker-none': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; worker-src 'none'",
 }
 
 let origin = ''
@@ -145,14 +145,37 @@ function htmlFor(side, fixtureName, cspName) {
 function scriptFor(side) {
   const bundle = side === 'candidate' ? '/candidate.mjs' : '/baseline.mjs'
   return [
-    "import { snapdom } from '" + bundle + "'",
     "window.__ready = false",
     "window.__routes = null",
+    "window.__workerTelemetry = { attempts: 0, constructed: 0, posts: 0, messages: 0, errors: 0 }",
+    "const NativeWorker = window.Worker",
+    "if (NativeWorker) {",
+    "  const nativePostMessage = NativeWorker.prototype.postMessage",
+    "  NativeWorker.prototype.postMessage = function(...args) {",
+    "    window.__workerTelemetry.posts++",
+    "    return nativePostMessage.apply(this, args)",
+    "  }",
+    "  function InstrumentedWorker(...args) {",
+    "    window.__workerTelemetry.attempts++",
+    "    const worker = new NativeWorker(...args)",
+    "    window.__workerTelemetry.constructed++",
+    "    worker.addEventListener('message', () => { window.__workerTelemetry.messages++ })",
+    "    worker.addEventListener('error', () => { window.__workerTelemetry.errors++ })",
+    "    return worker",
+    "  }",
+    "  InstrumentedWorker.prototype = NativeWorker.prototype",
+    "  Object.setPrototypeOf(InstrumentedWorker, NativeWorker)",
+    "  window.Worker = InstrumentedWorker",
+    "}",
+    "const { snapdom } = await import('" + bundle + "')",
     "const routeReader = { name: 'r10-route-reader', afterRender(context) {",
     "  window.__routes = context.__assetRoutes ? { ...context.__assetRoutes } : null",
     "} }",
+    "const telemetry = () => ({ ...window.__workerTelemetry })",
+    "const delta = (after, before) => Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - before[k]]))",
     "window.__capture = async (opts) => {",
     "  window.__routes = null",
+    "  const workerBefore = telemetry()",
     "  const t0 = performance.now()",
     "  const result = await snapdom(document.getElementById('asset'), {",
     "    cache: 'soft', burst: false, compress: true, embedFonts: false, plugins: [routeReader], ...opts",
@@ -160,9 +183,14 @@ function scriptFor(side) {
     "  const t1 = performance.now()",
     "  await result.toCanvas()",
     "  const t2 = performance.now()",
-    "  return { captureMs: t1 - t0, renderMs: t2 - t1, totalMs: t2 - t0, routes: window.__routes }",
+    "  const workerAfter = telemetry()",
+    "  return {",
+    "    captureMs: t1 - t0, renderMs: t2 - t1, totalMs: t2 - t0,",
+    "    routes: window.__routes, workerTelemetry: delta(workerAfter, workerBefore)",
+    "  }",
     "}",
-    "document.getElementById('asset').decode().then(() => { window.__ready = true })",
+    "await document.getElementById('asset').decode()",
+    "window.__ready = true",
   ].join('\n')
 }
 
@@ -253,35 +281,102 @@ async function openPage(browser, side, condition) {
 }
 
 async function capture(page, geometry) {
-  return page.evaluate(
-    (g) => window.__capture({ scale: g.scale, dpr: g.dpr }),
-    geometry,
-  )
+  return page.evaluate((g) => window.__capture(g), geometry)
+}
+
+const ROUTE_KEYS = ['memo', 'inflight', 'header', 'workerBlob', 'workerString', 'main']
+
+function routeTotal(routes) {
+  return ROUTE_KEYS.reduce((sum, key) => sum + (Number(routes?.[key]) || 0), 0)
 }
 
 function assertCandidateRoute(condition, routes, label) {
   if (!routes) throw new Error(label + ': candidate afterRender did not publish route counters')
+  if (routeTotal(routes) !== 1) {
+    throw new Error(label + ': expected exactly one terminal asset route: ' + JSON.stringify(routes))
+  }
+
   if (condition.role === 'null-memo') {
-    if (!(routes.memo > 0) || routes.workerBlob !== 0 || routes.workerString !== 0) {
-      throw new Error(label + ': same-geometry null did not terminate at memo: ' + JSON.stringify(routes))
-    }
+    if (routes.memo !== 1) throw new Error(label + ': same-geometry null did not terminate at memo: ' + JSON.stringify(routes))
   } else if (condition.role === 'claim') {
-    if (!(routes.workerBlob > 0) || routes.workerString !== 0) {
-      throw new Error(label + ': claim arm did not execute Blob worker route: ' + JSON.stringify(routes))
+    if (routes.workerBlob !== 1 || routes.workerString !== 0 || routes.main !== 0) {
+      throw new Error(label + ': claim arm did not complete exclusively on Blob worker route: ' + JSON.stringify(routes))
     }
   } else if (condition.role === 'small-negative') {
-    if (routes.workerBlob !== 0 || routes.workerString !== 0) {
-      throw new Error(label + ': below-threshold fixture reached worker: ' + JSON.stringify(routes))
-    }
+    if (routes.main !== 1) throw new Error(label + ': below-threshold fixture did not take main route: ' + JSON.stringify(routes))
   } else if (condition.role === 'worker-negative') {
-    if (routes.workerBlob !== 0 || routes.workerString !== 0 || !(routes.main > 0)) {
-      throw new Error(label + ': CSP worker-negative did not fall through to main: ' + JSON.stringify(routes))
+    if (routes.main !== 1) throw new Error(label + ': CSP worker-negative did not take main route: ' + JSON.stringify(routes))
+  }
+}
+
+function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null } = {}) {
+  if (!telemetry) throw new Error(label + ': missing browser-level worker telemetry')
+  const posts = telemetry.posts || 0
+  const messages = telemetry.messages || 0
+  const errors = telemetry.errors || 0
+
+  const firstWarm = warmIndex === 0
+  const laterWarm = Number.isInteger(warmIndex) && warmIndex > 0
+  const workerExpected = condition.role === 'claim' || condition.role === 'null-memo'
+
+  if (firstWarm && workerExpected) {
+    if (posts !== 1 || messages !== 1 || errors !== 0) {
+      throw new Error(label + ': warm worker did not complete one request/response cleanly: ' + JSON.stringify(telemetry))
+    }
+    return
+  }
+  if (firstWarm && condition.role === 'worker-negative') {
+    if (!(telemetry.attempts >= 1) || posts !== 0 || messages !== 0) {
+      throw new Error(label + ': CSP warmup did not fail before worker post: ' + JSON.stringify(telemetry))
+    }
+    return
+  }
+  if (firstWarm && condition.role === 'small-negative') {
+    if (posts !== 0 || messages !== 0 || errors !== 0) {
+      throw new Error(label + ': below-threshold warmup unexpectedly touched worker: ' + JSON.stringify(telemetry))
+    }
+    return
+  }
+  if (laterWarm || condition.role !== 'claim') {
+    if (posts !== 0 || messages !== 0 || errors !== 0) {
+      throw new Error(label + ': null/control capture unexpectedly touched worker: ' + JSON.stringify(telemetry))
+    }
+    return
+  }
+  if (posts !== 1 || messages !== 1 || errors !== 0) {
+    throw new Error(label + ': claim capture did not complete one worker request/response cleanly: ' + JSON.stringify(telemetry))
+  }
+}
+
+function assertWarmCandidateRoute(condition, routes, label, warmIndex) {
+  if (!routes) throw new Error(label + ': candidate warmup did not publish route counters')
+  if (warmIndex > 0) {
+    if (routeTotal(routes) !== 1 || routes.memo !== 1) {
+      throw new Error(label + ': second warmup did not hit compression memo: ' + JSON.stringify(routes))
+    }
+    return
+  }
+  if (condition.role === 'claim' || condition.role === 'null-memo') {
+    if (routeTotal(routes) !== 1 || routes.workerBlob !== 1 || routes.main !== 0) {
+      throw new Error(label + ': first warmup did not execute Blob worker route: ' + JSON.stringify(routes))
+    }
+  } else {
+    if (routeTotal(routes) !== 1 || routes.main !== 1) {
+      throw new Error(label + ': first control warmup did not take main route: ' + JSON.stringify(routes))
     }
   }
 }
 
-async function warm(sidePage, geometry) {
-  for (let i = 0; i < WARMUP; i++) await capture(sidePage.page, geometry)
+async function warm(sidePage, side, condition, label) {
+  const observations = []
+  for (let i = 0; i < WARMUP; i++) {
+    const observed = await capture(sidePage.page, condition.warm)
+    if (side === 'candidate') assertWarmCandidateRoute(condition, observed.routes, label + ' warmup ' + i, i)
+    else if (observed.routes !== null) throw new Error(label + ': baseline warmup exposed candidate route counters')
+    assertWorkerTelemetry(condition, observed.workerTelemetry, label + ' warmup ' + i, { warmIndex: i })
+    observations.push({ routes: observed.routes, workerTelemetry: observed.workerTelemetry })
+  }
+  return observations
 }
 
 async function timingCondition(browser, condition, conditionIndex) {
@@ -289,7 +384,10 @@ async function timingCondition(browser, condition, conditionIndex) {
   const sides = {}
   for (const side of createOrder) sides[side] = await openPage(browser, side, condition)
   try {
-    for (const side of createOrder) await warm(sides[side], condition.warm)
+    const warmup = {}
+    for (const side of createOrder) {
+      warmup[side] = await warm(sides[side], side, condition, condition.id + '/timing/' + side)
+    }
 
     const pairs = []
     for (let i = 0; i < condition.samples.length; i++) {
@@ -301,6 +399,8 @@ async function timingCondition(browser, condition, conditionIndex) {
         throw new Error(condition.id + ': baseline unexpectedly exposed candidate route counters')
       }
       assertCandidateRoute(condition, observed.candidate.routes, condition.id + ' timing sample ' + i)
+      assertWorkerTelemetry(condition, observed.baseline.workerTelemetry, condition.id + '/timing/baseline sample ' + i)
+      assertWorkerTelemetry(condition, observed.candidate.workerTelemetry, condition.id + '/timing/candidate sample ' + i)
       pairs.push({
         sample: i,
         order,
@@ -314,16 +414,27 @@ async function timingCondition(browser, condition, conditionIndex) {
         logRatio: Math.log(observed.candidate.captureMs / observed.baseline.captureMs),
         totalLogRatio: Math.log(observed.candidate.totalMs / observed.baseline.totalMs),
         candidateRoutes: observed.candidate.routes,
+        baselineWorkerTelemetry: observed.baseline.workerTelemetry,
+        candidateWorkerTelemetry: observed.candidate.workerTelemetry,
       })
     }
-    const logPoint = mean(pairs.map((x) => x.logRatio))
-    const totalLogPoint = mean(pairs.map((x) => x.totalLogRatio))
+    const candidateFirst = pairs.filter((x) => x.order[0] === 'candidate')
+    const baselineFirst = pairs.filter((x) => x.order[0] === 'baseline')
+    if (candidateFirst.length !== REPEATS / 2 || baselineFirst.length !== REPEATS / 2) {
+      throw new Error(condition.id + ': AB/BA strata are not exactly balanced inside this runner')
+    }
+    const logPoint = 0.5 * (mean(candidateFirst.map((x) => x.logRatio)) + mean(baselineFirst.map((x) => x.logRatio)))
+    const totalLogPoint = 0.5 * (mean(candidateFirst.map((x) => x.totalLogRatio)) + mean(baselineFirst.map((x) => x.totalLogRatio)))
+    const orderBiasLog = mean(candidateFirst.map((x) => x.logRatio)) - mean(baselineFirst.map((x) => x.logRatio))
     return {
+      warmup,
       pairs,
       logPoint,
       pct: (Math.exp(logPoint) - 1) * 100,
       totalLogPoint,
       totalPct: (Math.exp(totalLogPoint) - 1) * 100,
+      orderBiasLog,
+      orderBiasPct: (Math.exp(orderBiasLog) - 1) * 100,
       primary: 'capture',
     }
   } finally {
@@ -347,23 +458,19 @@ async function memorySide(side, condition) {
     // State 0: page + source image are loaded, but snapDOM has never captured. This is the only
     // baseline that can observe the memory AS-BLOB retains during the first warm capture.
     const initial = await settleProcessTreeRss(proc.pid)
-    if (!initial.stable) throw new Error(condition.id + '/' + side + ': process-tree RSS did not settle before first capture')
+    if (!initial.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle before first capture')
 
-    const warmRoutes = []
-    for (let i = 0; i < WARMUP; i++) {
-      const observed = await capture(sidePage.page, condition.warm)
-      if (side === 'candidate') {
-        if (!observed.routes) throw new Error(condition.id + ': candidate warmup did not publish route counters')
-        warmRoutes.push(observed.routes)
-      } else if (observed.routes !== null) {
-        throw new Error(condition.id + ': baseline warmup exposed candidate route counters')
-      }
-    }
+    const warmObservations = await warm(
+      sidePage,
+      side,
+      condition,
+      condition.id + '/memory/' + side,
+    )
 
     // State 1: image cache and same-geometry compress memo are warm. Candidate Blob retention has
     // already happened here, so warmupDelta is the direct retained-memory signal.
     const warmed = await settleProcessTreeRss(proc.pid)
-    if (!warmed.stable) throw new Error(condition.id + '/' + side + ': process-tree RSS did not settle after warmup')
+    if (!warmed.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle after warmup')
 
     const routeSamples = []
     for (let i = 0; i < condition.samples.length; i++) {
@@ -374,24 +481,34 @@ async function memorySide(side, condition) {
       } else if (observed.routes !== null) {
         throw new Error(condition.id + ': baseline memory page exposed candidate route counters')
       }
+      assertWorkerTelemetry(condition, observed.workerTelemetry, condition.id + '/memory/' + side + ' sample ' + i)
     }
 
     // State 2: after the unique geometry sweep. This separates "memory retained merely by caching
     // the Blob" from incremental decode/encode/process memory created by the claim workload.
     const final = await settleProcessTreeRss(proc.pid)
-    if (!final.stable) throw new Error(condition.id + '/' + side + ': process-tree RSS did not settle after geometry sweep')
+    if (!final.stable) throw new Error(condition.id + '/' + side + ': process-tree PSS did not settle after geometry sweep')
+    if (initial.identityKey !== warmed.identityKey || warmed.identityKey !== final.identityKey) {
+      throw new Error(condition.id + '/' + side + ': Chromium process identity changed across memory states')
+    }
     return {
       rootPid: proc.pid,
-      rssInitialKb: initial.rssKb,
-      rssWarmedKb: warmed.rssKb,
-      rssFinalKb: final.rssKb,
-      warmupDeltaKb: warmed.rssKb - initial.rssKb,
-      sweepDeltaKb: final.rssKb - warmed.rssKb,
-      totalDeltaKb: final.rssKb - initial.rssKb,
+      primaryMemoryMetric: 'process-tree PSS',
+      pssInitialKb: initial.pssKb,
+      pssWarmedKb: warmed.pssKb,
+      pssFinalKb: final.pssKb,
+      warmupDeltaKb: warmed.pssKb - initial.pssKb,
+      sweepDeltaKb: final.pssKb - warmed.pssKb,
+      totalDeltaKb: final.pssKb - initial.pssKb,
+      vmRssWarmupDeltaKb: warmed.rssKb - initial.rssKb,
+      vmRssTotalDeltaKb: final.rssKb - initial.rssKb,
+      anonShmemWarmupDeltaKb: warmed.anonShmemKb - initial.anonShmemKb,
+      anonShmemTotalDeltaKb: final.anonShmemKb - initial.anonShmemKb,
       initial,
       warmed,
       final,
-      warmRoutes,
+      warmRoutes: warmObservations.map((x) => x.routes),
+      warmWorkerTelemetry: warmObservations.map((x) => x.workerTelemetry),
       routeSamples,
     }
   } finally {
@@ -409,7 +526,7 @@ async function memoryCondition(condition, conditionIndex) {
     order,
     baseline: sides.baseline,
     candidate: sides.candidate,
-    // Primary memory signal: how much more process-tree RSS the candidate retained while merely
+    // Primary memory signal: how much more process-tree PSS the candidate retained while merely
     // warming the same source image and same geometry.
     candidateMinusBaselineRetentionKb:
       sides.candidate.warmupDeltaKb - sides.baseline.warmupDeltaKb,
@@ -426,13 +543,23 @@ let timingBrowser
 try {
   timingBrowser = await chromium.launch({ headless: true })
   const browserVersion = timingBrowser.version()
-  const conditions = {}
+  const timingById = {}
 
   for (let ci = 0; ci < CONDITIONS.length; ci++) {
     const condition = CONDITIONS[ci]
     console.log('R10 condition ' + condition.id + ' timing')
-    const timing = await timingCondition(timingBrowser, condition, ci)
-    console.log('R10 condition ' + condition.id + ' isolated VmRSS')
+    timingById[condition.id] = await timingCondition(timingBrowser, condition, ci)
+  }
+
+  // Memory sampling owns its Chromium trees. Do not leave the timing browser resident while
+  // comparing process-tree PSS of fresh baseline/candidate sides.
+  await timingBrowser.close()
+  timingBrowser = null
+
+  const conditions = {}
+  for (let ci = 0; ci < CONDITIONS.length; ci++) {
+    const condition = CONDITIONS[ci]
+    console.log('R10 condition ' + condition.id + ' isolated process-tree PSS')
     const memory = await memoryCondition(condition, ci)
     conditions[condition.id] = {
       fixture: condition.fixture,
@@ -440,7 +567,7 @@ try {
       sweep: condition.sweep,
       role: condition.role,
       warm: condition.warm,
-      timing,
+      timing: timingById[condition.id],
       memory,
     }
   }
@@ -479,8 +606,8 @@ try {
         timingPrimary: 'snapdom capture/compression time',
         timingSecondary: 'capture + toCanvas end-to-end time',
         timingOrder: 'AB/BA crossed by replicate + condition + sample parity; even repeats gives 4/4 balance per runner',
-        memory: 'fresh BrowserServer per side/condition; settled Linux Chromium process-tree VmRSS at pre-capture, post-warmup, and post-sweep states',
-        rssSettle: { deltaKb: 2048, consecutive: 3, intervalMs: 250, maxSamples: 120 },
+        memory: 'fresh BrowserServer per side/condition; primary=sum process-tree smaps_rollup PSS, with VmRSS and RssAnon+RssShmem diagnostics at pre-capture, post-warmup, and post-sweep states',
+        rssSettle: { primary: 'PSS', windowRangeKb: 1024, consecutiveTransitions: 5, intervalMs: 500, maxSamples: 60, identity: 'pid:starttime set must remain constant' },
       },
     },
     fixtures: Object.fromEntries(Object.entries(fixtures).map(([name, f]) => [name, {

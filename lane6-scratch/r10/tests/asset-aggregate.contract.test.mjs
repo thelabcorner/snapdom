@@ -30,9 +30,13 @@ function fixtureDir(count = 6, mutate = null) {
       warmup: 2,
       timingPrimary: 'capture',
       timingSecondary: 'capture+toCanvas',
-      memoryPrimary: 'pre-capture to post-warmup process-tree VmRSS growth',
+      memoryPrimary: 'pre-capture to post-warmup process-tree PSS growth',
     },
-    measurementFiles: { 'lane6-scratch/r10/assets-bench.mjs': 'E'.repeat(64) },
+    measurementFiles: {
+      'lane6-scratch/r10/assets-bench.mjs': sha256(
+        fs.readFileSync(path.resolve(ROOT, 'lane6-scratch/r10/assets-bench.mjs')),
+      ),
+    },
     github: { repository: 'thelabcorner/snapdom', runId: '12345' },
   }
   const preparedPath = path.join(dir, 'prepared.json')
@@ -80,6 +84,10 @@ function fixtureDir(count = 6, mutate = null) {
       conditions: {
         'large-same': condition('null-memo', 0.001 * (r - 2.5), 5 + r),
         'large-scale': condition('claim', -0.08 + 0.002 * r, 100 + r),
+        'large-csp': {
+          ...condition('worker-negative', 0.0015 * (r - 2.5), 10 + r),
+          csp: 'worker-none',
+        },
       },
     }
     if (mutate) mutate(doc, r, prepared)
@@ -114,6 +122,8 @@ test('aggregate CLI consumes exactly one complete point per runner', () => {
   assert.ok(summary.conditions['large-scale'].timing.capture.pct < 0)
   assert.ok(summary.conditions['large-scale'].timing.endToEnd.pct < 0)
   assert.equal(summary.conditions['large-scale'].memory.candidateMinusBaselineRetentionKb.n, 6)
+  assert.equal(summary.matchedMemoryControls['large-scale'].control, 'large-csp')
+  assert.equal(summary.matchedMemoryControls['large-scale'].effectKb.n, 6)
   assert.equal(summary.performanceClaim, false)
 })
 

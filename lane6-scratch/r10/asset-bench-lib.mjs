@@ -98,9 +98,36 @@ export function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex').toUpperCase()
 }
 
+function parseKbField(text, name) {
+  const m = String(text).match(new RegExp('^' + name + ':\\s+(\\d+)\\s+kB$', 'm'))
+  return m ? Number(m[1]) : NaN
+}
+
 export function parseVmRssKb(statusText) {
-  const m = String(statusText).match(/^VmRSS:\s+(\d+)\s+kB$/m)
-  return m ? Number(m[1]) : 0
+  const value = parseKbField(statusText, 'VmRSS')
+  return Number.isFinite(value) ? value : 0
+}
+
+export function parseProcStatusMemory(statusText) {
+  return {
+    vmRssKb: parseKbField(statusText, 'VmRSS'),
+    rssAnonKb: parseKbField(statusText, 'RssAnon'),
+    rssFileKb: parseKbField(statusText, 'RssFile'),
+    rssShmemKb: parseKbField(statusText, 'RssShmem'),
+  }
+}
+
+export function parseSmapsRollupPssKb(text) {
+  return parseKbField(text, 'Pss')
+}
+
+export function parseProcStartTime(statText) {
+  const text = String(statText)
+  const end = text.lastIndexOf(')')
+  if (end < 0) return NaN
+  const fields = text.slice(end + 1).trim().split(/\s+/)
+  // The slice starts at procfs stat field 3 (state); starttime is field 22.
+  return Number(fields[19])
 }
 
 export function parseProcChildren(text) {
@@ -111,7 +138,7 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
   if (!Number.isInteger(rootPid) || rootPid <= 0) throw new TypeError('rootPid must be a positive integer')
   const seen = new Set()
   const stack = [rootPid]
-  const pids = []
+  const processes = []
 
   while (stack.length) {
     const pid = stack.pop()
@@ -119,21 +146,47 @@ export function collectProcessTree(rootPid, readText = (p) => fs.readFileSync(p,
     seen.add(pid)
 
     let status
+    let stat
+    let smaps
     try {
       status = readText('/proc/' + pid + '/status')
-    } catch {
+      stat = readText('/proc/' + pid + '/stat')
+      smaps = readText('/proc/' + pid + '/smaps_rollup')
+    } catch (error) {
+      if (pid === rootPid) throw new Error('Chromium root process disappeared while sampling /proc', { cause: error })
       continue
     }
-    pids.push({ pid, rssKb: parseVmRssKb(status) })
+
+    const memory = parseProcStatusMemory(status)
+    const startTime = parseProcStartTime(stat)
+    const pssKb = parseSmapsRollupPssKb(smaps)
+    if (
+      !Number.isFinite(memory.vmRssKb) ||
+      !Number.isFinite(memory.rssAnonKb) ||
+      !Number.isFinite(memory.rssFileKb) ||
+      !Number.isFinite(memory.rssShmemKb) ||
+      !Number.isFinite(startTime) ||
+      !Number.isFinite(pssKb)
+    ) {
+      throw new Error('Chromium process ' + pid + ' exposed incomplete /proc memory identity')
+    }
+
+    processes.push({
+      pid,
+      startTime,
+      pssKb,
+      ...memory,
+      anonShmemKb: memory.rssAnonKb + memory.rssShmemKb,
+    })
 
     try {
       const children = parseProcChildren(readText('/proc/' + pid + '/task/' + pid + '/children'))
       for (const child of children) if (!seen.has(child)) stack.push(child)
     } catch {
-      // A short-lived child may disappear between status and children reads.
+      // A short-lived child may disappear between memory sampling and the children read.
     }
   }
-  return pids
+  return processes
 }
 
 export function processTreeRss(rootPid, readText) {
@@ -141,10 +194,16 @@ export function processTreeRss(rootPid, readText) {
   if (!processes.some((p) => p.pid === rootPid)) {
     throw new Error('Chromium root process disappeared while sampling /proc')
   }
+  const identities = processes
+    .map((p) => p.pid + ':' + p.startTime)
+    .sort()
   return {
     rootPid,
     processCount: processes.length,
-    rssKb: processes.reduce((sum, p) => sum + p.rssKb, 0),
+    identityKey: identities.join(','),
+    pssKb: processes.reduce((sum, p) => sum + p.pssKb, 0),
+    rssKb: processes.reduce((sum, p) => sum + p.vmRssKb, 0),
+    anonShmemKb: processes.reduce((sum, p) => sum + p.anonShmemKb, 0),
     processes,
   }
 }
@@ -152,36 +211,57 @@ export function processTreeRss(rootPid, readText) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function settleProcessTreeRss(rootPid, {
-  deltaKb = 2048,
-  consecutive = 3,
-  intervalMs = 250,
-  maxSamples = 120,
+  deltaKb = 1024,
+  consecutive = 5,
+  intervalMs = 500,
+  maxSamples = 60,
   readText,
 } = {}) {
   const samples = []
-  let stable = 0
   let prev = processTreeRss(rootPid, readText)
+  let window = [prev]
 
-  for (let i = 0; i < maxSamples && stable < consecutive; i++) {
+  for (let i = 0; i < maxSamples; i++) {
     await sleep(intervalMs)
     const next = processTreeRss(rootPid, readText)
-    const rssDeltaKb = next.rssKb - prev.rssKb
-    const processCountStable = next.processCount === prev.processCount
+    const sameIdentity = next.identityKey === prev.identityKey
+
     samples.push({
       at: Date.now(),
+      pssKb: next.pssKb,
       rssKb: next.rssKb,
+      anonShmemKb: next.anonShmemKb,
       processCount: next.processCount,
-      deltaKb: rssDeltaKb,
-      processCountStable,
+      identityKey: next.identityKey,
+      pssDeltaKb: next.pssKb - prev.pssKb,
+      identityStable: sameIdentity,
     })
-    stable = Math.abs(rssDeltaKb) <= deltaKb && processCountStable ? stable + 1 : 0
+
+    if (!sameIdentity) window = [next]
+    else {
+      window.push(next)
+      if (window.length > consecutive + 1) window.shift()
+    }
+
+    const pssValues = window.map((x) => x.pssKb)
+    const pssRangeKb = pssValues.length ? Math.max(...pssValues) - Math.min(...pssValues) : Infinity
+    if (window.length >= consecutive + 1 && pssRangeKb <= deltaKb) {
+      return {
+        ...next,
+        stable: true,
+        terminalStableSamples: consecutive,
+        settleRangePssKb: pssRangeKb,
+        samples,
+      }
+    }
     prev = next
   }
 
   return {
     ...prev,
-    stable: stable >= consecutive,
-    terminalStableSamples: stable,
+    stable: false,
+    terminalStableSamples: Math.max(0, window.length - 1),
+    settleRangePssKb: window.length ? Math.max(...window.map((x) => x.pssKb)) - Math.min(...window.map((x) => x.pssKb)) : Infinity,
     samples,
   }
 }
@@ -199,6 +279,13 @@ export function geometrySweep(kind, repeats) {
   }
   if (kind === 'dpr') {
     return Array.from({ length: repeats }, (_, i) => ({ scale: 1, dpr: 1.15 + i * 0.08 }))
+  }
+  if (kind === 'width') {
+    return Array.from({ length: repeats }, (_, i) => ({
+      scale: 1,
+      dpr: 1,
+      width: 300 * (1.10 + i * 0.06),
+    }))
   }
   throw new Error('unknown geometry sweep ' + kind)
 }

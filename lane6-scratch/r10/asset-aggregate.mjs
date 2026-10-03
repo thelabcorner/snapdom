@@ -21,6 +21,17 @@ const prepared = JSON.parse(preparedBytes)
 const preparedSha256 = sha256(preparedBytes)
 if (prepared.schema !== 'snapdom-r10-asblob-prepared-v1') throw new Error('prepared schema mismatch')
 if (EXPECTED !== prepared.acquisition?.runnerReplicates) throw new Error('runner-count policy drifted after prepare')
+for (const [rel, expected] of Object.entries(prepared.measurementFiles || {})) {
+  const abs = path.resolve(ROOT, rel)
+  if (!fs.existsSync(abs) || sha256(fs.readFileSync(abs)) !== expected) {
+    throw new Error('aggregate measurement file digest mismatch: ' + rel)
+  }
+}
+if (process.env.GITHUB_ACTIONS === 'true') {
+  if (process.env.GITHUB_SHA !== prepared.measurementGitSha) throw new Error('aggregate measurement git SHA mismatch')
+  if (process.env.GITHUB_REPOSITORY !== prepared.github?.repository) throw new Error('aggregate GitHub repository mismatch')
+  if (process.env.GITHUB_RUN_ID !== prepared.github?.runId) throw new Error('aggregate GitHub run id mismatch')
+}
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out
@@ -190,6 +201,22 @@ for (const id of conditionIds) {
   }
 }
 
+const matchedMemoryControls = {}
+const cspRetention = runners.map((d) => d.conditions?.['large-csp']?.memory?.candidateMinusBaselineRetentionKb)
+if (cspRetention.every(Number.isFinite)) {
+  for (const [id, condition] of Object.entries(conditions)) {
+    if (condition.role !== 'claim') continue
+    const claimRetention = runners.map((d) => d.conditions[id].memory.candidateMinusBaselineRetentionKb)
+    const did = claimRetention.map((x, i) => x - cspRetention[i])
+    matchedMemoryControls[id] = {
+      control: 'large-csp',
+      estimand: '(candidate-baseline retention PSS)claim - (candidate-baseline retention PSS)large-csp',
+      effectKb: aggregateLinear(did),
+      runnerPointsKb: did,
+    }
+  }
+}
+
 const summary = {
   schema: 'snapdom-r10-asblob-summary-v1',
   state: 'EXPERIMENT_COMPLETE',
@@ -206,7 +233,8 @@ const summary = {
   mechanism: prepared.mechanism,
   fixtures: runners[0].fixtures,
   conditions,
-  interpretation: 'Runner-level paired mechanism experiment only. Capture timing is primary; end-to-end timing is secondary. Negative timing means candidate faster. Primary memory is candidate-minus-baseline post-warmup retention increment measured from pre-capture process-tree VmRSS; sweep and total deltas are secondary. No promotion threshold was preregistered.',
+  matchedMemoryControls,
+  interpretation: 'Runner-level paired mechanism experiment only. Capture timing is primary; end-to-end timing is secondary. Negative timing means candidate faster. Primary memory is candidate-minus-baseline post-warmup process-tree PSS retention increment; claim-arm memory is also reported as a runner-matched difference-in-differences against the workload-matched large-csp retention-free control. Sweep and total deltas are secondary. No promotion threshold was preregistered.',
 }
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true })
@@ -243,7 +271,13 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     '|---|---|---:|---:|---:|---:|---:|---:|',
     ...rows,
     '',
-    'Negative timing is faster. Positive retention RSS delta means the candidate added more settled Chromium process-tree RSS during warmup than baseline.',
+    'Negative timing is faster. Positive retention PSS delta means the candidate added more settled Chromium process-tree proportional-set memory during warmup than baseline.',
+    '',
+    ...Object.entries(matchedMemoryControls).flatMap(([id, x]) => [
+      '- matched memory control ' + id + ' vs ' + x.control + ': ' +
+        (x.effectKb.available ? (x.effectKb.point / 1024).toFixed(2) + ' MiB [' +
+          x.effectKb.ci95.map((v) => (v / 1024).toFixed(2)).join(', ') + '] MiB' : 'unavailable'),
+    ]),
     '',
   ].join('\n'))
 }

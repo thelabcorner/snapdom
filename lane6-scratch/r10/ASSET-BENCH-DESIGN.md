@@ -1,210 +1,291 @@
-# AS-BLOB v2 — hosted benchmark design and remaining falsifiers
+# AS-BLOB v2 — hosted evidence protocol
 
-Owner: asset-frontier. Worktree: `Documents/GitHub/snapdom-v3-r10-asset-frontier`, branch
-`perf/v3-r10-asset-frontier`, parent `c523ddb`.
+Mechanism candidate: `d391556b80be7a6d97bc4834d2ce6e24137515b2`
+Frozen baseline: `c523ddb6e141846d55af1c8f315f65babbc32a7e`
+Measurement branch: `perf/v3-r10-asset-frontier`
 
-**Nothing in this document has been timed.** No browser ran on this branch. Every number below is
-either a count the code already computes deterministically, or a threshold the harness proposes.
-The claims are scoped accordingly, and §6 lists what would still have to be measured.
+**Browser/performance work is GitHub-Actions-only.** Local work on this branch is limited to source
+proofs, static contracts, algebra and orchestration. The measurement head is intentionally distinct
+from the mechanism SHA: harness edits must never silently redefine the candidate.
 
-## 1. The claim, stated so it can be wrong
+## 1. Mechanism and scoped claim
 
-AS-BLOB retains the `Blob` that `snapFetch` produced alongside the data URL it memoizes in
-`cache.image`, so a repeat capture can hand `compress`'s worker the bytes by reference instead of
-a base64 string it must structured-clone and decode again.
+AS-BLOB retains the `Blob` returned by `snapFetch` beside the memoized image data URL. On a
+**repeat capture whose geometry changes the compression cache key**, the candidate can post the Blob
+to the compression worker instead of structured-cloning a multi-megabyte base64 string and making
+the worker decode that string back to bytes.
 
-**Scope: repeat, cache-soft captures whose geometry changes the compress memo key.** Nothing
-else. Specifically it claims nothing when:
+The claim is deliberately narrow:
 
-| Condition | Why there is no saving |
-|---|---|
-| Repeat capture at the same `scale` AND same `dpr` | `cache.compress` answers from its memo on an exact source match, before any decode. `__assetRoutes.memo` counts it. |
-| Payload under `WORKER_MIN_PAYLOAD_CHARS` (64 KiB of base64) | Takes the main thread by design; below it the worker loses. No Blob is retained. |
-| `compress: false` | `compressCloneAssets` returns before any decode. No Blob is retained. |
-| Worker route closed (no `Worker`/`OffscreenCanvas`, or a CSP that forbids blob workers) | Falls to the main thread. No Blob is retained, and any already retained is purged. |
-| Cold capture | The fetch already had the Blob and already attached it. |
+- repeat capture;
+- `cache: 'soft'`, `burst: false`, `compress: true`;
+- source image cache already warm;
+- compression geometry changes, so `cache.compress` misses;
+- payload is at least `WORKER_MIN_PAYLOAD_CHARS`;
+- worker route is healthy.
 
-This is **not** a global speed claim. On a cold capture, a same-geometry repeat, or a page of
-icons, AS-BLOB is a no-op by construction, and the arms for those must show no delta.
+Expected no-op regimes:
 
-## 2. How the counters are read — and why they are not on the result
+- same-geometry repeat: compression memo returns before a worker;
+- small payload: below worker threshold;
+- `compress:false`;
+- worker route unavailable / CSP-blocked;
+- cold capture: the fetch already owns the Blob, so retention itself is not the claimed saving.
 
-`result.assets` was written and then cut. A measurement surface is not a reason to widen
-`CaptureResult`: `types/snapdom.d.ts` and `src/api/snapdom.js` are byte-identical to `c523ddb` in
-this branch, and that is a deliberate acceptance condition.
+The 64 MiB `MAX_IMAGE_BLOB_BYTES` cap is a **hypothesis**, not accepted policy.
 
-The tallies live on `options.__assetRoutes` — internal, set by `compressCloneAssets`, deleted at the
-top of each `captureDOM` alongside the other `__compression*` scratch fields. The harness reaches
-them with a caller-local plugin:
+## 2. Immutable scientific identity
 
-```js
-const routeReader = {
-  name: 'r10-route-reader',
-  afterRender(context) { window.__routes = { ...(context.__assetRoutes || {}) } },
-}
-const r = await snapdom(el, { cache: 'soft', burst: false, plugins: [routeReader], scale, dpr })
+The hosted workflow records three independent identities:
+
+- **measurementGitSha** — the harness/workflow commit;
+- **candidateGitSha** — exact `d391556...`;
+- **baselineGitSha** — exact `c523ddb...`.
+
+The root checkout is the measurement head. Candidate and baseline are compiled from separate exact
+sub-checkouts. The prepare job also verifies that all product/build inputs in the measurement head
+remain byte-equivalent to the frozen candidate mechanism before any benchmark is admitted.
+
+`prepared.json` freezes:
+
+- bundle SHA-256s;
+- Node and Playwright versions;
+- mechanism constants;
+- runner count = 6;
+- paired timing samples = 8;
+- warmups = 2;
+- measurement-file SHA-256 manifest;
+- GitHub run identity.
+
+Every runner revalidates those identities, and the aggregate refuses missing, duplicated,
+identity-mismatched or non-finite preregistered evidence.
+
+## 3. Deterministic fixtures
+
+No binary benchmark asset is committed.
+
+Each fresh runner generates, before any browser launch/timing:
+
+- **large** — 1200×800 deterministic high-entropy RGBA PNG; its data URL is asserted to exceed the
+  worker threshold by more than 10×;
+- **small** — 96×96 deterministic compressible PNG; asserted below the worker threshold.
+
+Raw runner artifacts record dimensions, encoded bytes, data-URL character count and SHA-256.
+Each page contains one image, so one capture must terminate in exactly one asset route.
+
+## 4. Conditions
+
+All captures explicitly use `cache:'soft'`, `burst:false`, `compress:true`,
+`embedFonts:false`.
+
+| condition | fixture | geometry | role |
+|---|---|---|---|
+| `large-same` | large | scale=1, dpr=1 | timing null; compression memo after warmup |
+| `large-scale` | large | 8 unique scale targets, 1.15×…1.71× | primary claim path |
+| `large-width` | large | 8 unique width targets, 1.10×…1.52× | second claim path through `options.width/rootWidth` |
+| `small-scale` | small | 8 unique scale targets | below-threshold negative control |
+| `large-csp` | large | 8 unique scale targets | matched worker-negative control |
+
+`large-width` replaces the original `large-dpr` arm. The old DPR and scale arms were algebraically
+the same effective density (`scale*dpr`) and therefore duplicated the same worker workload.
+
+The CSP page permits the same script/style/image behavior as the normal page, including inline
+styles, and changes only the intended worker permission: `worker-src 'none'`.
+
+## 5. Timing acquisition
+
+Baseline and candidate use separate pages/contexts in the **same hosted Chromium process**.
+
+Each condition:
+
+1. creates pages in crossed order;
+2. performs two unmeasured warm captures per side;
+3. measures 8 paired captures;
+4. alternates AB/BA so every runner is exactly 4 candidate-first / 4 baseline-first.
+
+The runner effect is an order-stratified mean:
+
+```
+L = 1/2 * (mean(log(C/B) | candidate first) +
+           mean(log(C/B) | baseline first))
 ```
 
-`afterRender(context)` runs after the clone is serialized (`src/engines/svg.js`), so the tallies
-are final. The plugin reads and returns, mutating nothing, so arm A1 and arm A2 differ only in
-geometry. This path is what `assets-bench.mjs` uses and it is the only supported way to observe
-the routes.
+The artifact also records `orderBiasLog` as a first-position diagnostic.
 
-## 3. Fixtures
+### Primary vs secondary timer
 
-No binary fixture is committed. Each fresh runner generates two deterministic valid PNGs in pure
-Node **before any browser is launched or timed**, and the raw artifact records dimensions, encoded
-bytes, data-URL character count and SHA-256:
+The page records three timings from the same capture:
 
-- `large` — 1200×800 deterministic high-entropy RGBA. Its encoded data URL is asserted to be more
-  than 10× `WORKER_MIN_PAYLOAD_CHARS`, so the worker/Blob route is unquestionably eligible.
-- `small` — 96×96 deterministic compressible checker. Its encoded data URL is asserted below the
-  worker threshold, so no worker route may execute.
+- **captureMs** — `snapdom(...)` through capture/compression completion (**primary**);
+- **renderMs** — `result.toCanvas()`;
+- **totalMs** — capture + canvas (**secondary end-to-end**).
 
-The tests generate the fixtures too, so threshold membership is a contract rather than an assumption
-about a checked-in JPEG. Each benchmark page contains exactly **one** fixture, making every route
-counter attributable to that fixture.
+This prevents symmetric canvas rasterization from diluting the mechanism-level estimand while
+retaining the user-visible end-to-end effect.
 
-## 4. Paired conditions and acquisition
+## 6. Independent route proof
 
-`cache: 'soft'`, `burst: false`, `compress: true` and `embedFonts: false` are explicit on every
-capture. Baseline is exact `c523ddb6e141846d55af1c8f315f65babbc32a7e`; candidate is the exact
-workflow head containing AS-BLOB v2.
+Candidate internal counters are read through a caller-local `afterRender(context)` plugin and never
+added to the public CaptureResult API.
 
-| condition | fixture | CSP | timed geometry | role |
-|---|---|---|---|---|
-| `large-same` | large | none | constant scale=1,dpr=1 | null: after warmup the compress memo must answer |
-| `large-scale` | large | none | seven unique scale targets | claim path: image cache warm, compress memo miss, Blob worker expected |
-| `large-dpr` | large | none | seven unique dpr targets | same claim through density |
-| `small-scale` | small | none | seven unique scale targets | negative control: payload too small for any worker route |
-| `large-csp` | large | `worker-src 'none'` | seven unique scale targets | negative control: worker construction blocked, main fallback required |
+Additionally, **both candidate and frozen baseline pages instrument the browser Worker API before
+their bundle imports**. Per-capture telemetry records:
 
-Each condition begins with two unmeasured scale=1,dpr=1 captures. Unique scale/dpr values are used for
-claim arms so every measured sample changes the compress memo key while keeping the **image** cache
-warm; repeating scale=2 seven times would only measure the first miss and six compress-memo hits.
+- Worker construction attempts;
+- successful construction;
+- `postMessage`;
+- worker messages;
+- worker errors.
 
-### Timing
+That closes the largest confound in the first hosted run: baseline `c523ddb` has no
+`__assetRoutes`, so a silent baseline worker fallback could otherwise make the candidate look
+artificially faster.
 
-Baseline and candidate live in separate pages/contexts of the **same Chromium process**. Every
-measured pair is crossed AB/BA by `replicate + condition + sample` parity. The runner artifact
-retains all seven raw pairs and exports one mean log(candidate/baseline) point per condition.
-Aggregation consumes exactly one point per fresh VM.
+For one-image pages the candidate must terminate in exactly one route:
 
-### Route gates
+- same-geometry measured sample: `memo=1`;
+- claim sample: `workerBlob=1`, `workerString=0`, `main=0`;
+- small negative: `main=1`;
+- CSP negative: `main=1`.
 
-Candidate route counters are read only through the local `afterRender(context)` plugin. Baseline
-must expose no counter object. The harness fails when:
+Claim captures for **both baseline and candidate** must independently show one worker post, one
+worker response and zero worker errors. A post that lands but later times out/falls back no longer
+passes the claim gate.
 
-- `large-same` does not terminate at `memo`;
-- either claim condition fails to execute `workerBlob > 0`, or executes `workerString`;
-- `small-scale` executes any worker route;
-- `large-csp` executes any worker route or fails to execute `main > 0`.
+Warmup is also asserted:
 
-The CSP page permits its own external module/style/image resources and denies **only** workers:
-`worker-src 'none'`. This avoids the old prototype's invalid negative control, whose default-src
-policy could block the benchmark page itself.
+- warmup #1 proves the expected worker/main route;
+- warmup #2 proves the compression memo is actually warm.
 
-### Route gates, asserted not eyeballed
+## 7. Native-memory acquisition
 
-The tallies are counted on the branch that actually ran. `workerBlob`/`workerString` are
-incremented **after a `postMessage` that landed**, inside `workerDownsample`, past the memo hit,
-the inflight share, the container-header probe, the size threshold and the worker-availability
-check. A `postMessage` that *throws* is not credited: it falls through to the main thread and is
-counted in `main`, because no worker ran. Counting Blob *presence* on the clone would credit the
-Blob route for images that never reached a worker.
+JavaScript heap is not used as a proxy for Blob/native memory.
 
-The harness fails, rather than reports, when:
+Each side/condition gets a **fresh Chromium BrowserServer process tree**. The long-lived timing
+browser is closed before memory acquisition begins.
 
-- the `afterRender` plugin never published `__assetRoutes`;
-- a `small` raster reports `workerBlob !== 0 || workerString !== 0`;
-- `worker-src 'none'` still reports a worker route;
-- `worker-src 'none'` with a large raster reports `main === 0` (the route closed but nothing took
-  over, which would mean the gate broke the capture rather than rerouting it).
+Three settled states are measured:
 
-## 5. RSS, the settle gate, and the retention cap
+1. **initial** — page and source image loaded, before any snapDOM capture;
+2. **warmed** — after the two matched warm captures; this is where candidate Blob retention exists;
+3. **final** — after the unique-geometry sweep.
 
-### 5a. The 64 MiB cap is a hypothesis, not a policy
+Primary memory effect per side:
 
-`MAX_IMAGE_BLOB_BYTES` is exported so this harness can record it in its provenance block and so the
-value can be moved without hunting for a literal. **No measurement supports it.** It is a guess
-that bounds obvious abuse and it must not be defended as correct.
+```
+retention growth = PSS(warmed) - PSS(initial)
+```
 
-The run's provenance records `retentionCapBytes` **and** `retentionCapStatus: "HYPOTHESIS"`. Read
-the printed table before defending the number: if the claim arms (A2/A3) sit well above the null
-arms (A1/B1/C1), the cap is too high and must be **lowered and re-run** before this ships.
-Lowering costs nothing but the saving, because a dropped Blob leaves its data URL in place — so
-the cap is the safe dial to turn when the RSS column disagrees with the timing column.
+Per-runner candidate effect:
 
-### 5b. Measuring it
+```
+candidate retention growth - baseline retention growth
+```
 
-Blobs are not JS-heap objects, so **`performance.memory` is not used at all**. RSS is measured from
-Linux `/proc` over the entire Chromium process tree:
+### PSS, not summed VmRSS
 
-1. each side/condition launches a fresh `chromium.launchServer()`;
-2. the BrowserServer root PID is mandatory;
-3. `/proc/<pid>/task/<pid>/children` is walked recursively;
-4. `VmRSS` is summed across the live tree;
-5. **pre-capture** RSS settles after the page/source image is loaded but before snapDOM runs;
-6. two unmeasured warm captures run, which is when AS-BLOB first retains the Blob;
-7. **post-warmup** RSS settles; `postWarmup - preCapture` is the primary retention increment;
-8. the seven unique-geometry captures run;
-9. **post-sweep** RSS settles; this yields a secondary incremental sweep cost and total cost.
+The primary metric is summed `Pss:` from `/proc/<pid>/smaps_rollup` across the Chromium process
+tree. PSS apportions shared pages instead of counting each mapping in full.
 
-There is **no fallback** on non-Linux, missing `/proc`, missing BrowserServer PID, or a failure to
-settle. Each memory side gets a fresh Chromium process so one module's retained Blob cannot
-contaminate the other's RSS. Side order is crossed by runner/condition parity.
+Diagnostics retained alongside PSS:
 
-The six fresh-runner aggregate reports Student-t intervals for timing log ratios, the primary
-`candidate warmup increment - baseline warmup increment`, the post-warm sweep difference, and the
-total pre-capture→post-sweep difference. The 64 MiB retention cap remains a hypothesis regardless of
-whether a single runner looks favorable.
+- summed `VmRSS`;
+- summed `RssAnon + RssShmem`;
+- process count;
+- exact sorted `pid:starttime` identity set.
 
-## 6. What is proven without a browser, and what is not
+A settle window is accepted only when:
 
-**Proven browser-free:** 24 mechanism assertions in `npm run test:asset-proof` plus 15 R10 experiment/workflow/aggregate contracts (`node --test`), with no Playwright launch:
+- the exact process identity set stays unchanged;
+- the PSS range across the window is ≤1 MiB;
+- five consecutive transitions at 500 ms intervals satisfy the window;
+- sampling completes within the bounded 60-sample envelope.
 
-- the worker threshold has exactly one definition, shared by compress and the retention gate;
-- a small payload retains **zero** blob bytes, even when told the worker could take it;
-- `compress: false` and a closed worker route both retain zero blob bytes;
-- the byte budget is **authoritative** — a swept Blob is returned as `undefined`, and a Blob added
-  over budget is stored gone *and* reported gone, so the two can never disagree;
-- the sweep is oldest-first, keeps every data URL, skips entries that already lost their Blob, and
-  does not let a repeat capture re-pin its own payload;
-- `cache: 'disabled'` clears payloads and Blobs together;
-- `compressWorkerRouteSupported()` answers **immediately** with no construction, and is false
-  unless *both* `Worker` and `OffscreenCanvas` exist — so a page without either retains nothing
-  from its first capture;
-- `dropRetainedImageBlobs()` clears every sidecar, reports its count, keeps all data URLs, and is
-  idempotent. This is the CSP-first-capture path: `disableWorkers()` calls it the instant a
-  construction fails, so dead native memory is not left behind waiting for a budget sweep that may
-  never come.
+Missing root process, incomplete procfs memory identity, missing PSS, process-tree churn that never
+settles, or a vanished root fail closed.
 
-**Not proven, and the reason:**
+Secondary memory diagnostics:
 
-| Open | Why it cannot close here | Where it closes |
-|---|---|---|
-| The worker route is actually **reached** on `large-scale` / `large-dpr` | Needs a real capture and a real `postMessage` | §4 claim conditions: `__assetRoutes.workerBlob > 0` |
-| The saving is real | Needs a clock | §4, paired AB/BA runner log-points across 6 fresh VMs |
-| Retention does not regress RSS | Needs hosted Chromium native/process memory | §5 process-tree VmRSS |
-| Pixels are unchanged | Needs a browser | Visual suite, `REQUIRE_VISUAL=1 BROWSER=all` |
-| CSP `worker-src 'none'` really closes the route | Needs a real CSP | §4 `large-csp` |
-| **The 64 MiB cap is the right value** | **No evidence either way** | **§5a: lower it if the RSS column says so** |
-| A thrown `postMessage` lands in `main`, not `worker*` | `compress.js` is not importable by `node --test` (utils/css.js uses extensionless specifiers), so the counter's position relative to the `try` cannot be pinned without a bundler or a browser | A hosted arm, or a unit test with a stubbed `Worker` |
-| The `64 KiB` worker threshold is still the right value | A sweep is a separate campaign | Not in scope |
+- post-warm sweep delta;
+- total initial→final delta.
 
-## 7. Why retention is gated off rather than fed to the main thread
+### Matched memory control
 
-The alternative to arm C1's gate was to make the main-thread decode consume the Blob too. That
-means replacing `new Image()` + `decode()` with `createImageBitmap(blob)` in `loadImage` — a
-different decode path, with its own color-space and premultiplication behaviour, whose pixel
-equivalence cannot be established without a browser. Fidelity is the project's second
-non-negotiable and outranks a memory saving that only applies where the worker route is already
-unavailable. The gate is a boolean read with no pixel surface. Recorded so a later change can
-revisit it with a browser in hand.
+`large-csp` is the workload-matched retention-free control. The aggregate additionally reports,
+for each claim arm, the runner-level difference-in-differences:
 
-## 8. Relationship to the rejected AS-SPLIT
+```
+(C-B retention PSS)_claim - (C-B retention PSS)_large-csp
+```
 
-`scripts/as-split-eviction-proof.mjs` (committed in `a470c65`) is the executed falsification of
-giving the assembled `@font-face` CSS its own cache map: 12 avoided payload fetches over 400
-captures, 12 over the next 200. The churn is self-limiting because a refetched payload re-inserts
-at the FIFO tail. That mechanism stays rejected; this one replaces it.
+This is diagnostic evidence for the retained-Blob memory cost; it is **not** a post-hoc correction
+to timing.
+
+`large-same` is a timing null, **not a memory null**: the first candidate capture still retains the
+large Blob even though later captures hit the compression memo.
+
+## 8. First hosted evidence — historical run `37098613822`
+
+Measurement head: `cc8beb7e95cdb3c7883cd56f0467a45a8912a151`
+Candidate mechanism: exact `d391556...`
+Baseline: exact `c523ddb...`
+Fresh Chromium runners: 6/6 complete.
+
+This first run used the earlier VmRSS memory implementation and did **not** independently instrument
+the baseline worker route, so its timing result is strong hypothesis evidence but not final
+promotion evidence; its memory result is superseded by the PSS confirmation protocol above.
+
+Runner-level timing:
+
+| condition | capture effect | 95% runner CI | end-to-end effect | 95% runner CI |
+|---|---:|---:|---:|---:|
+| `large-same` | +0.99% | [-0.76,+2.77]% | +0.56% | [-1.37,+2.52]% |
+| `large-scale` | **-57.36%** | **[-59.38,-55.25]%** | **-48.20%** | **[-50.45,-45.84]%** |
+| `large-dpr` (now retired duplicate) | **-56.58%** | **[-56.89,-56.28]%** | **-46.77%** | **[-47.25,-46.29]%** |
+| `small-scale` | +0.22% | [-5.83,+6.66]% | +0.08% | [-5.66,+6.17]% |
+| `large-csp` | +2.45% | [-7.25,+13.17]% | +1.15% | [-7.14,+10.17]% |
+
+The large claim-path effect is orders of magnitude beyond the same-geometry and small-payload nulls.
+The confirmation run exists to close the remaining baseline-route and native-memory confounds—not
+because the first timing signal was marginal.
+
+Historical VmRSS retention point estimates were near zero on `large-scale`, but that methodology
+double-counted shared Chromium mappings and is **not used to certify the cap**.
+
+## 9. Browser-free proof surface
+
+Current local work executes no browser.
+
+The contract suite proves, among other things:
+
+- deterministic fixture threshold membership;
+- Blob retention gate and byte-budget authority;
+- sidecar purge semantics;
+- candidate/baseline/measurement identity separation;
+- retry-stable artifacts;
+- exact 4/4 AB/BA balance;
+- distinct scale and width geometry paths;
+- procfs status/PSS/start-time parsing;
+- process-tree PSS aggregation;
+- root disappearance fails closed;
+- PID/process-set churn cannot masquerade as stable memory;
+- monotone PSS drift times out fail-closed;
+- one complete point per preregistered runner;
+- wrong measurement identity, fixture drift, missing/non-finite timing or memory evidence all produce
+  `INCOMPLETE_EVIDENCE`.
+
+## 10. Remaining hosted falsifiers
+
+The confirmation run must still answer:
+
+1. Does the frozen baseline independently execute and complete its worker route on every claim sample?
+2. Does the candidate independently execute and complete the Blob worker route with no main fallback?
+3. Does the large timing effect reproduce under exact route telemetry and the width-branch claim?
+4. Do null/control timing intervals remain compatible with no material effect?
+5. What is the PSS cost of retained Blobs, including the matched `large-csp` difference-in-differences?
+6. Does the 64 MiB cap need to be lowered before any production merge?
+7. Do existing hosted cross-browser fidelity suites remain exact after the mechanism is integrated?
+
+No promotion threshold is invented after seeing the data. The R10 experiment remains evidence
+collection; production admission stays subordinate to the R9 fail-closed governor and fidelity
+requirements.

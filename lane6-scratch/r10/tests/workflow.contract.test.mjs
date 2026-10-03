@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const source = fs.readFileSync(path.resolve(process.cwd(), '.github/workflows/r10-asset-bench.yml'), 'utf8')
+const harnessSource = fs.readFileSync(path.resolve(process.cwd(), 'lane6-scratch/r10/assets-bench.mjs'), 'utf8')
+const entrySource = fs.readFileSync(path.resolve(process.cwd(), 'src/index.js'), 'utf8')
 
 test('R10 workflow has prepare, fresh-runner and aggregate stages only', () => {
   for (const job of ['prepare', 'runner', 'aggregate']) {
@@ -50,4 +52,17 @@ test('only aggregate consumes the fresh-runner artifacts', () => {
   assert.match(source, /Aggregate one point per fresh runner/)
   assert.match(source, /asset-aggregate\.mjs/)
   assert.match(source, /--expected=6/)
+})
+
+test('hosted pages instrument Worker before dynamically importing the served snapdom bundle', () => {
+  assert.match(entrySource, /export \{ snapdom \} from/)
+  const scriptStart = harnessSource.indexOf('function scriptFor(side)')
+  const scriptEnd = harnessSource.indexOf('\nasync function serve()', scriptStart)
+  const pageBuilder = harnessSource.slice(scriptStart, scriptEnd)
+  const workerWrap = pageBuilder.indexOf('"  window.Worker = InstrumentedWorker"')
+  const dynamicImport = pageBuilder.indexOf('"const { snapdom } = await import')
+  assert.ok(workerWrap >= 0, 'Worker instrumentation missing from emitted page script')
+  assert.ok(dynamicImport > workerWrap, 'snapdom page import must be emitted after Worker instrumentation')
+  assert.equal(pageBuilder.includes('{ default: snapdom } = await import'), false)
+  assert.match(pageBuilder, /const bundle = side === 'candidate' \? '\/candidate\.mjs' : '\/baseline\.mjs'/)
 })
