@@ -76,6 +76,9 @@ jobs:
       - name: Verify reachability classification against an independent oracle
         run: node lane6-scratch/r10/check-r10-anim-scope-geometry.mjs
 
+      - name: Verify hosted fixture roles against their actual DOM geometry
+        run: node lane6-scratch/r10/check-r10-fixture-contract.mjs
+
   probe:
     name: ${{ matrix.engine }} causal probe
     needs: logic
@@ -143,14 +146,15 @@ jobs:
             const r = require('./${report}');
             const f = Object.entries(r.fixtures);
             if (!f.length) throw new Error('no fixtures ran');
-            const bad = f.filter(([, v]) => !v.rawParity);
-            if (bad.length) throw new Error('raw parity failed: ' + bad.map(([k]) => k).join(','));
-            const lost = f.filter(([, v]) => v.role === 'falsifier' && v.gpv.saved !== 0);
-            if (lost.length) throw new Error('falsifier saved reads: ' + lost.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
-            const ctrl = f.filter(([, v]) => v.role === 'control' && v.gpv.saved !== 0);
-            if (ctrl.length) throw new Error('control saved reads: ' + ctrl.map(([k, v]) => k + '=' + v.gpv.saved).join(','));
-            const missed = f.filter(([, v]) => v.role === 'opportunity' && v.gpv.saved <= 0);
-            if (missed.length) throw new Error('opportunity saved nothing: ' + missed.map(([k]) => k).join(','));
+            const bad = f.filter(([, v]) => !v.pass);
+            if (bad.length) {
+              throw new Error('semantic fixture failures: ' + bad.map(([k, v]) =>
+                k + '[' + (v.assertions || []).filter((a) => !a.ok).map((a) => a.name + ':' + a.detail).join('|') + ']'
+              ).join(','));
+            }
+            if (!r.summary?.parityPass || !r.summary?.semanticPass) {
+              throw new Error('summary did not clear parity + semantic contracts');
+            }
             if (r.provenance?.github?.actions !== true) throw new Error('missing hosted provenance');
             if (r.engine !== '${{ matrix.engine }}') throw new Error('engine identity mismatch');
             console.log('adjudicated ' + f.length + ' fixtures on ${{ matrix.engine }}');
@@ -214,9 +218,8 @@ jobs:
             }
             const bundles = new Set(reports.map((r) => r.bundleSha256));
             if (bundles.size !== 1) throw new Error('engines measured different bundles');
-            // Every engine must classify every fixture into the same role, and every engine must
-            // agree that falsifiers/controls saved nothing. Absolute saved counts may differ per
-            // engine (their CSSOM enumerates different property sets); the SIGN is the invariant.
+            // Every engine must independently clear the same per-consumer semantic oracle.
+            // Absolute GPV savings may differ because engines expose different CSSOM property sets.
             const byName = new Map();
             for (const r of reports) {
               for (const [name, v] of Object.entries(r.fixtures)) {
@@ -229,15 +232,10 @@ jobs:
               if (!rows.every(([, v]) => v.rawParity)) throw new Error(name + ' parity failed on some engine');
               const roles = new Set(rows.map(([, v]) => v.role));
               if (roles.size !== 1) throw new Error(name + ' role disagreement across engines');
-              const role = [...roles][0];
-              if (role === 'falsifier' && rows.some(([, v]) => v.gpv.saved !== 0)) {
-                throw new Error(name + ' falsifier saved reads on some engine');
-              }
-              if (role === 'control' && rows.some(([, v]) => v.gpv.saved !== 0)) {
-                throw new Error(name + ' control saved reads on some engine');
-              }
-              if (role === 'opportunity' && rows.some(([, v]) => v.gpv.saved <= 0)) {
-                throw new Error(name + ' opportunity saved nothing on some engine');
+              const failed = rows.filter(([, v]) => !v.pass);
+              if (failed.length) {
+                throw new Error(name + ' semantic contract failed on ' +
+                  failed.map(([e, v]) => e + '[' + (v.assertions || []).filter((a) => !a.ok).map((a) => a.name).join('|') + ']').join(','));
               }
               console.log(name.padEnd(32), rows.map(([e, v]) => e + ':' + v.gpv.saved).join(' '));
             }

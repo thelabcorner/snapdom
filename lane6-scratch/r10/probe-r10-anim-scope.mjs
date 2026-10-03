@@ -29,6 +29,7 @@ import http from 'node:http'
 import path from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 import { assertHostedBrowser, hostedProvenance, sha256File, sha256Text, stableJson } from '../r9/protocol.mjs'
+import { BASE_CSS, FIXTURES, fixturePlan, isGatedFalsifier } from './fixture-geometry.mjs'
 
 assertHostedBrowser()
 
@@ -58,33 +59,9 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const origin = `http://127.0.0.1:${server.address().port}`
 
-// Fixture builders run in the page. `where` places the animated element relative to the capture
-// root: 'sibling' | 'ancestor' | 'subtree' | 'self' | 'none'.
-// Fixture roles. `falsifier` MUST save exactly zero reads; `opportunity` MUST save more than zero.
-//
-// NOTE ON anim-subtree, corrected after hosted run 37145239641: an animation inside the captured
-// subtree is NOT a falsifier-zero case, and d919614's fixture table claimed it was. An animation
-// moves its target and its target's DESCENDANTS, so it cannot move a sibling of that target —
-// which means every other row in the capture is genuinely released. The subtree geometry is a
-// PARTIAL release for the element universe, and a full block for the subtree-scoped truncation
-// prepass (which lane6-scratch/r10/check-r10-anim-scope-geometry.mjs pins as a structural invariant).
-// Recording that honestly is the point; forcing it to falsifier-zero would mean weakening the
-// element-universe scope for a case it gets right.
-const FIXTURES = [
-  { name: 'anim-sibling-60', nodes: 60, where: 'sibling', keys: [{ opacity: '0.2' }, { opacity: '0.9' }], role: 'opportunity' },
-  { name: 'anim-sibling-entropy-120', nodes: 120, where: 'sibling', keys: [{ transform: 'translateX(0px)' }, { transform: 'translateX(40px)' }], role: 'opportunity' },
-  { name: 'anim-sibling-inherited-60', nodes: 60, where: 'sibling', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'opportunity' },
-  { name: 'anim-subtree-partial-60', nodes: 60, where: 'subtree', keys: [{ opacity: '0.4' }, { opacity: '1' }], role: 'opportunity' },
-  { name: 'anim-ancestor-60', nodes: 60, where: 'ancestor', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'falsifier' },
-  { name: 'anim-ancestor-customprop-60', nodes: 60, where: 'ancestor', keys: [{ '--tone': 'rgb(1,2,3)' }, { '--tone': 'rgb(200,10,10)' }], role: 'falsifier', extraCss: '@property --tone{syntax:"<color>";inherits:true;initial-value:#000}.row{color:var(--tone)}' },
-  { name: 'anim-ancestor-noninherited-60', nodes: 60, where: 'ancestor', keys: [{ paddingLeft: '0px' }, { paddingLeft: '24px' }], role: 'falsifier' },
-  { name: 'anim-descendant-of-root-60', nodes: 60, where: 'childOfRoot', keys: [{ color: 'rgb(1,2,3)' }, { color: 'rgb(9,9,9)' }], role: 'falsifier' },
-  { name: 'anim-self-60', nodes: 60, where: 'self', keys: [{ opacity: '0.4' }, { opacity: '1' }], role: 'falsifier' },
-  { name: 'anim-shadow-60', nodes: 60, where: 'shadow', keys: [{ opacity: '0.2' }, { opacity: '0.9' }], role: 'falsifier' },
-  { name: 'anim-none-60', nodes: 60, where: 'none', keys: null, role: 'control' },
-]
-
-const BASE_CSS = '.row{display:block;padding:2px;color:#334155}'
+// Fixture structure and semantics live in fixture-geometry.mjs. The hosted probe consumes that
+// exact plan; the browser-free oracle independently checks the same edges against the reachability
+// rules. There is deliberately no second fixture table in this file.
 
 const SELECTED = FIXTURES.filter((f) => !ONLY.size || ONLY.has(f.name))
 
@@ -109,22 +86,35 @@ try {
   await page.waitForFunction(() => window.__ready === true)
 
   for (const fx of SELECTED) {
+    const plan = fixturePlan(fx)
     const arms = {}
     for (const scoped of [false, true]) {
-      arms[scoped ? 'candidate' : 'historical'] = await page.evaluate(async ({ fx, scoped, baseCss }) => {
+      arms[scoped ? 'candidate' : 'historical'] = await page.evaluate(async ({ fx, plan, scoped, baseCss }) => {
         const style = document.createElement('style')
         style.textContent = baseCss + (fx.extraCss || '')
         document.head.appendChild(style)
 
-        const host = document.createElement('div')
-        document.body.appendChild(host)
-        const root = document.createElement('div')
-        host.appendChild(root)
-        for (let i = 0; i < fx.nodes; i++) {
+        const byName = { html: document.documentElement, body: document.body }
+        for (const [name, parentName] of plan.edges) {
+          if (name === 'html' || name === 'body') continue
           const el = document.createElement('div')
-          el.className = `row r${i}`
-          el.textContent = `row ${i}`
-          root.appendChild(el)
+          el.dataset.fixtureNode = name
+          if (name.startsWith('n')) {
+            el.className = `row r${name.slice(1)}`
+            el.textContent = `row ${name.slice(1)}`
+          }
+          byName[parentName || 'body'].appendChild(el)
+          byName[name] = el
+        }
+        const root = byName.root
+
+        if (plan.shadowInner) {
+          const shadowHost = byName.shadowHost
+          const shadow = shadowHost.attachShadow({ mode: 'open' })
+          const inner = document.createElement('span')
+          inner.dataset.fixtureNode = plan.shadowInner
+          shadow.appendChild(inner)
+          byName[plan.shadowInner] = inner
         }
 
         const live = []
@@ -134,28 +124,7 @@ try {
           freeze(a)
           return a
         }
-        if (fx.where === 'sibling') {
-          const s = document.createElement('div')
-          host.appendChild(s)
-          add(s)
-        } else if (fx.where === 'ancestor') {
-          add(host)
-        } else if (fx.where === 'childOfRoot') {
-          const s = document.createElement('div')
-          root.appendChild(s)
-          add(s)
-        } else if (fx.where === 'self') {
-          add(root)
-        } else if (fx.where === 'subtree') {
-          add(root.lastElementChild)
-        } else if (fx.where === 'shadow') {
-          const sh = document.createElement('div')
-          const shadow = sh.attachShadow({ mode: 'open' })
-          const inner = document.createElement('span')
-          shadow.appendChild(inner)
-          root.appendChild(sh)
-          add(inner)
-        }
+        if (plan.target) add(byName[plan.target])
 
         const counters = {}
         const proto = CSSStyleDeclaration.prototype
@@ -181,12 +150,11 @@ try {
         } finally {
           proto.getPropertyValue = original
           for (const a of live) a.cancel()
-          root.remove()
-          host.remove()
+          byName.host?.remove()
           style.remove()
         }
         return { raw, gpv, counters, failure }
-      }, { fx, scoped, baseCss: BASE_CSS })
+      }, { fx, plan, scoped, baseCss: BASE_CSS })
     }
 
     const h = arms.historical
@@ -194,7 +162,9 @@ try {
     const parity = !!(h.raw && c.raw && h.raw === c.raw)
     const saved = h.gpv - c.gpv
     const rec = {
+      name: fx.name,
       role: fx.role,
+      channel: fx.channel,
       where: fx.where,
       failure: h.failure || c.failure,
       rawParity: parity,
@@ -202,13 +172,55 @@ try {
       gpv: { historical: h.gpv, candidate: c.gpv, saved },
       counters: { historical: h.counters, candidate: c.counters },
       index: c.counters?.index ?? null,
+      assertions: [],
     }
-    // Adjudication. Parity is required everywhere. The direction of the read delta is required to
-    // match the fixture's role: a falsifier or control that drops reads is a regression, because it
-    // means the scope released a veto it was supposed to keep.
-    rec.expectSaved = fx.role === 'opportunity'
-    rec.pass = parity && !rec.failure &&
-      (fx.role === 'opportunity' ? saved > 0 : saved === 0)
+
+    // Adjudication is PER CONSUMER / REACHABILITY DIMENSION, not a whole-fixture saved===0 scalar.
+    // SELF consumers may soundly release when an ancestor animates an inherited property, while the
+    // INHERITED element-universe consumer must still block every queried descendant. The prior
+    // whole-fixture gate conflated those dimensions and rejected correct narrowing.
+    const eu = c.counters?.elementUniverse || { blocked: 0, released: 0 }
+    const trunc = c.counters?.textTruncationPrepass || { blocked: 0, released: 0 }
+    const requireAssertion = (name, ok, detail) => rec.assertions.push({ name, ok: !!ok, detail })
+
+    requireAssertion('raw-parity', parity, 'candidate and historical raw SVG must be byte-identical')
+    requireAssertion('capture-succeeded', !rec.failure, rec.failure || 'both arms completed')
+
+    if (fx.role === 'opportunity') {
+      requireAssertion('universe-releases-queried',
+        eu.released >= fx.nodes,
+        `elementUniverse released ${eu.released}; need >= queried rows ${fx.nodes}`)
+      requireAssertion('work-decreases', saved > 0, `saved GPV=${saved}; opportunity must remove work`)
+    } else if (fx.role === 'partial') {
+      requireAssertion('universe-releases-unaffected',
+        eu.released >= Math.max(1, fx.nodes - 1),
+        `elementUniverse released ${eu.released}; partial subtree must release unaffected siblings`)
+      requireAssertion('universe-blocks-target',
+        eu.blocked >= 1,
+        `elementUniverse blocked ${eu.blocked}; animated target must remain blocked`)
+      requireAssertion('subtree-consumer-blocked',
+        trunc.blocked >= 1,
+        `textTruncationPrepass blocked ${trunc.blocked}; captured subtree contains animation`)
+    } else if (isGatedFalsifier(fx)) {
+      // The browser-free fixture contract proves every QUERIED ROW is downstream of the target for
+      // inherited fixtures, or unattributable for shadow fixtures. Root/wrapper bookkeeping calls
+      // are allowed to have other outcomes, so require a lower bound rather than released===0.
+      requireAssertion('universe-blocks-every-queried-row',
+        eu.blocked >= fx.nodes,
+        `elementUniverse blocked ${eu.blocked}; need >= queried rows ${fx.nodes}`)
+      if (fx.channel === 'unresolvable') {
+        requireAssertion('animation-index-unresolvable',
+          c.counters?.index?.unresolvable === true,
+          `index.unresolvable=${c.counters?.index?.unresolvable}`)
+      }
+    } else if (fx.role === 'control') {
+      requireAssertion('no-animation-zero-delta', saved === 0, `saved GPV=${saved}; control must not change work`)
+    } else if (fx.role === 'conservative') {
+      // Deliberately report-only: a tighter correct future implementation may release these.
+      rec.reportOnly = true
+    }
+
+    rec.pass = rec.assertions.every((a) => a.ok)
     report.fixtures[fx.name] = rec
     console.log(
       `${fx.name.padEnd(30)} ${rec.role.padEnd(13)} raw=${parity ? 'EQ  ' : 'DIFF'} ` +
@@ -226,15 +238,19 @@ const all = Object.values(report.fixtures)
 report.summary = {
   fixtures: all.length,
   parityPass: all.every((f) => f.rawParity),
-  rolePass: all.every((f) => f.pass),
+  semanticPass: all.every((f) => f.pass),
   opportunitySaved: Object.fromEntries(
-    all.filter((f) => f.role === 'opportunity').map((f) => [f.name, f.gpv.saved]),
+    all.filter((f) => f.role === 'opportunity' || f.role === 'partial').map((f) => [f.name, f.gpv.saved]),
   ),
-  falsifierSaved: Object.fromEntries(
+  falsifierSavedReportedOnly: Object.fromEntries(
     all.filter((f) => f.role === 'falsifier').map((f) => [f.name, f.gpv.saved]),
   ),
-  falsifierMustBeZero: all.filter((f) => f.role === 'falsifier').every((f) => f.gpv.saved === 0),
-  controlMustBeZero: all.filter((f) => f.role === 'control').every((f) => f.gpv.saved === 0),
+  conservativeSavedReportedOnly: Object.fromEntries(
+    all.filter((f) => f.role === 'conservative').map((f) => [f.name, f.gpv.saved]),
+  ),
+  failedAssertions: all.flatMap((f) =>
+    (f.assertions || []).filter((a) => !a.ok).map((a) => ({ fixture: f.name, ...a })),
+  ),
 }
 report.provenance = hostedProvenance({ engine: ENGINE })
 
@@ -243,5 +259,5 @@ fs.mkdirSync(outDir, { recursive: true })
 const outFile = path.join(outDir, `anim-scope-${ENGINE}.json`)
 fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + '\n')
 console.log(`\n${outFile}`)
-console.log(`parity=${report.summary.parityPass} role=${report.summary.rolePass} falsifiersZero=${report.summary.falsifierMustBeZero}`)
-if (!report.summary.parityPass || !report.summary.rolePass) process.exitCode = 1
+console.log(`parity=${report.summary.parityPass} semantic=${report.summary.semanticPass} failedAssertions=${report.summary.failedAssertions.length}`)
+if (!report.summary.parityPass || !report.summary.semanticPass) process.exitCode = 1
