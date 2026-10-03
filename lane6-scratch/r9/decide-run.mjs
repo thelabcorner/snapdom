@@ -169,7 +169,7 @@ for (const name of expectedFixtures) {
   const reasons = []
   if (!fx.parity) reasons.push('raw parity failed')
   if (!fx.controlsPass) reasons.push('AA/BB equivalence controls failed')
-  if (!fx.stabilityPass) reasons.push(`CoV exceeded ${(phase.maxCov * 100).toFixed(1)}%`)
+  if (!fx.stabilityPass) reasons.push(`paired log-ratio SD exceeded ${phase.maxPairLogSd.toFixed(3)}`)
   if (knownNoOps.has(name) && !fx.candidateEquivalent) reasons.push('pre-registered no-op effect is not equivalent')
   fixtureDecision[name] = {
     primary: candidate.primaryFixtures.includes(name),
@@ -184,7 +184,8 @@ for (const name of expectedFixtures) {
     candidateWin: fx.candidateWin,
     candidateRegression: fx.candidateRegression,
     candidateEquivalent: fx.candidateEquivalent,
-    maxCov: fx.maxCov,
+    rawMaxCov: fx.rawMaxCov,
+    maxPairLogSd: fx.maxPairLogSd,
     reasons,
   }
   scientific.push(...reasons.map((r) => `${name}: ${r}`))

@@ -52,7 +52,7 @@ function phaseCheck(phase, name) {
   assertNumber(phase.epsilon, `phases.${name}.epsilon`, 0.001, 0.20)
   assertNumber(phase.controlBand, `phases.${name}.controlBand`, 0.005, 0.20)
   assertNumber(phase.equivalenceBand, `phases.${name}.equivalenceBand`, 0.005, 0.20)
-  assertNumber(phase.maxCov, `phases.${name}.maxCov`, 0.01, 0.50)
+  assertNumber(phase.maxPairLogSd, `phases.${name}.maxPairLogSd`, 0.01, 0.50)
   assertNumber(phase.seed, `phases.${name}.seed`, 0, 0xffffffff)
   assertNumber(phase.replicates, `phases.${name}.replicates`, 1, 8)
 }

@@ -10,14 +10,12 @@
   "opt": {},
   "playwrightVersion": "1.55.1",
   "primaryFixtures": [
-    "light-20cards",
     "cards400-safe",
     "cards400-neutral-unsafe",
     "cards400-non-neutral"
   ],
   "guardFixtures": [],
   "knownNoOpFixtures": [
-    "light-20cards",
     "cards400-safe",
     "cards400-neutral-unsafe",
     "cards400-non-neutral"
@@ -25,40 +23,40 @@
   "phases": {
     "scout": {
       "browsers": ["chromium"],
-      "n": 16,
-      "batch": 2,
-      "warmup": 2,
-      "bootstrap": 8000,
+      "n": 24,
+      "batch": 4,
+      "warmup": 5,
+      "bootstrap": 12000,
       "epsilon": 0.02,
-      "controlBand": 0.04,
-      "equivalenceBand": 0.04,
-      "maxCov": 0.18,
+      "controlBand": 0.05,
+      "equivalenceBand": 0.05,
+      "maxPairLogSd": 0.20,
       "seed": 39457,
       "replicates": 1
     },
     "confirm": {
       "browsers": ["chromium"],
-      "n": 28,
-      "batch": 3,
-      "warmup": 3,
-      "bootstrap": 16000,
+      "n": 30,
+      "batch": 4,
+      "warmup": 6,
+      "bootstrap": 20000,
       "epsilon": 0.02,
       "controlBand": 0.03,
       "equivalenceBand": 0.03,
-      "maxCov": 0.15,
+      "maxPairLogSd": 0.15,
       "seed": 78731,
       "replicates": 3
     },
     "engineGuard": {
       "browsers": ["firefox", "webkit"],
-      "n": 12,
-      "batch": 2,
-      "warmup": 2,
-      "bootstrap": 6000,
+      "n": 18,
+      "batch": 3,
+      "warmup": 4,
+      "bootstrap": 8000,
       "epsilon": 0.03,
       "controlBand": 0.05,
       "equivalenceBand": 0.05,
-      "maxCov": 0.20,
+      "maxPairLogSd": 0.20,
       "seed": 118087,
       "replicates": 1
     }

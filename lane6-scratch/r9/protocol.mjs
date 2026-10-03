@@ -81,17 +81,23 @@ export function rng(seed) {
 export const pctFromLog = (logRatio) => (Math.exp(logRatio) - 1) * 100
 
 export function crossoverEffect(forwardRows, reverseRows, seed, bootstrap = 12000) {
+  if (forwardRows.length !== reverseRows.length || !forwardRows.length) {
+    throw new Error('crossover rows must be non-empty and index-aligned')
+  }
   const forward = forwardRows.map((row) => Math.log(row.slot2 / row.slot1))
   const reverse = reverseRows.map((row) => Math.log(row.slot1 / row.slot2))
-  const logPoint = (mean(forward) + mean(reverse)) / 2
+  // Each index is one acquisition block. The forward and reverse layouts for that index are
+  // measured in the same interleaved round by bench-r9-controlled.mjs, so collapse them into
+  // one symmetric crossover effect BEFORE resampling. This preserves common-mode runner drift
+  // instead of independently bootstrapping temporally paired observations.
+  const blocks = forward.map((value, i) => (value + reverse[i]) / 2)
+  const logPoint = mean(blocks)
   const random = rng(seed)
   const draws = new Array(bootstrap)
   for (let i = 0; i < bootstrap; i++) {
-    let a = 0
-    let b = 0
-    for (let j = 0; j < forward.length; j++) a += forward[(random() * forward.length) | 0]
-    for (let j = 0; j < reverse.length; j++) b += reverse[(random() * reverse.length) | 0]
-    draws[i] = a / forward.length / 2 + b / reverse.length / 2
+    let total = 0
+    for (let j = 0; j < blocks.length; j++) total += blocks[(random() * blocks.length) | 0]
+    draws[i] = total / blocks.length
   }
   draws.sort((a, b) => a - b)
   const lo = draws[Math.min(draws.length - 1, Math.floor(draws.length * 0.025))]
@@ -100,7 +106,7 @@ export function crossoverEffect(forwardRows, reverseRows, seed, bootstrap = 1200
     logPoint,
     pct: pctFromLog(logPoint),
     ci95: [pctFromLog(lo), pctFromLog(hi)],
-    logRatios: { forward, reverse },
+    logRatios: { forward, reverse, blocks },
   }
 }
 

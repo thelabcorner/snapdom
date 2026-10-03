@@ -48,7 +48,7 @@ const BOOT = Math.max(1000, Math.floor(numberArg('bootstrap', 12000)))
 const EPS = numberArg('epsilon', 0.02)
 const CONTROL_BAND = numberArg('control-band', 0.03)
 const NOOP_BAND = numberArg('noop-band', CONTROL_BAND)
-const MAX_COV = numberArg('max-cov', 0.15)
+const MAX_PAIR_LOG_SD = numberArg('max-pair-log-sd', 0.20)
 const SEED = Math.floor(numberArg('seed', 0x9a31))
 const ONLY = new Set(String(arg('only', '')).split(',').map((x) => x.trim()).filter(Boolean))
 const LABEL = arg('label', 'R9 controlled A/B')
@@ -245,19 +245,21 @@ window.__bench = {
     const b = await this.one('slot2', fixture)
     return { parity: a.raw === b.raw, aBytes: a.raw.length, bBytes: b.raw.length }
   },
-  async pair(fixture, n, batch) {
-    const out = []
-    for (let i = 0; i < n; i++) {
-      const row = {}
-      const order = i & 1 ? ['slot2', 'slot1'] : ['slot1', 'slot2']
+  async sample(fixture, index, batch) {
+    let slot1 = 0
+    let slot2 = 0
+    for (let b = 0; b < batch; b++) {
+      // Micro-interleave the arms. The old scheduler ran A,A,A then B,B,B, which let
+      // sub-second runner/JIT/GC drift masquerade as an arm effect. With an even batch each
+      // arm goes first exactly batch/2 times; odd batches rotate the extra first position.
+      const order = (index + b) & 1 ? ['slot2', 'slot1'] : ['slot1', 'slot2']
       for (const slot of order) {
-        let total = 0
-        for (let b = 0; b < batch; b++) total += (await this.one(slot, fixture)).ms
-        row[slot] = total / batch
+        const ms = (await this.one(slot, fixture)).ms
+        if (slot === 'slot1') slot1 += ms
+        else slot2 += ms
       }
-      out.push(row)
     }
-    return out
+    return { slot1: slot1 / batch, slot2: slot2 / batch }
   },
 }
 window.__ready = true
@@ -304,49 +306,90 @@ const moduleFor = MODE === 'option-pair'
   ? { base: 'candidate', opt: 'candidate' }
   : { base: 'baseline', opt: 'candidate' }
 
-async function layout(name, leftKind, rightKind, leftOptions, rightOptions) {
+async function openLayout(name, leftKind, rightKind, leftOptions, rightOptions, fixtureName) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 2000 }, deviceScaleFactor: 1 })
   page.on('pageerror', (error) => console.error(`[${name}] PAGE ERROR`, error.message))
   try {
     await page.goto(origin)
     await page.waitForFunction(() => window.__ready === true && window.__fxReady === true)
     await page.evaluate(({ u1, u2, o1, o2 }) => window.__bench.init(u1, u2, o1, o2), {
-      u1: `/${leftKind}.mjs?${name}-1`,
-      u2: `/${rightKind}.mjs?${name}-2`,
+      u1: `/${leftKind}.mjs?${fixtureName}-${name}-1`,
+      u2: `/${rightKind}.mjs?${fixtureName}-${name}-2`,
       o1: leftOptions,
       o2: rightOptions,
     })
-    const result = {}
-    for (const fx of FIXTURES) {
-      if (WARM) await page.evaluate(({ fixture, warm }) => window.__bench.warm(fixture, warm), { fixture: fx.name, warm: WARM })
-      const oracle = await page.evaluate((fixture) => window.__bench.oracle(fixture), fx.name)
-      const rows = await page.evaluate(({ fixture, n, batch }) => window.__bench.pair(fixture, n, batch), {
-        fixture: fx.name,
-        n: N,
-        batch: BATCH,
-      })
-      result[fx.name] = {
-        oracle,
-        rows,
-        slot1: stats(rows.map((row) => row.slot1)),
-        slot2: stats(rows.map((row) => row.slot2)),
-      }
-    }
-    return result
-  } finally {
+    return page
+  } catch (error) {
     await page.close()
+    throw error
   }
 }
 
-let layouts
+const LAYOUT_SPECS = {
+  effectForward: [moduleFor.base, moduleFor.opt, BASE, OPT],
+  effectReverse: [moduleFor.opt, moduleFor.base, OPT, BASE],
+  baseNullForward: [moduleFor.base, moduleFor.base, BASE, BASE],
+  baseNullReverse: [moduleFor.base, moduleFor.base, BASE, BASE],
+  optNullForward: [moduleFor.opt, moduleFor.opt, OPT, OPT],
+  optNullReverse: [moduleFor.opt, moduleFor.opt, OPT, OPT],
+}
+const LAYOUT_ORDER = Object.keys(LAYOUT_SPECS)
+
+async function runFixture(fx) {
+  const pages = {}
+  const result = {}
+  try {
+    // Six independent physical pages preserve the fresh-page crossover, while keeping all
+    // layouts alive together lets us acquire one observation block across AB/BA/AA/BB before
+    // moving to the next block. This converts minute-scale runner drift into common-mode noise.
+    for (const name of LAYOUT_ORDER) {
+      pages[name] = await openLayout(name, ...LAYOUT_SPECS[name], fx.name)
+      result[name] = { rows: [] }
+    }
+
+    // Symmetric warmup and byte oracle on every physical layout before timed acquisition.
+    for (const name of LAYOUT_ORDER) {
+      const page = pages[name]
+      if (WARM) {
+        await page.evaluate(({ fixture, warm }) => window.__bench.warm(fixture, warm), {
+          fixture: fx.name,
+          warm: WARM,
+        })
+      }
+      result[name].oracle = await page.evaluate((fixture) => window.__bench.oracle(fixture), fx.name)
+    }
+
+    for (let i = 0; i < N; i++) {
+      // Latin rotation: across every six observation blocks, each physical layout occupies
+      // every temporal position exactly once. No arm/control owns "early" or "late" runner time.
+      const shift = i % LAYOUT_ORDER.length
+      const order = LAYOUT_ORDER.slice(shift).concat(LAYOUT_ORDER.slice(0, shift))
+      for (const name of order) {
+        const row = await pages[name].evaluate(
+          ({ fixture, index, batch }) => window.__bench.sample(fixture, index, batch),
+          { fixture: fx.name, index: i, batch: BATCH },
+        )
+        result[name].rows.push(row)
+      }
+    }
+
+    for (const name of LAYOUT_ORDER) {
+      const rows = result[name].rows
+      result[name].slot1 = stats(rows.map((row) => row.slot1))
+      result[name].slot2 = stats(rows.map((row) => row.slot2))
+      result[name].pairLog = stats(rows.map((row) => Math.log(row.slot2 / row.slot1)))
+    }
+    return result
+  } finally {
+    await Promise.all(Object.values(pages).map((page) => page.close().catch(() => {})))
+  }
+}
+
+const layouts = Object.fromEntries(LAYOUT_ORDER.map((name) => [name, {}]))
 try {
-  layouts = {
-    effectForward: await layout('effect-forward', moduleFor.base, moduleFor.opt, BASE, OPT),
-    effectReverse: await layout('effect-reverse', moduleFor.opt, moduleFor.base, OPT, BASE),
-    baseNullForward: await layout('base-null-forward', moduleFor.base, moduleFor.base, BASE, BASE),
-    baseNullReverse: await layout('base-null-reverse', moduleFor.base, moduleFor.base, BASE, BASE),
-    optNullForward: await layout('opt-null-forward', moduleFor.opt, moduleFor.opt, OPT, OPT),
-    optNullReverse: await layout('opt-null-reverse', moduleFor.opt, moduleFor.opt, OPT, OPT),
+  for (const fx of FIXTURES) {
+    const fixtureResult = await runFixture(fx)
+    for (const name of LAYOUT_ORDER) layouts[name][fx.name] = fixtureResult[name]
   }
 } finally {
   await browser.close()
@@ -368,17 +411,21 @@ for (let i = 0; i < FIXTURES.length; i++) {
   const baseNull = crossoverEffect(bf.rows, br.rows, SEED + i * 17 + 3, BOOT)
   const optNull = crossoverEffect(of.rows, or.rows, SEED + i * 17 + 5, BOOT)
 
-  const maxCov = Math.max(
+  const rawMaxCov = Math.max(
     ef.slot1.cov, ef.slot2.cov, er.slot1.cov, er.slot2.cov,
     bf.slot1.cov, bf.slot2.cov, br.slot1.cov, br.slot2.cov,
     of.slot1.cov, of.slot2.cov, or.slot1.cov, or.slot2.cov,
+  )
+  const maxPairLogSd = Math.max(
+    ef.pairLog.sd, er.pairLog.sd, bf.pairLog.sd,
+    br.pairLog.sd, of.pairLog.sd, or.pairLog.sd,
   )
 
   const parity = ef.oracle.parity && er.oracle.parity
   const baseNullEquivalent = ciWithin(baseNull.ci95, CONTROL_BAND)
   const optNullEquivalent = ciWithin(optNull.ci95, CONTROL_BAND)
   const controlsPass = baseNullEquivalent && optNullEquivalent
-  const stabilityPass = maxCov <= MAX_COV
+  const stabilityPass = maxPairLogSd <= MAX_PAIR_LOG_SD
   const noOpEquivalent = !meta.noop || ciWithin(candidate.ci95, NOOP_BAND)
   const candidateWin = candidate.ci95[1] < -(EPS * 100)
   const candidateRegression = candidate.ci95[0] > EPS * 100
@@ -399,7 +446,8 @@ for (let i = 0; i < FIXTURES.length; i++) {
     candidateRegression,
     candidateEquivalent,
     claimable: parity && controlsPass && stabilityPass && noOpEquivalent && candidateWin,
-    maxCov,
+    rawMaxCov,
+    maxPairLogSd,
   }
 }
 
@@ -434,7 +482,7 @@ const report = {
       epsilon: EPS,
       controlBand: CONTROL_BAND,
       noopBand: NOOP_BAND,
-      maxCov: MAX_COV,
+      maxPairLogSd: MAX_PAIR_LOG_SD,
       seed: SEED,
       fixtureNames: FIXTURES.map((fx) => fx.name),
       fixtureManifestSha256: sha256Text(stableJson(FIXTURES)),
@@ -470,7 +518,7 @@ const report = {
     },
     options: { base: BASE_EXTRA, opt: OPT_EXTRA },
   }),
-  method: 'hosted-only fresh-page AB/BA crossover; baseline-state A/A + candidate-state B/B nulls; exact raw parity; equivalence-bounded controls; known no-op equivalence; paired log ratios; seeded bootstrap; raw samples retained; no outlier deletion',
+  method: 'hosted-only fresh-page AB/BA crossover; micro-interleaved arms; Latin-rotated AB/BA/AA/BB observation blocks; baseline-state A/A + candidate-state B/B nulls; exact raw parity; equivalence-bounded controls; index-block bootstrap of symmetric paired log ratios; raw samples retained; no outlier deletion',
   global,
   fixtures,
   layouts,
@@ -488,7 +536,7 @@ for (const [name, fx] of Object.entries(fixtures)) {
   console.log(
     `${name.padEnd(34)} parity=${fx.parity ? 'PASS' : 'FAIL'} effect=${fx.candidate.pct.toFixed(2)}% CI[${fx.candidate.ci95.map((v) => v.toFixed(2)).join(', ')}] ` +
     `base-null=[${fx.baseNull.ci95.map((v) => v.toFixed(2)).join(', ')}] opt-null=[${fx.optNull.ci95.map((v) => v.toFixed(2)).join(', ')}] ` +
-    `CoV=${(fx.maxCov * 100).toFixed(1)}% ${verdict}`
+    `rawCoV=${(fx.rawMaxCov * 100).toFixed(1)}% pairLogSD=${fx.maxPairLogSd.toFixed(3)} ${verdict}`
   )
 }
 console.log(`artifact ${path.relative(ROOT, outPath).replaceAll('\\', '/')}`)
