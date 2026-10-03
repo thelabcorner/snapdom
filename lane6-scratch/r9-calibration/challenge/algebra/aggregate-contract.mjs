@@ -7,9 +7,9 @@
  * measurement into an uninterpretable soup. `assertRunnerLevelOnly` enforces that on the documents
  * the closeout actually reads.
  *
- * Every metric named here is one the challenge preregisters in advance. Nothing in this file
- * computes a pass/fail against a threshold, because the ledger (§10) keeps the promotion policy
- * unfrozen: the challenge produces evidence, and a human reads it.
+ * Every metric named here is one the challenge preregisters in advance. This file only computes
+ * runner-level evidence. The separate decision.mjs applies the preregistered topology-replacement
+ * rule; neither module can promote snapDOM code.
  */
 
 const T975 = {
@@ -243,9 +243,10 @@ export function laneSummary({
 }
 
 /**
- * The primary comparison table. Qualitative by construction: it reports signed differences and CI
- * overlaps and never decides. `attenuation` is the one flag a reader must not skip, because the
- * ledger (§9) rejects any design that lowers null bias by attenuating real treatment sensitivity.
+ * The primary comparison table reports signed differences and CI overlaps without mutating them.
+ * decision.mjs consumes these raw runner-level summaries under the preregistered replacement rule.
+ * `attenuation` remains explicit because a topology that lowers null noise by attenuating treatment
+ * sensitivity must never be selected.
  */
 export function primaryComparison({
   current, blocked, currentTreatments, blockedTreatments, doses = ['low', 'high'],

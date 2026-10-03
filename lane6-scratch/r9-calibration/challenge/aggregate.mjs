@@ -24,6 +24,7 @@ import {
   assertRunnerLevelOnly,
 } from './algebra/aggregate-contract.mjs'
 import { EQUAL_BUDGET_PAIRS, DOSES, laneBudget } from './algebra/call-budget.mjs'
+import { classifyTopology } from './algebra/decision.mjs'
 
 const ROOT = process.cwd()
 const CHAL = path.resolve(ROOT, 'lane6-scratch/r9-calibration/challenge')
@@ -212,13 +213,15 @@ for (const fixture of policy.fixtures) {
   }
 }
 
+const topologyDecision = classifyTopology({ fixtures, policy })
+
 const summary = {
   schema: 'snapdom-r9-hosted-topology-challenge-summary-v1',
   state: 'CHALLENGE_COMPLETE',
   complete: true,
   performanceClaim: false,
   promotable: false,
-  verdict: 'evidence-only',
+  verdict: topologyDecision.verdict,
   generatedAt: new Date().toISOString(),
   profile,
   policySha256: prepared.policySha256,
@@ -239,13 +242,15 @@ const summary = {
     runnerNames: [...new Set(ordered.map((d) => d.runner?.name).filter(Boolean))].length,
   },
   challenge: fixtures,
+  topologyDecision,
   successCriterion: policy.successCriterion,
   openFalsifiers: policy.openFalsifiers,
   interpretation:
     'Self-null topology challenge. Every arm in every lane except the injected positive control is ' +
     'byte- and option-identical, so a non-zero control is measurement bias, never a snapDOM effect. ' +
-    'CHALLENGE_COMPLETE means the preregistered matrix was collected. It is not an optimization, ' +
-    'non-regression, merge or promotion claim, and the promotion policy stays unfrozen.',
+    'CHALLENGE_COMPLETE means the preregistered matrix was collected. The topologyDecision may ' +
+    'select or reject a MEASUREMENT TOPOLOGY only; it is not an optimization, non-regression, code merge ' +
+    'or snapDOM promotion claim.',
 }
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true })
@@ -274,6 +279,9 @@ appendSummary([
   `- bundle: \`${prepared.bundle.sha256.slice(0, 12)}\``,
   `- candidate SHA: \`${prepared.candidateGitSha.slice(0, 12)}\``,
   `- timed calls per fixture per runner: ${summary.budget.timedCallsPerFixture} (equal on every preregistered compared pair)`,
+  `- topology replacement verdict: **${topologyDecision.verdict}**`,
+  `- worst null endpoint: OLD ${topologyDecision.global.oldMaxNullEndpointPct.toFixed(2)}% → NEW ${topologyDecision.global.newMaxNullEndpointPct.toFixed(2)}%`,
+  `- worst runner SD(log): OLD ${topologyDecision.global.oldMaxRunnerSdPp.toFixed(2)}pp → NEW ${topologyDecision.global.newMaxRunnerSdPp.toFixed(2)}pp`,
   '',
   '| fixture | lane | \\|control mean\\| % | max abs control CI endpoint % | runner SD(log) pp | positive-control recovery | timed calls |',
   '|---|---|---:|---:|---:|---:|---:|',

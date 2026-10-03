@@ -1,11 +1,13 @@
 # R9 hosted self-null calibration — diagnostic ledger
 
 Status: **diagnostic only.** Nothing here is an optimization or non-regression claim, and nothing
-here is promotable. This ledger now incorporates both the original 8-runner Chromium self-null and
-the corrected post-settle 8-runner Chromium run from hosted calibration `37090104263`. The
-post-settle controls materially change the diagnosis: stationary page costs still cancel by proof,
-but the real six-page rig shows a pair-specific nonstationary AA offset and is **not ready to freeze
-as the production promotion instrument**.
+here is promotable. The authoritative calibration is the retry-safe completed run
+`37097245291`: 16/16 fresh-runner cells across Chromium, Firefox and WebKit, with a global worst
+self-null 95% CI endpoint of **4.168%**. The earlier Chromium-only run `37090104263` remains below
+as a hypothesis-generating precursor because it exposed a transient physical-pair offset, but that
+offset **did not reproduce** in the completed run. The six-page rig is therefore an empirically
+usable ±5% incumbent; the topology challenge asks whether a blocked/matched design can beat its
+precision/heterogeneity budget at equal cost without attenuating real treatment sensitivity.
 
 All algebra below is proved browser-free by
 `node --test lane6-scratch/r9-calibration/algebra/selfnull-algebra.test.mjs` (19 assertions, no
@@ -32,7 +34,7 @@ That run was useful for designing the instrument but its cross-engine phase beca
 `INCOMPLETE_EVIDENCE`: WebKit jobs sampled Playwright-install CPU tail before timing. Commit
 `8c60647` added an adaptive settle phase and the run was repeated cleanly.
 
-### Corrected post-settle run (`37090104263`)
+### First post-settle Chromium run (`37090104263`) — historical precursor
 
 Every completed Chromium runner reached timing after three quiet CPU windows and an ambient-gate
 mean/median near zero. N=24, batch=9, 8 fresh runners:
@@ -44,10 +46,30 @@ mean/median near zero. N=24, batch=9, 8 fresh runners:
 | cards400-neutral-unsafe | +1.40% | [+0.16, +2.65] | +0.70% | [−0.97, +2.40] | +0.83% | [−1.22, +2.92] |
 | cards400-non-neutral | −0.81% | [−3.28, +1.74] | **+2.36%** | **[+1.26, +3.48]** | +0.33% | [−1.20, +1.89] |
 
-The candidate self-null is inside ±5% on every fixture. The load-bearing result is instead the
-control asymmetry: **the base-null physical pair excludes zero on safe and non-neutral while the
-corresponding opt-null pair does not.** Because every arm is byte/option-identical in this
-calibration, that is measurement-rig evidence, not treatment evidence.
+The candidate self-null is inside ±5% on every fixture. This run also showed base-null offsets on
+safe and non-neutral while the corresponding opt-null pairs included zero. Because every arm was
+byte/option-identical, that was legitimate measurement-rig evidence **for this run**, and it
+motivated the topology investigation. It is not the final instrument diagnosis because the offsets
+did not reproduce in the retry-safe completed calibration.
+
+### Authoritative retry-safe calibration (`37097245291`)
+
+The artifact plumbing was made retry-stable and the full preregistered matrix completed: Chromium
+R=8, Firefox R=4, WebKit R=4. On Chromium:
+
+| fixture | candidate self-null | candidate 95% CI | base-null 95% CI | opt-null 95% CI |
+|---|---:|---:|---:|---:|
+| light-20cards | −0.50% | [−0.78, −0.22] | [−1.02, +0.12] | [−0.76, +0.56] |
+| cards400-safe | −0.92% | **[−4.17, +2.43]** | [−2.31, +2.85] | [−1.60, +2.49] |
+| cards400-neutral-unsafe | +0.83% | [−1.14, +2.84] | [−0.32, +2.62] | [−0.59, +3.27] |
+| cards400-non-neutral | +0.23% | [−2.00, +2.52] | [−1.29, +1.84] | [−1.78, +2.11] |
+
+All Chromium base/opt null intervals include zero. `cards400-safe` remains the most informative
+stress cell because it owns the widest completed-calibration endpoint and substantial
+between-runner heterogeneity (I²≈0.589, τ≈3.03 log-pp). Firefox is tighter. WebKit remains inside
+±5% but retains small structured diagnostics (notably safe slot interaction and neutral self-null).
+The completed evidence therefore supports a **±5% incumbent floor**, not a claim that the current
+topology is bias-free or optimal.
 
 ## 2. What the estimator actually computes
 
@@ -83,11 +105,11 @@ Two consequences, both proved:
 | Latin rotation order | cancels on its own — mean within-round position is 2.5 for every layout |
 | page creation order as a *stationary* offset | cancels exactly |
 | page identity as a *uniform* runner effect | blind to it entirely |
-| page creation order as a *non-stationary* term | **not excluded; now observed indirectly by pair-specific AA offsets** |
-| GC / JIT / scheduler state | admissible only when it changes the slot differential over block time; corrected AA controls show that some such channel survives |
+| page creation order as a *non-stationary* term | **not excluded**; the precursor run suggested it, the completed run did not reproduce the pair offset |
+| GC / JIT / scheduler state | admissible only when it changes the slot differential over block time; the final calibration does not identify a unique surviving mechanism |
 | per-layout scheduler state | collapses into a time-varying page×position term and can differ by physical page pair |
 
-## 4. The surviving mechanism: nonstationary page × slot-position state
+## 4. A falsifiable mechanism suggested by the precursor: nonstationary page × slot-position state
 
 The stationary proof in §2 remains valid. Therefore a non-zero AA control requires a term that
 changes **during acquisition**. The minimum model is:
@@ -111,42 +133,37 @@ parity. Physical page pairs are also not exchangeable in wall-clock history:
 - all six are created, warmed and oracle-probed in a deterministic order before acquisition.
 
 A phase transition experienced differently by pages 2/3 can therefore move base-null while pages
-0/1 and 4/5 remain near zero. The corrected safe/non-neutral base-null results are direct evidence
-that **some pair-specific nonstationary differential exists**.
+0/1 and 4/5 remain near zero. The precursor safe/non-neutral result is consistent with that
+mechanism, but the retry-safe completed calibration did not reproduce the pair offset. It remains a
+falsifiable model for the reversal lane, not an established property of the hosted rig.
 
 The earlier browser-free synthetic test remains useful but its old interpretation was too strong.
 A single step/relaxation model leaked ≤0.5%; that is a bound on **that synthetic model only**, not
-on hosted Chromium. The corrected control means the real machine contains either repeated events,
-a different time-varying shape, or another nonstationary interaction not represented by that toy
-model. The hosted data falsifies using 0.5% as a real-world ceiling.
+on hosted Chromium. Neither the precursor anomaly nor its non-reproduction licenses a real-world
+0.5% ceiling; the topology challenge measures the hardware instead of correcting by a model.
 
 This still does **not** justify subtracting base-null from the candidate. The three pair estimates
 come from different physical pages and need not share the same latent term; subtraction would
 replace one unidentified bias with another.
 
-## 5. What the corrected 8-runner result actually shows
+## 5. What the completed calibration actually shows
 
-The original run established that the 400-card cells are noisy. The corrected post-settle run adds
-the missing distinction between **precision** and **control validity**:
+The full retry-safe run separates **adequacy** from **optimality**:
 
-1. **Precision:** candidate self-null runner CIs are now inside ±5% on all four Chromium fixtures.
-   R=8 is therefore adequate for a ±5% *candidate-effect* equivalence statement on this sample.
-2. **Control validity:** two base-null CIs exclude zero by ~1–4%, while their opt-null counterparts
-   do not. This is statistically resolved physical-pair asymmetry under a true self-null.
-3. **Ambient-host contamination is not the cause:** the corrected runners entered timing at roughly
-   0–0.3% ambient CPU after the adaptive settle phase.
-4. **A global bias is also not the cause:** signs and magnitudes differ across candidate/base/opt
-   pairs and fixtures. The surviving term is pair/fixture/time specific.
+1. **Adequacy:** every candidate/base/opt self-null interval across all three engines fits within
+   ±5%; the global worst endpoint is 4.168%.
+2. **Chromium precision limit:** `cards400-safe` is the binding cell, with a −4.17% lower endpoint
+   and I²≈0.589. That is the strongest reason to test a lower-variance topology.
+3. **No reproduced Chromium pair bias:** the safe/non-neutral base-null exclusions seen in
+   `37090104263` are absent from `37097245291`.
+4. **Residual structure still exists:** WebKit shows small non-zero diagnostics while remaining
+   inside the ±5% envelope, so "equivalent at ±5%" is not the same claim as "perfectly unbiased".
 
-Accordingly, the old statement that ordinary sampling noise "accounts for the entire observed
-dispersion" is **retracted**. Sampling variance is substantial, but it is not the whole instrument:
-the corrected AA controls prove a systematic nonstationary component exists.
+The production conclusion is therefore:
 
-The production conclusion is deliberately narrower:
-
-> **Do not freeze promotion thresholds against the current six-page schedule yet.** The candidate
-> self-null is precise enough for ±5%, but the control topology itself has a resolved pair-specific
-> offset. First challenge the topology with a physically matched design.
+> **Keep the current six-page rig as the incumbent unless a physically matched challenger earns
+> replacement at equal cost.** Freeze a production topology only after the challenger demonstrates
+> a material precision/robustness gain without losing treatment sensitivity.
 
 ### What is needed, and is not currently possible from this artifact
 
@@ -255,13 +272,9 @@ Primary comparison metrics are runner-level and preregistered:
 - recovery of the injected positive-control effect and its CI;
 - timed calls / wall-clock cost.
 
-**Success criterion:** the blocked/matched design materially lowers the resolved base-null offsets
-and between-runner dispersion **without attenuating the positive control** and without increasing
-timed-call budget. If it does not, merge nothing.
-
-An `N=96` variance-decomposition run is still useful, but it is now secondary. The corrected
-base-null offsets already establish that sampling variance is not the only channel; increasing N
-alone cannot certify the topology.
+**Success criterion:** the blocked/matched design materially improves the null/control CI envelope
+and/or between-runner dispersion **without attenuating the positive control** and without increasing
+timed-call budget. If it does not clearly beat the incumbent, retain the incumbent.
 
 ### Measurement changes needed before the next calibration
 
@@ -278,34 +291,34 @@ alone cannot certify the topology.
 
 ## 10. Bottom line
 
-The corrected hosted data changes the verdict:
+The completed hosted data changes the verdict:
 
-- the candidate self-null is precise enough to fit inside ±5% with R=8;
-- **the current six-page control topology is demonstrably asymmetric** on at least two 400-card
-  base-null pairs;
-- stationary page costs still cancel exactly, so the asymmetry must enter through nonstationary
-  page × slot-position state or an equivalent time-dependent physical-page interaction;
-- the old synthetic ≤0.5% bound is not a hosted-hardware ceiling;
-- no null subtraction is justified;
-- **the promotion policy stays unfrozen** until the current rig loses a controlled A/A challenge or
-  survives it.
+- the current six-page topology is empirically usable at a ±5% equivalence floor;
+- the earlier Chromium base-null asymmetry was transient and did not reproduce;
+- `cards400-safe` still has the largest Chromium uncertainty/heterogeneity, leaving room for a
+  better instrument;
+- WebKit retains small structured residuals, so the calibration is not evidence of a perfect rig;
+- no null subtraction or model-based correction is justified;
+- **the promotion policy stays unfrozen until the equal-cost topology challenge selects or retains
+  the measurement instrument**.
 
-Do not merge `bench-r9-blocked.mjs` on algebra alone. Run it against the current rig with equal
-work, identity and reversed-order canaries, and a positive treatment control. Freeze the production
-instrument only after one topology shows lower null/control bias without losing treatment
-sensitivity.
+Do not merge the blocked topology on algebra alone. Run it against the incumbent with equal work,
+identity and reversed-order canaries, and a positive treatment control. If the challenger does not
+demonstrably improve the evidence budget without losing sensitivity, keep the incumbent.
 
 ## 11. The equal-cost topology challenge — preregistration
 
 Status: **the experiment is designed, proved browser-free, and NOT YET RUN.** Nothing in this
-section is a result. The corrected conclusion of §10 stands unchanged: **a pair-specific
-nonstationary systematic exists in the current six-page control topology, and the promotion policy
-stays unfrozen until one topology wins a controlled A/A at equal cost.**
+section is a result. The conclusion of §10 stands: the current rig is a valid ±5% incumbent, and
+the promotion policy stays unfrozen until the equal-cost A/A determines whether the challenger
+materially improves the instrument or the incumbent should be retained.
 
 Implementation: `lane6-scratch/r9-calibration/challenge/`. Hosted workflow:
 `.github/workflows/r9-topology-challenge.yml`. Browser-free contracts:
 `node --test lane6-scratch/r9-calibration/challenge/algebra/topology-challenge.test.mjs`
-(39 assertions; no Playwright import).
+(39 assertions) plus
+`node --test lane6-scratch/r9-calibration/challenge/algebra/decision.test.mjs`
+(8 assertions); neither imports Playwright.
 
 ### 11.1 The equal-cost algebra
 
@@ -341,7 +354,7 @@ within-block pairing depth.
 
 ### 11.2 Two corrections to this ledger, found while building the challenge
 
-1. **§3's "reversing the layout order" row is not a reversal of the canonical list.** The assertion in
+1. **The earlier "reversing the layout order" diagnostic was not a reversal of the canonical list.** The assertion in
    `algebra/selfnull-algebra.test.mjs` uses
    `[effectReverse, effectForward, baseNullReverse, baseNullForward, optNullReverse, optNullForward]`,
    which reverses **within** each pair. A true `.reverse()` of `LAYOUT_ORDER` is
@@ -351,8 +364,9 @@ within-block pairing depth.
    challenge runs the real reversal and preregisters its algebraic consequence: `baseNull` flips sign
    (the pair's two physical pages swap, and the estimator is `1/2 (v_F - v_R)`), while the candidate
    and optNull **magnitudes** should exchange. Proved browser-free at ratios 0.9998 and 1.0019. If
-   the hosted run reproduces the corrected offsets WITHOUT that exchange, the asymmetry is not
-   creation-order coupled and §4's mechanism is incomplete. That is falsifier 3.
+    a hosted precursor-style pair offset appears WITHOUT that exchange, the asymmetry is not
+    creation-order coupled and §4's mechanism is incomplete. That is a diagnostic falsifier, not
+    a prerequisite for replacing the incumbent.
 2. **§8's "neither a cost win" check was loose.** It compared 2880 blocked calls against 2592 shipped
    calls and accepted anything within 12%. At equal work the two are equal **to the call**, and the
    challenge asserts exact integer equality instead.
@@ -403,10 +417,14 @@ fresh VMs. Per fixture: absolute mean of each AA/BB control; maximum absolute co
 between-runner SD(log); treatment-control recovery and CI, differenced **within** each runner; timed
 calls and wall-clock. Plus the reversal diagnostic and the canary floor.
 
-Success stays qualitative and evidence-gated — lower null/control bias **and** lower dispersion
-**and** no attenuation or sign loss of the positive control **and** no higher timed-call budget.
-`attenuation` is a flag, not a gate. No automatic merge, no promotion, and no threshold is invented
-here.
+Replacement is now machine-classified by the preregistered rule in `POLICY.json:decision`.
+The challenger must stay within the calibrated ±5% outer envelope, satisfy per-fixture
+non-inferiority on null endpoint / runner SD / wall cost, preserve every incumbent-resolved
+positive-control dose within the preregistered recovery band, and clear the identity canary.
+It must then earn at least one material precision improvement. **Treatment attenuation is a hard
+NO_GO gate.** The practical margins other than ±5% are engineering decision margins frozen before
+hosted acquisition, not fitted statistical thresholds. Even `ACCEPT_NEW` selects only a measuring
+instrument; there is no automatic code merge or snapDOM performance promotion.
 
 ### 11.7 Hosted protocol
 
@@ -426,26 +444,28 @@ missing, unusable, duplicated or mis-identified cell.
    is void;
 2. blocked lowers control bias but its recovery CI sits strictly below the current rig's: it
    attenuates real treatment sensitivity and is rejected;
-3. the corrected base-null offsets do not move when the canonical `LAYOUT_ORDER` is fully reversed:
-   the asymmetry is not creation-order coupled and §4's mechanism is incomplete;
-4. the asymmetry reproduces identically under both the canonical and the reversed order on every
-   runner: it is a runner-wide property, not a pair-specific one, and this challenge's premise is
-   wrong;
+3. a pair-specific offset appears but does not transform with the canonical `LAYOUT_ORDER`
+   reversal as the §4 model predicts: that model is incomplete;
+4. no pair-specific offset appears under either order: the precursor anomaly is confirmed transient,
+   so the replacement decision rests entirely on precision/heterogeneity and treatment sensitivity;
 5. realised `injectMs` is small enough on a fixture that recovery is unresolvable there: that
    fixture's positive-control cell is INCONCLUSIVE and must be reported as such, not as a null.
 
 ### 11.9 What the browser-free pass has and has not established
 
-Established, in 39 assertions: the six lanes execute the call counts they declare; every compared
+Established, in 47 node-test assertions plus the standalone aggregate/workflow contracts: the six
+lanes execute the call counts they declare; every compared
 pair balances exactly in both sampling profiles; the current lane reproduces
 `bench-r9-controlled.mjs`'s schedule call for call against the existing independent model of it; a
 full canonical reversal flips `baseNull` and exchanges the candidate/optNull magnitudes while
 reversing only the rotation does not; the canary is exactly zero against a module-record channel and
 provably blind to treatment; the blocked schedule drives the §4 hostile world to `< 1e-12` while the
 current rig leaks, at identical total timed calls; both topologies recover the injected control; the
-aggregation is runner-level, fail-closed and threshold-free; and the hosted plan still says what the
-policy says it says.
+aggregation is runner-level and fail-closed; the replacement classifier rejects missing evidence,
+attenuation, practical regressions and merely-equal complexity; and the hosted plan still says what
+the policy says it says.
 
-Not established, and not establishable without hosted runners: which topology has lower real null
-bias, what the position-conditional cost actually is on a hosted VM, whether the corrected offsets
-are creation-order coupled, and whether the injected control is detectable at these doses.
+Not established, and not establishable without hosted runners: which topology has the better
+null/control CI envelope and between-runner dispersion, what the position-conditional cost actually
+is on a hosted VM, whether any precursor-style pair offset is creation-order coupled, and whether
+the injected control is detectable at these doses.

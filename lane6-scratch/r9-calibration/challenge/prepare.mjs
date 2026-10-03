@@ -97,6 +97,8 @@ const rels = [
   'lane6-scratch/r9-calibration/challenge/algebra/call-budget.mjs',
   'lane6-scratch/r9-calibration/challenge/algebra/topology-model.mjs',
   'lane6-scratch/r9-calibration/challenge/algebra/aggregate-contract.mjs',
+  'lane6-scratch/r9-calibration/challenge/algebra/decision.mjs',
+  'lane6-scratch/r9-calibration/challenge/algebra/decision.test.mjs',
   'lane6-scratch/r9-calibration/challenge/algebra/workflow-contract.mjs',
   'lane6-scratch/r9-calibration/challenge/algebra/topology-challenge.test.mjs',
   '.github/workflows/r9-topology-challenge.yml',

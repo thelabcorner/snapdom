@@ -13,7 +13,7 @@
     "cards400-safe",
     "cards400-non-neutral"
   ],
-  "fixtureRationale": "The three fixtures the ledger names for this challenge. cards400-safe and cards400-non-neutral are the two whose corrected base-null pairs excluded zero in hosted calibration 37090104263; light-20cards is the cheap fixture that keeps the per-runner call budget affordable while still resolving a real per-call cost.",
+  "fixtureRationale": "The three fixtures that best discriminate the instrument after completed calibration 37097245291. Chromium light is the tight low-cost floor; cards400-safe owns the worst completed-calibration self-null endpoint (-4.17%) and largest heterogeneity (I2≈0.59, tau≈3.03 log-pp); cards400-non-neutral previously exposed a transient pair offset in 37090104263 but did not reproduce it in 37097245291. The challenge therefore asks whether blocked acquisition materially improves precision/robustness, not whether it repairs a presumed permanent bias.",
   "lanes": [
     "current6",
     "blocked6",
@@ -106,12 +106,40 @@
       "no subtraction of one null from another to produce a reported effect"
     ]
   },
-  "successCriterion": "Qualitative and evidence-gated, never a number. The alternative topology is admissible only if it LOWERs null/control bias AND LOWERS between-runner dispersion AND does NOT attenuate or lose the sign of the positive control AND spends no MORE timed calls. Nothing is merged or promoted automatically; a human reads the evidence.",
+  "decision": {
+    "schema": "snapdom-r9-topology-replacement-rule-v1",
+    "incumbent": "current6",
+    "challenger": "blocked6",
+    "challengerMaxNullEndpointPct": 5.0,
+    "maxPerFixtureNullEndpointRegressionPp": 0.5,
+    "maxPerFixtureRunnerSdRatio": 1.10,
+    "minGlobalNullEndpointImprovementPp": 0.5,
+    "maxGlobalRunnerSdRatioForMaterialImprovement": 0.80,
+    "maxWallClockRatio": 1.10,
+    "identityCanaryMaxEndpointPct": 2.5,
+    "requireIdentityCanaryIncludesZero": true,
+    "recoveryRatioMin": 0.85,
+    "recoveryRatioMax": 1.15,
+    "minResolvableDosesPerFixture": 1,
+    "rule": "ACCEPT_NEW only when every hard non-inferiority/sensitivity/identity/cost gate clears and at least one material precision axis improves. Any hard regression or attenuation is NO_GO. Missing treatment resolution or invalid identity evidence is INCONCLUSIVE. ACCEPT_NEW selects a measurement topology only; it cannot promote snapDOM code."
+  },
+  "decisionRationale": {
+    "challengerMaxNullEndpointPct": "5.0% is the empirically resolvable equivalence envelope established by completed calibration 37097245291; its global worst endpoint was 4.168%. A challenger that cannot stay inside the calibrated envelope is not an admissible replacement.",
+    "maxPerFixtureNullEndpointRegressionPp": "0.5 percentage point is a preregistered practical non-inferiority margin, not a derived confidence threshold. It prevents a globally better-looking challenger from materially worsening one fixture while allowing sub-half-point runner noise.",
+    "maxPerFixtureRunnerSdRatio": "1.10 is a 10% practical non-inferiority margin on runner dispersion. Added topology complexity gets no license to create a materially noisier fixture.",
+    "minGlobalNullEndpointImprovementPp": "0.5 percentage point is the symmetric practical materiality floor for CI-envelope improvement; anything smaller does not justify replacing the simpler incumbent.",
+    "maxGlobalRunnerSdRatioForMaterialImprovement": "0.80 requires at least a 20% reduction in the worst runner SD before dispersion alone can justify replacement. This is deliberately stronger than the 10% non-inferiority gate.",
+    "maxWallClockRatio": "1.10 permits at most 10% hosted wall overhead. Timed calls are exactly equal, but orchestration/page-topology overhead is measured separately and must not grow materially.",
+    "identityCanaryMaxEndpointPct": "2.5% is half of the calibrated ±5% equivalence envelope. The exact-identity canary is expected to be tighter than an ordinary self-null or the experiment is inconclusive.",
+    "recoveryRatio": "0.85–1.15 is a preregistered ±15% treatment-sensitivity non-inferiority band. It is not a post-hoc calibration of the injected dose; any dose the incumbent resolves must remain comparably visible under the challenger.",
+    "status": "All margins above are engineering decision margins frozen before hosted topology acquisition. Only the ±5% outer envelope is directly inherited from the completed calibration; the other margins encode the minimum practical gain/non-inferiority needed to justify a more complex measurement topology."
+  },
+  "successCriterion": "OLD is an empirically usable incumbent (completed calibration 37097245291 stayed within a 4.168% global self-null CI envelope). NEW must earn replacement at exactly equal timed-call budget. The machine-readable decision block preregisters the practical non-inferiority and material-improvement margins; absent a clear earned improvement, retain OLD.",
   "openFalsifiers": [
     "the identity canary reads materially non-zero: the rig or the estimator is wrong, and every lane is void",
     "blocked lowers control bias but its recovery CI sits strictly below the current rig's: the design attenuates real treatment sensitivity and is rejected",
-    "base-null offsets do not move when the canonical LAYOUT_ORDER is fully reversed: the corrected asymmetry is not creation-order coupled, and the mechanism in ledger section 4 is incomplete",
-    "the corrected asymmetry reproduces identically under both the canonical and the reversed order on every runner: it is a runner-wide property, not a pair-specific one, and this challenge's premise is wrong",
+    "a pair-specific offset appears but does not transform with the canonical LAYOUT_ORDER reversal as the ledger section 4 model predicts: that mechanism is incomplete",
+    "the transient pair asymmetry from 37090104263 does not reproduce under either order: this does NOT invalidate the challenge; it means the decision turns on precision/heterogeneity rather than bias repair",
     "the realised injectMs on a fixture is small enough that recovery is unresolvable there: that fixture's positive-control cell is INCONCLUSIVE and must be reported as such, not as a null result"
   ]
 }

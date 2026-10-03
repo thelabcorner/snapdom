@@ -87,6 +87,9 @@ export function auditWorkflow(text) {
   if (!/node --test[^\n]*challenge\/algebra\/topology-challenge\.test\.mjs/.test(text)) {
     add('the challenge-specific browser-free contract test must run in CI before any runner is spent')
   }
+  if (!/node --test[^\n]*challenge\/algebra\/decision\.test\.mjs/.test(text)) {
+    add('the topology replacement-rule contract test must run in CI before any runner is spent')
+  }
 
   // Settle then ambient gate, both wrapping the harness, in that order. Only an EXECUTED `node ...`
   // line counts: a bare path in the `paths:` filter must not be able to satisfy the rule. The last
@@ -150,6 +153,36 @@ export function auditPolicy(policy) {
   }
 
   if (!policy.settle || typeof policy.settle !== 'object') add('policy must carry its own settle configuration')
+
+  const decision = policy.decision || {}
+  if (decision.schema !== 'snapdom-r9-topology-replacement-rule-v1') add('topology replacement-rule schema mismatch')
+  if (decision.incumbent !== 'current6' || decision.challenger !== 'blocked6') {
+    add('replacement rule must compare current6 incumbent against blocked6 challenger')
+  }
+  const finitePositive = [
+    'challengerMaxNullEndpointPct',
+    'maxPerFixtureNullEndpointRegressionPp',
+    'maxPerFixtureRunnerSdRatio',
+    'minGlobalNullEndpointImprovementPp',
+    'maxGlobalRunnerSdRatioForMaterialImprovement',
+    'maxWallClockRatio',
+    'identityCanaryMaxEndpointPct',
+    'recoveryRatioMin',
+    'recoveryRatioMax',
+  ]
+  for (const key of finitePositive) {
+    if (!(Number.isFinite(decision[key]) && decision[key] > 0)) add(`decision.${key} must be finite and > 0`)
+  }
+  if (!(decision.recoveryRatioMin < 1 && decision.recoveryRatioMax > 1 &&
+        decision.recoveryRatioMin < decision.recoveryRatioMax)) {
+    add('recovery ratio bounds must straddle 1')
+  }
+  if (!Number.isInteger(decision.minResolvableDosesPerFixture) || decision.minResolvableDosesPerFixture < 1) {
+    add('decision.minResolvableDosesPerFixture must be an integer >= 1')
+  }
+  if (decision.requireIdentityCanaryIncludesZero !== true) {
+    add('identity canary must be required to include zero')
+  }
 
   for (const [name, profile] of Object.entries(policy.sampling || {})) {
     if (!profile || typeof profile !== 'object') { add(`sampling profile ${name} missing`); continue }

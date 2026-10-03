@@ -72,6 +72,7 @@ jobs:
           set -euo pipefail
           node --test lane6-scratch/r9-calibration/algebra/selfnull-algebra.test.mjs
           node --test lane6-scratch/r9-calibration/challenge/algebra/topology-challenge.test.mjs
+          node --test lane6-scratch/r9-calibration/challenge/algebra/decision.test.mjs
 
   prepare:
     name: Prepare immutable challenge identity

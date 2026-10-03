@@ -8,22 +8,20 @@ preregistered matrix was collected — nothing more.
 
 ## Why this exists
 
-`lane6-scratch/r9-calibration/DIAGNOSTIC-LEDGER.md` §10 ends with a deliberately narrow production
-conclusion, and this lane is the experiment that conclusion asks for:
+The complete retry-safe calibration (`37097245291`) is now the incumbent evidence set:
+16/16 fresh-runner cells completed across Chromium, Firefox and WebKit, and its global worst
+self-null 95% CI endpoint was **4.168%**. On Chromium specifically, the earlier safe/non-neutral
+base-null offsets from run `37090104263` **did not reproduce**: all baseNull/optNull intervals
+included zero.
 
-> **Do not freeze promotion thresholds against the current six-page schedule yet.** The candidate
-> self-null is precise enough for ±5%, but the control topology itself has a resolved pair-specific
-> offset. First challenge the topology with a physically matched design.
+That changes the question. The six-page rig is not demonstrably invalid; it is an empirically usable
+**±5% incumbent**. Its remaining weakness is precision/heterogeneity — especially
+`cards400-safe`, whose candidate self-null owned the completed calibration's worst endpoint and
+substantial between-runner heterogeneity.
 
-The corrected 8-runner hosted calibration (`37090104263`) resolved `baseNull` at
-**+2.57% [+1.09, +4.08]** on `cards400-safe` and **+2.36% [+1.26, +3.48]** on
-`cards400-non-neutral`, while the corresponding `optNull` pairs on the same fixture DOM, the same
-bundle bytes and the same options did not exclude zero. **A pair-specific nonstationary systematic
-exists in the current six-page control topology.** That conclusion is unchanged by anything in this
-directory.
-
-`bench-r9-blocked.mjs` is the proposed alternative. It has never been run against a browser, and the
-ledger is explicit that it must not be adopted on the strength of its algebra alone.
+`blocked6` is therefore a challenger, not a repair. It must **earn replacement** at exactly equal
+timed-call cost by materially improving the noise/robustness budget without attenuating a real
+treatment or increasing wall cost. Algebra alone can never adopt it.
 
 ## The six preregistered lanes
 
@@ -203,9 +201,28 @@ Primary comparison, per fixture:
 Plus the reversal diagnostic (does `baseNull` flip sign; do the candidate and optNull magnitudes
 exchange creation index) and the canary floor.
 
-**No threshold appears anywhere.** The success criterion stays qualitative and evidence-gated: lower
-null/control bias **and** lower dispersion **and** no attenuation or sign loss of the positive control
-**and** no higher timed-call budget. Nothing is merged or promoted automatically.
+The replacement rule is preregistered in `POLICY.json:decision` **before hosted acquisition**.
+It classifies only the measurement topology:
+
+- challenger null envelope must remain within ±5%;
+- per fixture, max null-endpoint regression is limited to +0.5 pp and runner-SD regression to 10%;
+- a replacement must achieve a material gain: at least 0.5 pp tighter global worst null endpoint
+  **or** at least 20% lower global worst runner SD;
+- hosted wall cost may not increase by more than 10%;
+- identity canary must include zero and stay inside ±2.5%;
+- every treatment dose resolved by OLD must also be resolved by NEW, with recovery ratio 0.85–1.15
+  and no CI strictly below OLD;
+- at least one dose per fixture must resolve or the decision is `INCONCLUSIVE`.
+
+Only the outer ±5% envelope is inherited directly from completed calibration `37097245291`.
+The 0.5 pp endpoint margins, 10% dispersion/cost non-inferiority margins, 20% material dispersion
+gain, ±15% recovery band and ±2.5% identity floor are **preregistered engineering decision
+margins**, not hidden significance thresholds or post-hoc fitted statistics. Their purpose is to
+make the more complex challenger earn a practically meaningful improvement rather than win on a
+trivial fluctuation. `POLICY.json:decisionRationale` records that provenance explicitly.
+
+Outputs are `ACCEPT_NEW`, `NO_GO`, or `INCONCLUSIVE`. Even `ACCEPT_NEW` selects a measuring
+instrument only; it never promotes snapDOM code.
 
 ## Hosted execution
 
@@ -228,8 +245,11 @@ completeness audit meaningful.
 `aggregate.mjs` exits non-zero on a missing, unusable, duplicated or mis-identified cell. Zero
 evidence never looks like a successful benchmark.
 
-Chromium-only by preregistration: the ledger's resolved problem is in hosted Chromium, and widening
-the matrix to other engines without a preregistered question would only cost runner minutes.
+Chromium-only by preregistration: Chromium is the primary hosted inference engine and
+`cards400-safe` is the completed calibration's binding precision/heterogeneity cell there. The
+cross-engine calibration is already complete; this experiment isolates whether changing the
+**Chromium acquisition topology** improves the primary instrument. It does not claim to adjudicate
+the small structured residuals observed in WebKit.
 
 ## Local commands
 
@@ -254,7 +274,8 @@ There is no local browser path and there must not be one.
 | `prepare.mjs` | GitHub-only provenance freeze + policy/workflow audit + matrix emission |
 | `run.mjs` | per-cell provenance re-verification, then spawns the harness |
 | `validate.mjs` | artifact → one runner-level decision document; corrected §6 diagnostics |
-| `aggregate.mjs` | runner-level closeout; fail-closed; never decides |
+| `aggregate.mjs` | runner-level closeout; fail-closed; invokes the preregistered topology classifier |
+| `algebra/decision.mjs` | pure ACCEPT_NEW / NO_GO / INCONCLUSIVE replacement rule; never promotes code |
 | `algebra/call-budget.mjs` | lane table, arm table, budget algebra, admissible-count enumeration |
 | `algebra/topology-model.mjs` | browser-free replay of all six lanes over synthetic per-call latencies |
 | `algebra/aggregate-contract.mjs` | runner-level statistics, fail-closed completeness, no-raw-pooling guard |
