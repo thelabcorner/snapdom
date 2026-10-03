@@ -34,11 +34,13 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CANDIDATE_SHA: ${{ github.sha }}
   NODE_VERSION: '22.21.1'
   LANE: lane6-scratch/r10-shadow
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   prepare:

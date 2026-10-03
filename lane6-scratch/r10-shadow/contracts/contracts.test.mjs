@@ -584,6 +584,13 @@ test('the closeout collects every cell from every attempt and tolerates an absen
   assert.match(collect.run, /GITHUB_RUN_ID/)
 })
 
+test('artifact harvesting is explicitly authorized for GitHub CLI', () => {
+  assert.equal(workflow.permissions?.actions, 'read')
+  assert.equal(workflow.env?.GH_TOKEN, '${{ github.token }}')
+  const text = allText(workflow)
+  assert.match(text, /gh run download/)
+})
+
 test('the closeout runs the aggregation and propagates its non-zero exit', () => {
   const closeout = jobs(workflow).closeout
   const step = findStep(closeout, 'Combine prior-good and retried cells')
