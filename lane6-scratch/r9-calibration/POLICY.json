@@ -24,6 +24,12 @@
     "webkit": 4
   },
   "maxParallel": 8,
+  "settle": {
+    "intervalMs": 1000,
+    "maxWaitMs": 30000,
+    "consecutive": 3,
+    "maxCpuPercent": 20
+  },
   "diagnosticOnly": {
     "epsilon": 0.02,
     "controlBand": 0.20,

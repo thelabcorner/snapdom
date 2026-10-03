@@ -120,10 +120,18 @@ jobs:
         shell: bash
         env:
           SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_CAL_BROWSER: chromium
+          SNAPDOM_CAL_REPLICATE: ${{ matrix.replicate }}
         run: |
           set +e
-          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9-calibration/run.mjs               --browser=chromium --replicate="${{ matrix.replicate }}"
-          code=$?
+          node lane6-scratch/r9-calibration/settle.mjs
+          settle=$?
+          if [ "$settle" -ne 0 ]; then
+            code=3
+          else
+            node lane6-scratch/r5/run-with-timing-gate.mjs --               node lane6-scratch/r9-calibration/run.mjs                 --browser=chromium --replicate="${{ matrix.replicate }}"
+            code=$?
+          fi
           set -e
           echo "exit=$code" >> "$GITHUB_OUTPUT"
           node lane6-scratch/r9-calibration/validate.mjs             --browser=chromium --replicate="${{ matrix.replicate }}" --gate-exit="$code"
@@ -137,6 +145,7 @@ jobs:
             lane6-scratch/r9/results/calibration-chromium-r${{ matrix.replicate }}.json
             lane6-scratch/r9-calibration/requests/calibration-chromium-r${{ matrix.replicate }}.json
             lane6-scratch/r9-calibration/decisions/calibration-chromium-r${{ matrix.replicate }}.json
+            lane6-scratch/r9-calibration/settle/settle-chromium-r${{ matrix.replicate }}.json
             lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: warn
           retention-days: 30
@@ -182,10 +191,18 @@ jobs:
         shell: bash
         env:
           SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_CAL_BROWSER: ${{ matrix.entry.engine }}
+          SNAPDOM_CAL_REPLICATE: ${{ matrix.entry.replicate }}
         run: |
           set +e
-          node lane6-scratch/r5/run-with-timing-gate.mjs --             node lane6-scratch/r9-calibration/run.mjs               --browser="${{ matrix.entry.engine }}" --replicate="${{ matrix.entry.replicate }}"
-          code=$?
+          node lane6-scratch/r9-calibration/settle.mjs
+          settle=$?
+          if [ "$settle" -ne 0 ]; then
+            code=3
+          else
+            node lane6-scratch/r5/run-with-timing-gate.mjs --               node lane6-scratch/r9-calibration/run.mjs                 --browser="${{ matrix.entry.engine }}" --replicate="${{ matrix.entry.replicate }}"
+            code=$?
+          fi
           set -e
           echo "exit=$code" >> "$GITHUB_OUTPUT"
           node lane6-scratch/r9-calibration/validate.mjs             --browser="${{ matrix.entry.engine }}" --replicate="${{ matrix.entry.replicate }}" --gate-exit="$code"
@@ -199,6 +216,7 @@ jobs:
             lane6-scratch/r9/results/calibration-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
             lane6-scratch/r9-calibration/requests/calibration-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
             lane6-scratch/r9-calibration/decisions/calibration-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
+            lane6-scratch/r9-calibration/settle/settle-${{ matrix.entry.engine }}-r${{ matrix.entry.replicate }}.json
             lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: warn
           retention-days: 30

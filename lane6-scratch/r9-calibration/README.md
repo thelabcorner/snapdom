@@ -24,6 +24,10 @@ R9 accepts another performance claim.
 - Each runner: standing suite, four fixtures, N=24 acquisition blocks, batch=9, six-layout
   base/opt + base/base + opt/opt crossover, symmetric micro-interleaving.
 - Matrix concurrency is capped at 8.
+- After Playwright installs a browser, an adaptive settle phase requires 3 consecutive 1-second
+  CPU windows at or below 20% before the ordinary ambient gate starts, with a hard 30-second
+  ceiling. This prevents browser-install decompression tail from being mislabeled as unrelated
+  runner contention while still failing closed on persistent load. The settle trace is retained.
 
 The aggregate is runner-level. It reports each engine/fixture's self-null point estimate,
 Student-t 95% CI across fresh VMs, runner SD(log ratio), an estimated between-runner variance

@@ -43,6 +43,7 @@ const rels = [
   'lane6-scratch/r5/run-with-timing-gate.mjs',
   'lane6-scratch/r9-calibration/POLICY.json',
   'lane6-scratch/r9-calibration/prepare.mjs',
+  'lane6-scratch/r9-calibration/settle.mjs',
   'lane6-scratch/r9-calibration/run.mjs',
   'lane6-scratch/r9-calibration/validate.mjs',
   'lane6-scratch/r9-calibration/aggregate.mjs',
