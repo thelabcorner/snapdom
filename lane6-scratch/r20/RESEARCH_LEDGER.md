@@ -21,3 +21,19 @@ Acceptance requires:
 4. PSS/repeated captures plus dynamic mutation/CSSOM stress before promotion. Any output mismatch rejects immediately.
 
 No speed claim before hosted runs. Source changes are an experimental optimization of `src/modules/styles.js`; `src/core/context.js` forwards the counterfactual, and `src/core/prepare.js` bounds the memo lifetime.
+
+## Scout measurement correction
+
+The first hosted three-engine run 37750130708 passed contract checks, CSS tests,
+exact output and pixel parity. Its Chromium trial showed systematic fast/slow
+alternation *by capture slot* despite alternating treatment assignment: roughly
+8 and 24 ms in the same deep fixture. Thus direct treatment medians conflate
+version with a strong same-page capture-order effect. These timings are rejected
+as decision-grade evidence; parity still stands.
+
+The corrected benchmark isolates the frozen baseline and candidate in distinct
+browser pages, independently warms both, alternates scheduling, preserves raw and
+pixel guards, adds a same-source A/A two-page null control, and reports
+runner-level paired log effects with all samples. The A/A null is mandatory to
+interpret candidate-vs-baseline effects. Six independent runners and native
+memory evidence remain required for promotion.

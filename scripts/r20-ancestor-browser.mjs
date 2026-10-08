@@ -1,43 +1,42 @@
 #!/usr/bin/env node
-// R20 browser-visible evidence: independent pinned source bundles, alternating public
-// capture order, exact SVG/pixel differential, low-risk mutation controls and timings.
+// R20 hosted-browser paired measurements. Each source version owns a separate browser page:
+// this prevents the severe same-page first/second capture timing oscillation in the R20 scout.
+// A/A identical-source control is run alongside the candidate A/B, with exact raw/pixel gates.
 import fs from 'node:fs'
 import path from 'node:path'
 import http from 'node:http'
 import { chromium, firefox, webkit } from 'playwright'
-if(process.env.GITHUB_ACTIONS!=='true' || process.env.GITHUB_REPOSITORY!=='thelabcorner/snapdom')
+if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'thelabcorner/snapdom')
   throw new Error('R20 browser measurements must be GitHub-hosted')
-const engine=process.argv.find(a=>a.startsWith('--engine='))?.slice(9)
-const type={chromium,firefox,webkit}[engine]
-if(!type) throw new Error('unknown browser')
-const bundle={
+const engine = process.argv.find(a=>a.startsWith('--engine='))?.slice(9)
+const browserType={chromium,firefox,webkit}[engine]
+if(!browserType) throw new Error('unsupported browser')
+const RUNS=Number(process.argv.find(a=>a.startsWith('--pairs='))?.slice(8) || 12)
+const bundles={
   '/baseline.mjs':fs.readFileSync(path.join(process.cwd(),'__r20_baseline/dist/snapdom.mjs')),
   '/candidate.mjs':fs.readFileSync(path.join(process.cwd(),'dist/snapdom.mjs')),
 }
 const srv=http.createServer((req,res)=>{
-  if(bundle[req.url]){res.writeHead(200,{'content-type':'text/javascript'});res.end(bundle[req.url])}
-  else{res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><meta charset="utf-8"><body></body>')}
+  if(bundles[req.url]){res.writeHead(200,{'content-type':'text/javascript'});res.end(bundles[req.url])}
+  else{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end('<!doctype html><html><body></body></html>')}
 })
 await new Promise(r=>srv.listen(0,'127.0.0.1',r))
+const origin='http://127.0.0.1:'+srv.address().port
 let browser
-try{
-  browser=await type.launch({headless:true})
-  const page=await browser.newPage({viewport:{width:1400,height:1200}})
-  page.setDefaultTimeout(180000)
-  await page.goto('http://127.0.0.1:'+srv.address().port)
-  const result=await page.evaluate(async ()=>{
-    const [{snapdom:before},{snapdom:after}]=await Promise.all([import('/baseline.mjs'),import('/candidate.mjs')])
-    const baseOpts={burst:false,cache:'disabled',compress:false,embedFonts:false,dpr:1,__styleShare:false,__elementUniverse:true}
-    const hash=async u=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',u))).map(b=>b.toString(16).padStart(2,'0')).join('')
-    const median=xs=>xs.slice().sort((a,b)=>a-b)[xs.length>>1]
-    const cases=[
-      {name:'deep-inherited',depth:20,branches:12,leaves:10,css:true},
-      {name:'deep-neutral',depth:24,branches:10,leaves:10,css:false},
-      {name:'shallow-control',depth:1,branches:30,leaves:5,css:true},
-      {name:'nested-style-veto',depth:18,branches:10,leaves:8,css:true,veto:true},
-    ]
-    const report=[]
-    for (const cfg of cases){
+try {
+  browser=await browserType.launch({headless:true})
+  const regimes=[
+    {name:'deep-inherited',depth:20,branches:12,leaves:10,css:true},
+    {name:'deep-neutral',depth:24,branches:10,leaves:10,css:false},
+    {name:'shallow-control',depth:1,branches:30,leaves:5,css:true},
+    {name:'nested-style-veto',depth:18,branches:10,leaves:8,css:true,veto:true},
+  ]
+  const median=xs=>xs.slice().sort((a,b)=>a-b)[Math.floor(xs.length/2)]
+  const pairedEffect=(a,b)=>100*(Math.exp(b.reduce((acc,v,i)=>acc+Math.log(v/a[i]),0)/b.length)-1)
+  async function initialize(page,source,cfg){
+    await page.goto(origin)
+    return page.evaluate(async ({source,cfg})=>{
+      const {snapdom}=await import('/'+source+'.mjs')
       const sheet=document.createElement('style')
       sheet.textContent=cfg.css
         ? '.node {display:block;font-size:11px}.leaf {display:inline-block;padding:1px}.branch {font-weight:400;color:rgb(8, 9, 10)}'
@@ -54,7 +53,7 @@ try{
           p.className='node branch'
           p.style.fontFamily='Arial'
           p.style.color='rgb(8, 9, 10)'
-          if(d===0) p.style.letterSpacing='0.1px'
+          if(d===0)p.style.letterSpacing='0.1px'
           el.append(p);el=p
         }
         for(let j=0;j<cfg.leaves;j++){
@@ -66,42 +65,65 @@ try{
         }
       }
       document.body.append(root)
-      const pair=async which=>{
-        const now=performance.now()
-        const res=await [before,after][which](root,{...baseOpts})
-        return {ms:performance.now()-now,raw:res.toRaw(),res}
-      }
-      const samples=[[],[]]
-      for(let i=0;i<7;i++){
-        const order=(i%2)?[1,0]:[0,1]
-        const rows=[]
-        for(const n of order) rows[n]=await pair(n)
-        if(rows[0].raw!==rows[1].raw) throw new Error('raw mismatch '+cfg.name+' iteration='+i)
-        if(i===0){
-          const pixels=[]
-          for (const n of [0,1]){
-            const cv=await rows[n].res.toCanvas()
-            pixels[n]=await hash(cv.getContext('2d',{willReadFrequently:true}).getImageData(0,0,cv.width,cv.height).data)
+      const options={burst:false,cache:'disabled',compress:false,embedFonts:false,dpr:1,__styleShare:false,__elementUniverse:true}
+      const hex=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))
+        .map(v=>v.toString(16).padStart(2,'0')).join('')
+      window.__runner={
+        async snap(pixels=false){
+          const t0=performance.now()
+          const res=await snapdom(root,{...options})
+          const ms=performance.now()-t0
+          const raw=res.toRaw()
+          let pixelHash=null
+          if(pixels){
+            const cv=await res.toCanvas()
+            pixelHash=await hex(cv.getContext('2d',{willReadFrequently:true}).getImageData(0,0,cv.width,cv.height).data)
           }
-          if(pixels[0]!==pixels[1]) throw new Error('pixels differ '+cfg.name)
-          if(cfg.name==='deep-inherited'){
-            root.firstChild.style.color='rgb(15, 78, 93)'
-            const mutated0=await pair(0),mutated1=await pair(1)
-            if(mutated0.raw!==mutated1.raw) throw new Error('mutation parity mismatch')
-            root.firstChild.style.color='rgb(8, 9, 10)'
-          }
-        }else{
-          for(const n of [0,1])samples[n].push(rows[n].ms)
-        }
+          return {ms,raw,pixelHash}
+        },
+        change(color){root.firstChild.style.color=color}
       }
-      report.push({regime:cfg.name,nodes:cfg.branches*(cfg.depth+cfg.leaves)+1,parity:true,
-        baselineMedianMs:median(samples[0]),candidateMedianMs:median(samples[1]),
-        baselineSamplesMs:samples[0],candidateSamplesMs:samples[1]})
-      root.remove();sheet.remove()
-    }
-    return report
-  })
-  for (const row of result) console.log(JSON.stringify({engine,...row}))
+      return {nodes:cfg.branches*(cfg.depth+cfg.leaves)+1}
+    },{source,cfg})
+  }
+  async function run(cfg,sourceA='baseline',sourceB='candidate',pairs=RUNS){
+    const pages=await Promise.all([browser.newPage({viewport:{width:1400,height:1200}}),
+      browser.newPage({viewport:{width:1400,height:1200}})])
+    try{
+      pages.forEach(p=>p.setDefaultTimeout(180000))
+      await Promise.all(pages.map((p,i)=>initialize(p,i?sourceB:sourceA,cfg)))
+      const take=(i,pixels=false)=>pages[i].evaluate(p=>window.__runner.snap(p),pixels)
+      const rawProbe=await Promise.all(pages.map((_,i)=>take(i,true)))
+      if(rawProbe[0].raw!==rawProbe[1].raw || rawProbe[0].pixelHash!==rawProbe[1].pixelHash)
+        throw new Error('fresh parity mismatch '+cfg.name)
+      // Verify between-capture changed inherited styles produce identical frozen snapshots.
+      if(cfg.name==='deep-inherited'){
+        await Promise.all(pages.map(p=>p.evaluate(()=>window.__runner.change('rgb(15, 78, 93)'))))
+        const mutated=await Promise.all(pages.map((_,i)=>take(i,true)))
+        if(mutated[0].raw!==mutated[1].raw || mutated[0].pixelHash!==mutated[1].pixelHash)
+          throw new Error('ancestor mutation mismatch')
+        await Promise.all(pages.map(p=>p.evaluate(()=>window.__runner.change('rgb(8, 9, 10)'))))
+      }
+      // Mirror warmups independently. Timing excludes the cold browser/template costs.
+      for(let n=0;n<3;n++) for(const i of n%2?[1,0]:[0,1]) await take(i)
+      const values=[[],[]]
+      for(let n=0;n<pairs;n++){
+        const row=[]
+        for(const i of n%2?[1,0]:[0,1]) row[i]=await take(i)
+        if(row[0].raw!==row[1].raw) throw new Error('measured output mismatch '+cfg.name+' pair '+n)
+        for(const i of [0,1]) values[i].push(row[i].ms)
+      }
+      return {regime:cfg.name,sourceA,sourceB,nodes:cfg.branches*(cfg.depth+cfg.leaves)+1,
+        parity:true,pairs,baselineMedianMs:median(values[0]),candidateMedianMs:median(values[1]),
+        pairedEffectPct:pairedEffect(values[0],values[1]),
+        baselineSamplesMs:values[0],candidateSamplesMs:values[1]}
+    }finally{await Promise.all(pages.map(p=>p.close()))}
+  }
+  const all=[]
+  for(const cfg of regimes) all.push(await run(cfg))
+  // Same-source control directly tests whether apparent speedups survive page/slot bias.
+  all.push(await run(regimes[0],'baseline','baseline',8))
+  for(const row of all) console.log(JSON.stringify({engine,...row}))
 }finally{
   await browser?.close()
   await new Promise(r=>srv.close(r))
