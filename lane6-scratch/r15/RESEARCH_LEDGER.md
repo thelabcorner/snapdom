@@ -13,8 +13,8 @@ base64 string using FileReader and allocate a second serialized inlined source
 even when the absolute source URL has not changed.
 
 `snapFetch` already coalesces matching **in-flight** requests. The novel saving
-is explicitly **cross-capture**: reuse its successful result through the
-existing bounded `cache.image` rather than invent another cache.
+is explicitly **cross-capture**: reuse its successful result through an isolated, byte-bounded `cache.svgImage` rather than contaminating
+HTML image entries whose URL keys may already carry proxy-derived bytes.
 The existing `cache:'disabled'` purge remains authoritative.
 
 ## Safety constraints
@@ -24,8 +24,13 @@ The existing `cache:'disabled'` purge remains authoritative.
   `snapFetch` path when `useProxy` is enabled.
 - Never cache error responses, non-data strings, blob: or data: sources.
 - Preserve xlink:href removal and no-placeholder SVG failure semantics.
-- Reuse an existing HTML image memo entry without rewriting/erasing its Blob
-  sidecar; normal bounded FIFO eviction may still occur.
+- NEVER use an HTML image memo entry to answer an SVG request: HTML entries
+  do not currently record proxy provenance, so they are not interchangeable.
+- Dedicated SVG cache (50 entries, 4 Mi UTF-16 code units maximum in total,
+  8 MiB conservative string estimate) prevents eviction of HTML Blob sidecars.
+- `cache:'disabled'` and `cache:false` bypass SVG memo reads AND writes even
+  inside one capture. The old v1 scout did not do this; its timings are invalid.
+- Normal bounded FIFO eviction applies only within the SVG memo.
 - No cross-capture reuse when `cache:'disabled'` clears cache.image.
 - This caches bytes only, not DOM or ImageBitmap; don't claim a decode savings.
 
