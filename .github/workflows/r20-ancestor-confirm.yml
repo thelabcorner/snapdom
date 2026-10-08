@@ -1,0 +1,91 @@
+name: snapDOM R20 independent-host deep-style confirmation
+on:
+  push:
+    branches:
+      - 'perf/v3-r20-ancestor-universe-*'
+    paths:
+      - '.github/workflows/r20-ancestor-confirm.yml'
+      - 'scripts/r20-ancestor-browser.mjs'
+      - 'scripts/r20-aggregate.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: r20-ancestor-confirm-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  independent-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {engine: chromium, host: 0}
+          - {engine: chromium, host: 1}
+          - {engine: chromium, host: 2}
+          - {engine: chromium, host: 3}
+          - {engine: chromium, host: 4}
+          - {engine: chromium, host: 5}
+          - {engine: firefox, host: 0}
+          - {engine: firefox, host: 1}
+          - {engine: firefox, host: 2}
+          - {engine: webkit, host: 0}
+          - {engine: webkit, host: 1}
+          - {engine: webkit, host: 2}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Checkout exact independent baseline source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r20_baseline
+      - name: Independently compile pinned baseline
+        working-directory: __r20_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cac07a4108086718bc9511663346e1b9fcf4e226
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Execute full cross-page paired evidence with mechanism telemetry
+        run: node scripts/r20-ancestor-browser.mjs --engine=${{ matrix.engine }}
+        env:
+          SNAPDOM_R20_HOST: ${{ matrix.host }}
+          SNAPDOM_R20_RESULT: lane6-scratch/r20/host-results/runner.json
+      - name: Upload raw independent-host samples
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r20-${{ matrix.engine }}-host-${{ matrix.host }}
+          path: lane6-scratch/r20/host-results/runner.json
+          retention-days: 30
+          if-no-files-found: error
+  aggregate:
+    needs: independent-host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r20-*-host-*
+          path: lane6-scratch/r20/host-results
+      - name: Runner-cluster bootstrap (not capture-level pseudoreplication)
+        run: node scripts/r20-aggregate.mjs lane6-scratch/r20/host-results
+        env:
+          SNAPDOM_R20_EXPECTED: '12'
+          SNAPDOM_R20_AGGREGATE: r20-summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r20-independent-host-summary
+          path: r20-summary.json
+          if-no-files-found: error

@@ -68,3 +68,33 @@ failure. For R20's true fresh/dirty-style target, revised fixture uses
 `invalidate:true` before **every** capture in both independently compiled
 arms, and performs the telemetry probe before the initial parity captures.
 Any `summaryUses=0` in a non-veto deep fixture remains a hard failure.
+
+## Verified fresh-invalidation scout (run 37751164120)
+
+The corrected test now exercises every eligible node: on the 631-node ultra-deep
+fixture the telemetry records 631 summary uses, 630 cache hits, and 579 distinct
+ancestor misses per fresh capture. Exact raw SVG and pixel equality passed
+across Chromium, Firefox, WebKit. Single-runner paired effects:
+
+| workload | Chromium | Firefox | WebKit |
+| --- | ---: | ---: | ---: |
+| deep inherited, 361 nodes | -9.57% | -11.29% | -12.08% |
+| deep neutral, 341 nodes | -5.12% | -11.34% | -12.43% |
+| deep wide, 64-level, 769 nodes | -25.81% | -26.00% | -24.54% |
+| ultra deep, 192-level, 631 nodes | -44.19% | -43.89% | -42.20% |
+
+All three engines also passed shallow and dynamic-all-rule veto controls. This
+is a promising *fresh/stale-style* workload-specific algorithmic result, **not**
+a repeat-capture speedup nor production promotion claim. Ordinary warm captures
+can bypass the mechanism entirely via an existing valid snapshot WeakMap.
+
+## Independent-host replication
+
+Dedicated `.github/workflows/r20-ancestor-confirm.yml` runs six independent
+Chromium hosts and three each Firefox and WebKit. Each separately compiles the
+candidate and exact pinned baseline source, executes 12 balanced fresh-style
+paired captures per fixture with raw/pixel checks, records memo engagement, and
+uploads full runner-level samples. `scripts/r20-aggregate.mjs` rejects incomplete
+cohorts, pseudoreplication, failed parity, and zero-use candidate fixtures, then
+bootstraps 95% intervals at the *runner* level. Native memory and broader
+adversarial application fidelity remain outstanding after confirmation.

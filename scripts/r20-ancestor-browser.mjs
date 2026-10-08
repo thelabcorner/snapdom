@@ -142,6 +142,14 @@ try {
   // Same-source control directly tests whether apparent speedups survive page/slot bias.
   all.push(await run(regimes[0],'baseline','baseline',8))
   for(const row of all) console.log(JSON.stringify({engine,...row}))
+  if(process.env.SNAPDOM_R20_RESULT){
+    fs.mkdirSync(path.dirname(process.env.SNAPDOM_R20_RESULT),{recursive:true})
+    fs.writeFileSync(process.env.SNAPDOM_R20_RESULT,JSON.stringify({
+      schema:1,engine,host:process.env.SNAPDOM_R20_HOST||'scout',
+      baseline:'cac07a4108086718bc9511663346e1b9fcf4e226',
+      results:all,
+    },null,2))
+  }
 }finally{
   await browser?.close()
   await new Promise(r=>srv.close(r))
