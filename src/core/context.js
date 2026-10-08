@@ -162,6 +162,10 @@ export function createContext(options = {}) {
     // Internal test/benchmark control: false keeps the historical document-level property
     // universe while leaving the DOM, CSS and every other capture option unchanged.
     __elementUniverse: options.__elementUniverse,
+    // Experimental R20 counterfactual. Undefined enables the conservative, capture-local
+    // inherited-ancestor summary only when elementUniverseFor can prove safe to reuse it.
+    // False restores the historical per-element ancestor walk.
+    __ancestorUniverseMemo: options.__ancestorUniverseMemo,
     // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
     // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
     __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,

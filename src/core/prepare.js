@@ -239,6 +239,10 @@ export async function prepareClone(element, options = {}) {
     console.warn('deepClone failed:', e)
     throw e
   } finally {
+    // R20: the ancestor-universe memo is useful only while the frozen clone is built.
+    // The public result may retain the normalized options bag after capture, so don't
+    // retain a capture-sized WeakMap of live ancestors for the result's lifetime.
+    delete options.__ancestorUniverseMemoState
     undoContentVisibility()
     undoStabilizeLayout()
   }

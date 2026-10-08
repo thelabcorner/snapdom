@@ -1443,6 +1443,71 @@ function matchesElementAllRule(el, rules) {
 }
 
 /**
+ * Build the inherited half of elementUniverseFor's ancestor walk once per ancestor,
+ * not once per descendant. In a deep light-DOM tree the historical path is O(nodes *
+ * depth) even when every ancestor decision is identical for hundreds of descendants.
+ *
+ * The cache is capture-local and epoch-scoped (see the call site), and is used ONLY when
+ * there are no dynamic element-all selectors. A blocked ancestor propagates a conservative
+ * full-universe result. Depth beyond the old 1024-step limit returns null, requesting the
+ * exact historical walk instead of silently changing which ancestors are inspected.
+ *
+ * The sets are immutable once published; copy-on-write prevents changing a cached parent's
+ * property summary when a child contributes more inherited inline/UA declarations.
+ */
+function inheritedAncestorUniverse(from, doc, st, universe, memo) {
+  const missing = []
+  let node = from
+  let prior = { depth: 0, blocked: false, props: new Set() }
+  while (node && node.nodeType === 1) {
+    const cached = memo.get(node)
+    if (cached) { prior = cached; break }
+    missing.push(node)
+    if (node === doc.documentElement) break
+    node = node.parentElement
+    if (missing.length > 1023) return null
+  }
+  while (missing.length) {
+    const el = missing.pop()
+    let blocked = prior.blocked
+    let props = prior.props
+    const append = (prop) => {
+      if (props.has(prop)) return
+      if (props === prior.props) props = new Set(props)
+      props.add(prop)
+    }
+    if (!blocked) {
+      const tag = el.localName?.toLowerCase()
+      if (tag && ELEMENT_UNIVERSE_RISK_ANCESTORS.has(tag)) blocked = true
+      const attrs = el.attributes
+      if (!blocked && attrs) {
+        for (let i = 0; i < attrs.length; i++) {
+          if (ELEMENT_UNIVERSE_HINT_ATTRS.has(attrs[i].name)) { blocked = true; break }
+        }
+      }
+      if (!blocked && tag && !tag.includes('-')) {
+        const inherited = measureAncestorTagDefaults(doc, st, tag, universe)
+        if (!inherited || st.blocked) blocked = true
+        else for (const prop of inherited) append(prop)
+      }
+      if (!blocked) {
+        const inline = el.style
+        if (inline?.length) {
+          for (let i = 0; i < inline.length; i++) {
+            const prop = inline[i]
+            if (prop === 'all') { blocked = true; break }
+            if (ELEMENT_UNIVERSE_INHERITED.has(prop)) append(prop)
+          }
+        }
+      }
+    }
+    prior = { depth: prior.depth + 1, blocked, props }
+    memo.set(el, prior)
+  }
+  return prior
+}
+
+/**
  * A safe subset of the document property universe for one element. Any uncertainty returns
  * `universe` unchanged, so this function can only cost performance, never fidelity.
  */
@@ -1503,9 +1568,36 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   if (backgroundState?.needsInline) for (const prop of MASK_LAYOUT_PROPS) push(prop)
   if (backgroundState?.hasBackground) for (const prop of BG_LAYOUT_PROPS) push(prop)
 
+  // A change delivered by the document's MutationObserver bumps __epoch. Different captures
+  // always have different sessions, so a stale ancestor summary cannot outlive its capture;
+  // CSSOM edits that emit no mutation still require invalidateStyleCaches() as before.
+  // Element-all selectors can be stateful (:hover, :has, ...). In their presence keep
+  // matching each ancestor on each visit instead of assuming the result is stationary.
+  let ancestorMemo = null
+  if (options?.__ancestorUniverseMemo !== false && options?.__session &&
+      !(scan.elementAllRules?.length)) {
+    let holder = options.__ancestorUniverseMemoState
+    if (!holder || holder.session !== options.__session || holder.epoch !== __epoch ||
+        holder.scan !== scan || holder.universe !== universe) {
+      holder = { session: options.__session, epoch: __epoch, scan, universe, memo: new WeakMap() }
+      options.__ancestorUniverseMemoState = holder
+    }
+    ancestorMemo = holder.memo
+  }
+
   // Ancestor context: UA/presentational risks and inline inherited declarations.
   let a = el, depth = 0
   while (a && a.nodeType === 1 && depth++ < 1024) {
+    if (a !== el && ancestorMemo) {
+      const inherited = inheritedAncestorUniverse(a, doc, st, universe, ancestorMemo)
+      if (inherited && inherited.depth <= 1024 - (depth - 1)) {
+        if (inherited.blocked) return bail()
+        for (const prop of inherited.props) push(prop)
+        break
+      }
+      // Conservatively retain historical semantics when depth exceeds 1024.
+      ancestorMemo = null
+    }
     const at = a.localName?.toLowerCase()
     if (a !== el && at && ELEMENT_UNIVERSE_RISK_ANCESTORS.has(at)) return bail()
     if (matchesElementAllRule(a, scan.elementAllRules)) return bail()

@@ -1,0 +1,66 @@
+name: snapDOM R20 ancestor-universe memo scout
+on:
+  push:
+    branches:
+      - 'perf/v3-r20-ancestor-universe-*'
+    paths:
+      - '.github/workflows/r20-ancestor-universe.yml'
+      - 'src/modules/styles.js'
+      - 'src/core/context.js'
+      - 'src/core/prepare.js'
+      - 'scripts/r20-ancestor-browser.mjs'
+      - 'lane6-scratch/r20/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: r20-ancestor-universe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+  fidelity-and-scout:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium,firefox,webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Historical styles and selector fidelity
+        run: npx vitest run __tests__/module.styles.ruleEpoch.test.js __tests__/module.styles.elementUniverse.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r20_baseline
+      - name: Build independent exact parent
+        working-directory: __r20_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cac07a4108086718bc9511663346e1b9fcf4e226
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Run public deep DOM cross-engine differential
+        run: node scripts/r20-ancestor-browser.mjs --engine=${{ matrix.engine }}
