@@ -47,3 +47,74 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npx vitest run __tests__/r18.fontVariants.test.js __tests__/module.fonts.test.js __tests__/module.fonts.shadow.test.js __tests__/core.capture.embedFontsAuto.test.js --browser.headless --reporter=dot
+
+  paired-benchmark:
+    needs: [contracts, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout exact frozen R12 parent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          path: baseline
+      - name: Checkout exact R18 production candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 70045ebd68a276554ef50151ce2505e772689e6a
+          path: candidate
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Assert pinned source identity
+        run: |
+          test "$(git -C baseline rev-parse HEAD)" = "ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b"
+          test "$(git -C candidate rev-parse HEAD)" = "70045ebd68a276554ef50151ce2505e772689e6a"
+      - name: Build separate modules
+        run: |
+          npm ci --no-audit --no-fund
+          (cd baseline && npm ci --no-audit --no-fund && npm run compile)
+          (cd candidate && npm ci --no-audit --no-fund && npm run compile)
+          npx playwright install --with-deps chromium
+      - name: Balanced paired font capture with exact output parity
+        env:
+          BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          CANDIDATE_SHA: 70045ebd68a276554ef50151ce2505e772689e6a
+        run: node scripts/r18-font-browser.mjs --runner=${{ matrix.replica }} --baseline=baseline/dist/snapdom.mjs --candidate=candidate/dist/snapdom.mjs --out=r18-evidence/runner-${{ matrix.replica }}.json
+      - name: Preserve full runner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r18-runner-${{ matrix.replica }}
+          path: r18-evidence/runner-${{ matrix.replica }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: paired-benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r18-runner-*
+          path: r18-evidence
+          merge-multiple: true
+      - name: Aggregate or reject incomplete source/fidelity evidence
+        run: node scripts/r18-font-aggregate.mjs r18-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r18-six-runner-font-capture-summary
+          path: r18-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 60
