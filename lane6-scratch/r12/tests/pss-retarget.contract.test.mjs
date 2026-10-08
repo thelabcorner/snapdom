@@ -21,7 +21,7 @@ test('R12 native PSS evidence pins frozen candidate and frozen AS-BLOB baseline'
 })
 
 test('R12 provenance hashes the R12 workflow and does not require absent R10 YAML', () => {
-  assert.match(workflow, /prepare\\.mjs --workflow=\\.github\\/workflows\\/r12-bitmap-pss\\.yml/)
-  assert.match(preparation, /const workflowRel = arg\\('workflow', '\\.github\\/workflows\\/r10-asset-bench\\.yml'\\)/)
-  assert.match(preparation, /const measurementFiles = \\[\\s*workflowRel,/)
+  assert.ok(workflow.includes('prepare.mjs --workflow=.github/workflows/r12-bitmap-pss.yml'))
+  assert.ok(preparation.includes("const workflowRel = arg('workflow', '.github/workflows/r10-asset-bench.yml')"))
+  assert.ok(preparation.includes('const measurementFiles = [\\n  workflowRel,'))
 })
