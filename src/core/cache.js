@@ -11,6 +11,10 @@
 
 /** Max entries before evicting oldest (FIFO). Keeps lib lightweight, avoids memory leaks. */
 const MAX_IMAGE = 100
+const MAX_SVG_IMAGE = 50
+// A second bounded memo cannot be allowed to evict HTML image Blob sidecars.
+// Count UTF-16 worst-case units rather than assuming V8's compact ASCII strings.
+export const MAX_SVG_IMAGE_MEMO_CHARS = 4 * 1024 * 1024
 // A HYPOTHESIS, not a certified policy: no measurement supports this number yet, and the only
 // honest description of it is "a guess that bounds obvious abuse". The hosted assets benchmark
 // (lane6-scratch/r10) records settled RSS against it so the value can be LOWERED or frozen from
@@ -56,6 +60,7 @@ class EvictingMap extends Map {
  *  - image ........ <img> payloads by source URL (images.js, via rememberImageAsset): the data
  *                    URL and, only when the worker route could pay for it, the Blob carrying
  *                    the same bytes (see rememberImageAsset for the gate)
+ *  - svgImage ..... SVG <image> success URLs only; isolated from HTML/proxy cache provenance
  *  - background ... background-image data URLs by URL (utils/image.js)
  *  - resource ..... blob: URL contents (clone.helpers resolveBlobUrl; fonts.js reads it)
  *  - defaultStyle . per-tag UA defaults from the sandbox (utils/css.js)
@@ -66,6 +71,7 @@ class EvictingMap extends Map {
  */
 export const cache = {
   image: new EvictingMap(MAX_IMAGE),
+  svgImage: new EvictingMap(MAX_SVG_IMAGE),
   background: new EvictingMap(MAX_BACKGROUND),
   resource: new EvictingMap(MAX_RESOURCE),
   defaultStyle: new EvictingMap(MAX_DEFAULT_STYLE),
@@ -83,6 +89,29 @@ export const cache = {
 }
 
 export { EvictingMap }
+
+/** Store only safely bounded SVG data URLs without competing with HTML image Blob entries.
+ * Underlying fetch successes are identity-sensitive: only call for absolute, no-proxy URLs.
+ * Cache-disabled captures must not call this helper at all.
+ * @returns {boolean} whether the entry survived the memory budget
+ */
+export function rememberSvgImageAsset(url, data) {
+  if (typeof data !== 'string' || !data.startsWith('data:') ||
+      data.length > MAX_SVG_IMAGE_MEMO_CHARS) return false
+  const svgMemo = cache.svgImage
+  // Evict oldest first, including at the entry limit. Keep simple O(50) accounting:
+  // a tiny bounded walk avoids maintaining a mutable byte counter during resets/deletes.
+  svgMemo.set(url, data)
+  let chars = 0
+  for (const value of svgMemo.values()) chars += value.length
+  while (chars > MAX_SVG_IMAGE_MEMO_CHARS) {
+    const oldest = svgMemo.keys().next().value
+    if (oldest === undefined) break
+    chars -= svgMemo.get(oldest).length
+    svgMemo.delete(oldest)
+  }
+  return svgMemo.has(url)
+}
 
 /**
  * Normalizes cache values: `false`/'disabled' opt out of every cache (debug/test escape
@@ -219,6 +248,7 @@ export function applyCachePolicy(policy = 'soft') {
   cache.baseStyle     = new EvictingMap(MAX_BASE_STYLE)
   cache.defaultStyle  = new EvictingMap(MAX_DEFAULT_STYLE)
   cache.image         = new EvictingMap(MAX_IMAGE)
+  cache.svgImage      = new EvictingMap(MAX_SVG_IMAGE)
   cache.background    = new EvictingMap(MAX_BACKGROUND)
   cache.resource      = new EvictingMap(MAX_RESOURCE)
   cache.compress      = new EvictingMap(MAX_COMPRESS)
