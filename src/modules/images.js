@@ -199,12 +199,29 @@ export async function inlineImages(clone, options = {}) {
     const href = getSvgImageHref(el)
     if (!href || href.startsWith('data:') || href.startsWith('blob:')) return
 
-    const r = await snapFetch(href, { as: 'dataURL', useProxy: options.useProxy })
-    if (r.ok && typeof r.data === 'string' && r.data.startsWith('data:')) {
-      el.setAttribute('href', r.data)
-      el.removeAttribute('xlink:href')
-      if (typeof el.removeAttributeNS === 'function') el.removeAttributeNS(XLINK_NS, 'href')
+    // SVG <image> used to refetch successful assets on every capture, even when an
+    // HTML <img> had already inlined exactly the same absolute source. Reuse the
+    // existing bounded image memo; snapFetch already coalesces identical IN-FLIGHT
+    // requests, so only successful cross-capture results need a persistent entry.
+    //
+    // A proxy can change the returned bytes for the same URL between calls. Rather
+    // than alias proxy results against cache.image's ordinary URL keys, leave those
+    // requests on the original snapFetch path. Relative URLs are also bypassed:
+    // their resolution can change with the capture document's base URI.
+    const memoKey = !options.useProxy && /^https?:\/\//i.test(href) ? href : null
+    const existing = memoKey ? cache.image.get(memoKey)?.data : null
+    let data = typeof existing === 'string' && existing.startsWith('data:') ? existing : null
+
+    if (!data) {
+      const r = await snapFetch(href, { as: 'dataURL', useProxy: options.useProxy })
+      if (!r.ok || typeof r.data !== 'string' || !r.data.startsWith('data:')) return
+      data = r.data
+      if (memoKey) cache.image.set(memoKey, { data })
     }
+
+    el.setAttribute('href', data)
+    el.removeAttribute('xlink:href')
+    if (typeof el.removeAttributeNS === 'function') el.removeAttributeNS(XLINK_NS, 'href')
   }
   for (let i = 0; i < svgImages.length; i += BATCH) {
     const group = svgImages.slice(i, i + BATCH).map(processSvgImage)
