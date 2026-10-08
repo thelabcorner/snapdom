@@ -28,7 +28,7 @@
 
 import { snapFetch } from './snapFetch.js'
 import { sessionWarn } from '../utils/debug.js'
-import { cache, rememberImageAsset } from '../core/cache.js'
+import { cache, rememberImageAsset, rememberSvgImageAsset, normalizeCachePolicy } from '../core/cache.js'
 import { compressWorkerRouteOpen } from './compress.js'
 import { pickSrcsetCandidate } from './pictureResolver.js'
 
@@ -199,24 +199,21 @@ export async function inlineImages(clone, options = {}) {
     const href = getSvgImageHref(el)
     if (!href || href.startsWith('data:') || href.startsWith('blob:')) return
 
-    // SVG <image> used to refetch successful assets on every capture, even when an
-    // HTML <img> had already inlined exactly the same absolute source. Reuse the
-    // existing bounded image memo; snapFetch already coalesces identical IN-FLIGHT
-    // requests, so only successful cross-capture results need a persistent entry.
-    //
-    // A proxy can change the returned bytes for the same URL between calls. Rather
-    // than alias proxy results against cache.image's ordinary URL keys, leave those
-    // requests on the original snapFetch path. Relative URLs are also bypassed:
-    // their resolution can change with the capture document's base URI.
-    const memoKey = !options.useProxy && /^https?:\/\//i.test(href) ? href : null
-    const existing = memoKey ? cache.image.get(memoKey)?.data : null
-    let data = typeof existing === 'string' && existing.startsWith('data:') ? existing : null
+    // SVG <image> had no successful-result cross-capture cache. Use a separate,
+    // byte-bounded memo rather than evicting HTML <img> cache entries that retain
+    // worker-eligible Blobs. A prior HTML fetch may also have used a CORS proxy:
+    // its data is NOT interchangeable with an unproxied SVG fetch by URL alone.
+    // Ignore relative URLs (mutable base URI), proxy-dependent fetches, and the
+    // explicit cache-disabled policy, including within-capture batch boundaries.
+    const memoKey = !options.useProxy && normalizeCachePolicy(options.cache) !== 'disabled' &&
+      /^https?:\/\//i.test(href) ? href : null
+    let data = memoKey ? cache.svgImage.get(memoKey) : null
 
     if (!data) {
       const r = await snapFetch(href, { as: 'dataURL', useProxy: options.useProxy })
       if (!r.ok || typeof r.data !== 'string' || !r.data.startsWith('data:')) return
       data = r.data
-      if (memoKey) cache.image.set(memoKey, { data })
+      if (memoKey) rememberSvgImageAsset(memoKey, data)
     }
 
     el.setAttribute('href', data)
