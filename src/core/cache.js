@@ -12,6 +12,9 @@
 /** Max entries before evicting oldest (FIFO). Keeps lib lightweight, avoids memory leaks. */
 const MAX_IMAGE = 100
 const MAX_SVG_IMAGE = 50
+// Keep a bounded source-identity ghost set. Single-use sources should not pin
+// multi-MB data URLs or scan the full retained-byte budget on every miss.
+const MAX_SVG_IMAGE_CANDIDATES = 128
 // A second bounded memo cannot be allowed to evict HTML image Blob sidecars.
 // Count UTF-16 worst-case units rather than assuming V8's compact ASCII strings.
 export const MAX_SVG_IMAGE_MEMO_CHARS = 4 * 1024 * 1024
@@ -60,7 +63,8 @@ class EvictingMap extends Map {
  *  - image ........ <img> payloads by source URL (images.js, via rememberImageAsset): the data
  *                    URL and, only when the worker route could pay for it, the Blob carrying
  *                    the same bytes (see rememberImageAsset for the gate)
- *  - svgImage ..... SVG <image> success URLs only; isolated from HTML/proxy cache provenance
+ *  - svgImage ..... admitted SVG <image> data URLs after a successful second observation
+ *  - svgImageCandidates ... bounded URL-only probationary one-hit ghost entries
  *  - background ... background-image data URLs by URL (utils/image.js)
  *  - resource ..... blob: URL contents (clone.helpers resolveBlobUrl; fonts.js reads it)
  *  - defaultStyle . per-tag UA defaults from the sandbox (utils/css.js)
@@ -72,6 +76,7 @@ class EvictingMap extends Map {
 export const cache = {
   image: new EvictingMap(MAX_IMAGE),
   svgImage: new EvictingMap(MAX_SVG_IMAGE),
+  svgImageCandidates: new EvictingMap(MAX_SVG_IMAGE_CANDIDATES),
   background: new EvictingMap(MAX_BACKGROUND),
   resource: new EvictingMap(MAX_RESOURCE),
   defaultStyle: new EvictingMap(MAX_DEFAULT_STYLE),
@@ -99,8 +104,17 @@ export function rememberSvgImageAsset(url, data) {
   if (typeof data !== 'string' || !data.startsWith('data:') ||
       data.length > MAX_SVG_IMAGE_MEMO_CHARS) return false
   const svgMemo = cache.svgImage
+  if (svgMemo.has(url)) return true
+  // Only admit a full data URL on a SECOND successful fetch. One-hit and
+  // high-cardinality scans otherwise allocate/evict large strings without
+  // ever realizing an image memo hit; the bounded ghost set retains URLs only.
+  if (!cache.svgImageCandidates.has(url)) {
+    cache.svgImageCandidates.set(url, true)
+    return false
+  }
+  cache.svgImageCandidates.delete(url)
   // Evict oldest first, including at the entry limit. Keep simple O(50) accounting:
-  // a tiny bounded walk avoids maintaining a mutable byte counter during resets/deletes.
+  // a bounded walk avoids maintaining a mutable counter during resets/deletes.
   svgMemo.set(url, data)
   let chars = 0
   for (const value of svgMemo.values()) chars += value.length
@@ -249,6 +263,7 @@ export function applyCachePolicy(policy = 'soft') {
   cache.defaultStyle  = new EvictingMap(MAX_DEFAULT_STYLE)
   cache.image         = new EvictingMap(MAX_IMAGE)
   cache.svgImage      = new EvictingMap(MAX_SVG_IMAGE)
+  cache.svgImageCandidates = new EvictingMap(MAX_SVG_IMAGE_CANDIDATES)
   cache.background    = new EvictingMap(MAX_BACKGROUND)
   cache.resource      = new EvictingMap(MAX_RESOURCE)
   cache.compress      = new EvictingMap(MAX_COMPRESS)
