@@ -31,6 +31,7 @@ import { sessionWarn } from '../utils/debug.js'
 import { cache, rememberImageAsset } from '../core/cache.js'
 import { compressWorkerRouteOpen } from './compress.js'
 import { pickSrcsetCandidate } from './pictureResolver.js'
+import { runBoundedSettled } from '../utils/boundedSettled.js'
 
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
 
@@ -64,7 +65,7 @@ function extractImageDimensions(img) {
 }
 
 /**
- * Inline every <img> and SVG <image> in the clone, six at a time.
+ * Inline every <img> and SVG <image> in the clone using six continuously refilled slots.
  *
  * Per <img>: pick one concrete src (srcset and sizes are dropped), reuse a cached data URL,
  * else fetch. A fetch that fails tries `fallbackURL` (string or async callback), then
@@ -81,6 +82,9 @@ export async function inlineImages(clone, options = {}) {
   // <img>, it must be included or its src stays external and svg-as-image won't load it.
   const imgs = Array.from(clone.querySelectorAll('img'))
   if (clone.tagName === 'IMG') imgs.unshift(clone)
+  // Snapshot both sets before editing clone nodes (failed HTML images may be replaced).
+  const svgImages = Array.from(clone.querySelectorAll('image'))
+  if (clone.localName === 'image') svgImages.unshift(clone)
   /** @param {HTMLImageElement} img */
   const processImg = async (img) => {
     // Normalize src/srcset/sizes to a single concrete URL. currentSrc stays empty on the
@@ -182,19 +186,8 @@ export async function inlineImages(clone, options = {}) {
     }
   }
 
-  // Batch size 6 matches the typical per-origin HTTP/1.1 connection limit;
-  // raising it further doesn't help once the connection pool is saturated
-  // and could degrade other in-flight requests on the page.
-  const BATCH = 6
-  for (let i = 0; i < imgs.length; i += BATCH) {
-    const group = imgs.slice(i, i + BATCH).map(processImg)
-    await Promise.allSettled(group)
-  }
-
-  // #341: SVG <image href="https://..."> (Highcharts, D3). No placeholder on failure: the
-  // href stays as it was and the rasterizer draws nothing there.
-  const svgImages = Array.from(clone.querySelectorAll('image'))
-  if (clone.localName === 'image') svgImages.unshift(clone)
+  // #341: SVG <image href="https://..."> (Highcharts, D3). No placeholder on failure:
+  // the href stays as it was and the rasterizer draws nothing there.
   const processSvgImage = async (el) => {
     const href = getSvgImageHref(el)
     if (!href || href.startsWith('data:') || href.startsWith('blob:')) return
@@ -206,8 +199,11 @@ export async function inlineImages(clone, options = {}) {
       if (typeof el.removeAttributeNS === 'function') el.removeAttributeNS(XLINK_NS, 'href')
     }
   }
-  for (let i = 0; i < svgImages.length; i += BATCH) {
-    const group = svgImages.slice(i, i + BATCH).map(processSvgImage)
-    await Promise.allSettled(group)
-  }
+  // Feed the same six slots continuously. Fixed Promise.allSettled batches made all
+  // five fast completions wait for the sixth straggler before admitting more work;
+  // sequencing HTML and SVG phases additionally left slots idle on mixed charts.
+  // Keep HTML first in the input order, errors isolated, and maximum concurrency = 6.
+  await runBoundedSettled(imgs.length + svgImages.length, (index) =>
+    index < imgs.length ? processImg(imgs[index]) : processSvgImage(svgImages[index - imgs.length])
+  )
 }
