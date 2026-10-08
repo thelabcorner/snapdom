@@ -49,7 +49,9 @@ jobs:
       - run: npx vitest run __tests__/r18.fontVariants.test.js __tests__/module.fonts.test.js __tests__/module.fonts.shadow.test.js __tests__/core.capture.embedFontsAuto.test.js --browser.headless --reporter=dot
 
   paired-benchmark:
-    needs: [contracts, browser]
+    # Full capture timing depends on source integrity, not the independent browser-suite queue.
+    # Both tracks must ultimately pass, but browser installation must not block the experiment.
+    needs: contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     strategy:
