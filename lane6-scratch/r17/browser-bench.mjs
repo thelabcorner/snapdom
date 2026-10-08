@@ -65,7 +65,7 @@ try{
       const canvas=await result.toCanvas()
       const totalMs=performance.now()-t0
       const pixels=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height).data
-      return {captureMs,totalMs,rawHash:await digest(new TextEncoder().encode(raw)),pixelHash:await digest(pixels),width:canvas.width,height:canvas.height,rawLength:raw.length,compressedAssets:(raw.match(/data-snapdom-asset=/g)||[]).length}
+      return {captureMs,totalMs,rawHash:await digest(new TextEncoder().encode(raw)),pixelHash:await digest(pixels),width:canvas.width,height:canvas.height,rawLength:raw.length,compressedAssets:((raw.startsWith('data:image/svg+xml')?decodeURIComponent(raw.slice(raw.indexOf(',')+1)):raw).match(/data-snapdom-asset=/g)||[]).length}
      }
     },{side,compress:c.compress})
     sides[side]={context,page,errors}
@@ -81,6 +81,8 @@ try{
     }
     for(const side of order)if(!Number.isFinite(pair[side].captureMs)||pair[side].captureMs<=0)throw Error('bad timing')
     if(c.compress&&c.id==='mixed-assets'&&pair.candidate.compressedAssets<3)throw Error('FAIL_CLOSED: mixed-assets compression paths not reached')
+    if(c.id==='html-only'&&pair.candidate.compressedAssets<2)throw Error('FAIL_CLOSED: HTML-image compression path not reached')
+    if(!c.compress&&pair.candidate.compressedAssets!==0)throw Error('FAIL_CLOSED: no-compress emitted asset rewrites')
     samples.push(pair)
    }
    for(const side of ['baseline','candidate'])if(sides[side].errors.length)throw Error('console/page errors: '+side+' '+sides[side].errors.join(';'))
