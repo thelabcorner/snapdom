@@ -7,7 +7,7 @@ on:
     paths:
       - '.github/workflows/r12-bitmap-pss.yml'
       - 'lane6-scratch/r10/**'
-      - 'scripts/r12-worker-bitmap.node.test.mjs'
+      - 'lane6-scratch/r12/**'
       - 'scripts/as-blob.node.test.mjs'
       - 'src/core/cache.js'
       - 'src/core/capture.js'
@@ -64,7 +64,7 @@ jobs:
         run: |
           npm run lint
           npm run test:asset-proof
-          node --test scripts/r12-worker-bitmap.node.test.mjs lane6-scratch/r10/tests/asset-bench.contract.test.mjs lane6-scratch/r10/tests/asset-aggregate.contract.test.mjs
+          node --test lane6-scratch/r12/bitmap-worker.contract.test.mjs lane6-scratch/r12/tests/pss-retarget.contract.test.mjs lane6-scratch/r10/tests/asset-aggregate.contract.test.mjs
 
       - name: Checkout exact AS-BLOB v2 mechanism
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

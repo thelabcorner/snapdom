@@ -336,24 +336,17 @@ function assertColdWorkerBlob(condition, telemetry, label) {
 }
 
 function assertWorkerPayload(side, condition, telemetry, label) {
-  if (!['baseline', 'candidate'].includes(side)) throw new Error(label + ': invalid worker side ' + side)
-  if (side === 'baseline') {
-    if (
-      telemetry.stringPayloadPosts !== 1 ||
-      telemetry.stringPayloadChars <= WORKER_MIN_PAYLOAD_CHARS ||
-      telemetry.blobPayloadPosts !== 0
-    ) {
-      throw new Error(label + ': baseline did not post exactly one large string payload: ' + JSON.stringify(telemetry))
-    }
-  } else {
-    if (
-      telemetry.blobPayloadPosts !== 1 ||
-      telemetry.blobPayloadBytes !== fixtures[condition.fixture].bytes.length ||
-      telemetry.stringPayloadPosts !== 0 ||
-      telemetry.badBlobDataUrlPosts !== 0
-    ) {
-      throw new Error(label + ': candidate did not post exactly one source Blob with empty dataURL: ' + JSON.stringify(telemetry))
-    }
+  if (!['baseline','candidate'].includes(side)) throw new Error(label + ': invalid side')
+  // R12 compares AS-BLOB vs bitmap reuse. BOTH mechanisms send a retained source Blob,
+  // unlike the original R10 experiment where its pre-AS-BLOB baseline sent a string.
+  // Never silently accept a baseline string payload or a missing Worker post.
+  if (
+    telemetry.blobPayloadPosts !== 1 ||
+    telemetry.blobPayloadBytes !== fixtures[condition.fixture].bytes.length ||
+    telemetry.stringPayloadPosts !== 0 ||
+    telemetry.badBlobDataUrlPosts !== 0
+  ) {
+    throw new Error(label + ': both R12 sides must post one exact fetched Blob: ' + JSON.stringify(telemetry))
   }
 }
 
@@ -372,8 +365,7 @@ function assertWorkerTelemetry(condition, telemetry, label, { warmIndex = null, 
     if (posts !== 1 || messages !== 1 || errors !== 0 || errorPosts !== 0) {
       throw new Error(label + ': cold warmup worker did not complete one successful request/response: ' + JSON.stringify(telemetry))
     }
-    // c523ddb already forwards the Blob produced by the cold fetch. AS-BLOB's mechanism begins
-    // only on a later capture whose image memo preserves the data URL but, on baseline, not Blob.
+    // Both the frozen AS-BLOB baseline and R12 candidate post source Blob on cold captures.
     assertColdWorkerBlob(condition, telemetry, label)
     return
   }
@@ -429,8 +421,8 @@ async function warm(sidePage, side, condition, label) {
   const observations = []
   for (let i = 0; i < WARMUP; i++) {
     const observed = await capture(sidePage.page, condition.warm)
-    if (side === 'candidate') assertWarmCandidateRoute(condition, observed.routes, label + ' warmup ' + i, i)
-    else if (observed.routes !== null) throw new Error(label + ': baseline warmup exposed candidate route counters')
+    // Both sides are post-AS-BLOB sources and BOTH expose caller-local route counters.
+    assertWarmCandidateRoute(condition, observed.routes, label + ' warmup ' + i, i)
     assertWorkerTelemetry(condition, observed.workerTelemetry, label + ' warmup ' + i, { warmIndex: i, side })
     observations.push({ routes: observed.routes, workerTelemetry: observed.workerTelemetry })
   }
@@ -453,10 +445,9 @@ async function timingCondition(browser, condition, conditionIndex) {
       const order = pairOrder(REPLICATE, conditionIndex, i)
       const observed = {}
       for (const side of order) observed[side] = await capture(sides[side].page, geometry)
-      if (observed.baseline.routes !== null) {
-        throw new Error(condition.id + ': baseline unexpectedly exposed candidate route counters')
+      for (const side of ['baseline','candidate']) {
+        assertCandidateRoute(condition, observed[side].routes, condition.id + ' timing ' + side + ' sample ' + i)
       }
-      assertCandidateRoute(condition, observed.candidate.routes, condition.id + ' timing sample ' + i)
       assertWorkerTelemetry(condition, observed.baseline.workerTelemetry, condition.id + '/timing/baseline sample ' + i, { side: 'baseline' })
       assertWorkerTelemetry(condition, observed.candidate.workerTelemetry, condition.id + '/timing/candidate sample ' + i, { side: 'candidate' })
       pairs.push({
@@ -559,12 +550,8 @@ async function memorySide(side, condition) {
     const routeSamples = []
     for (let i = 0; i < condition.samples.length; i++) {
       const observed = await capture(sidePage.page, condition.samples[i])
-      if (side === 'candidate') {
-        assertCandidateRoute(condition, observed.routes, condition.id + ' memory sample ' + i)
-        routeSamples.push(observed.routes)
-      } else if (observed.routes !== null) {
-        throw new Error(condition.id + ': baseline memory page exposed candidate route counters')
-      }
+      assertCandidateRoute(condition, observed.routes, condition.id + ' memory ' + side + ' sample ' + i)
+      routeSamples.push(observed.routes)
       assertWorkerTelemetry(condition, observed.workerTelemetry, condition.id + '/memory/' + side + ' sample ' + i, { side })
     }
 
