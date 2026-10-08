@@ -60,10 +60,11 @@ if (!fs.existsSync(PREPARED)) throw new Error('prepared.json missing')
 
 const prepared = JSON.parse(fs.readFileSync(PREPARED, 'utf8'))
 if (prepared.schema !== 'snapdom-r10-asblob-prepared-v1') throw new Error('prepared schema mismatch')
+if (REPLICATE >= prepared.acquisition?.runnerReplicates) throw new Error('replicate outside prepared acquisition plan')
 if (
   prepared.acquisition?.repeats !== REPEATS ||
   prepared.acquisition?.warmup !== WARMUP ||
-  prepared.acquisition?.runnerReplicates !== 6 ||
+  prepared.acquisition?.runnerReplicates !== Number(process.env.SNAPDOM_COHORT_RUNNERS || 6) ||
   JSON.stringify(prepared.acquisition?.memorySettlePolicy) !== JSON.stringify(PSS_SETTLE_POLICY)
 ) {
   throw new Error('acquisition policy drifted after prepare')
