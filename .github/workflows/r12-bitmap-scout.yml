@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/modules/compress.js'
       - 'lane6-scratch/r12/**'
+      - 'lane6-scratch/r10/asset-bench-lib.mjs'
       - '.github/workflows/r12-bitmap-scout.yml'
       - 'package-lock.json'
       - 'package.json'
