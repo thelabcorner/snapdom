@@ -190,18 +190,32 @@ describe('SVG image cross-capture reuse (R15)', () => {
     expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
   })
 
-  it('leaves a bounded URL-only probation set under one-off high-cardinality scans', async () => {
+  it('bypasses both image memo and probation for all one-offs in oversized source trees', async () => {
     const root = document.createElementNS(NS, 'svg')
     for (let i = 0; i < 120; i++) root.appendChild(svgImage(URL_A + '?id=' + i))
     await inlineImages(root)
     expect(snapFetch).toHaveBeenCalledTimes(120)
     expect(cache.svgImage.size).toBe(0)
-    expect(cache.svgImageCandidates.size).toBe(120)
-    const reused = svgImage(URL_A + '?id=119')
-    await inlineImages(reused)
-    expect(reused.getAttribute('href')).toBe(DATA_A)
-    expect(cache.svgImage.has(URL_A + '?id=119')).toBe(true)
-    expect(cache.svgImageCandidates.has(URL_A + '?id=119')).toBe(false)
+    expect(cache.svgImageCandidates.size).toBe(0)
+    // A second full sweep is still a high-cardinality one-off workload.
+    const root2 = document.createElementNS(NS, 'svg')
+    for (let i = 0; i < 120; i++) root2.appendChild(svgImage(URL_A + '?id=' + i))
+    await inlineImages(root2)
+    expect(snapFetch).toHaveBeenCalledTimes(240)
+    expect(cache.svgImage.size).toBe(0)
+  })
+
+  it('retains only frequent SVG sources inside high-cardinality mixed trees', async () => {
+    const root = document.createElementNS(NS, 'svg')
+    for (let i = 0; i < 60; i++) root.appendChild(svgImage(URL_A + '?id=' + i))
+    for (let i = 0; i < 8; i++) root.appendChild(svgImage(URL_A + '?id=0'))
+    await inlineImages(root)
+    expect(cache.svgImage.get(URL_A + '?id=0')).toBe(DATA_A)
+    expect(cache.svgImage.size).toBe(1)
+    expect(cache.svgImageCandidates.size).toBe(0)
+    const before = vi.mocked(snapFetch).mock.calls.length
+    await inlineImages(svgImage(URL_A + '?id=0'))
+    expect(snapFetch).toHaveBeenCalledTimes(before)
   })
 
   it('rejects a single oversized source instead of pinning unbounded data URL memory', async () => {
