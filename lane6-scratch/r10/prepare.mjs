@@ -35,7 +35,7 @@ const playwrightVersion = require('playwright/package.json').version
 // R10 keeps its historical default. R12 must hash its OWN hosted workflow, rather
 // than requiring a stale R10 filename absent from the experiment head.
 const workflowRel = arg('workflow', '.github/workflows/r10-asset-bench.yml')
-if (!['.github/workflows/r10-asset-bench.yml', '.github/workflows/r12-bitmap-pss.yml'].includes(workflowRel)) {
+if (!['.github/workflows/r10-asset-bench.yml', '.github/workflows/r12-bitmap-pss.yml', '.github/workflows/r12-pss-verification-retry.yml'].includes(workflowRel)) {
   throw new Error('unrecognised measurement workflow: ' + workflowRel)
 }
 const measurementFiles = [
