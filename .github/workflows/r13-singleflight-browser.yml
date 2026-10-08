@@ -1,0 +1,78 @@
+name: snapDOM R13 single-flight actual Worker paired Chromium study
+
+on:
+  push:
+    branches: ['perf/v3-r13-singleflight-bitmap-decode']
+    paths:
+      - '.github/workflows/r13-singleflight-browser.yml'
+      - 'scripts/r13-singleflight-browser.mjs'
+      - 'src/modules/compress.js'
+      - 'lane6-scratch/r12/bitmap-worker.contract.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r13-singleflight-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.21.1'
+  R13_REFERENCE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+
+jobs:
+  browser:
+    name: Fresh Chromium runner r${{ matrix.replicate }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        replicate: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact experimental head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout exact frozen R12 control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.R13_REFERENCE_SHA }}
+          path: __r12_reference
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prove exact source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C __r12_reference rev-parse HEAD)" = "$R13_REFERENCE_SHA"
+          git diff --exit-code "$R13_REFERENCE_SHA" -- src/core/cache.js src/core/capture.js src/modules/images.js esbuild.config.mjs package.json package-lock.json
+      - name: Set up pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install locked toolchain and Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Apply hosted-only environment CPU governor
+        run: node lane6-scratch/r10/host-settle.mjs
+      - name: Run balanced real-Worker experiment
+        run: node lane6-scratch/r5/run-with-timing-gate.mjs -- node scripts/r13-singleflight-browser.mjs --replicate=${{ matrix.replicate }}
+      - name: Preserve original runner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r13-realworker-r${{ matrix.replicate }}-${{ github.run_id }}
+          path: |
+            lane6-scratch/r13/results/runner-r${{ matrix.replicate }}.json
+            lane6-scratch/r10/host-settle.json
+            lane6-scratch/r5/results/timing-environment-latest.json
+          if-no-files-found: warn
+          retention-days: 45
