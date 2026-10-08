@@ -1,0 +1,94 @@
+name: snapDOM R23 preregistered ancestor native-memory confirmation
+on:
+  push:
+    branches:
+      - 'perf/v3-r23-ancestor-memory-null'
+    paths:
+      - '.github/workflows/r23-ancestor-memory.yml'
+      - 'scripts/r23-ancestor-*.mjs'
+      - 'scripts/r23-memory-aggregate.node.test.mjs'
+      - 'lane6-scratch/r23/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: r23-memory-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Prove frozen R20 production source unchanged
+        run: git diff --exit-code f1259ab411890f8c0a10d5a35b83ef5ec5c56e04 HEAD -- src/
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+      - run: node --check scripts/r23-ancestor-pss.mjs
+      - run: node --check scripts/r23-ancestor-memory-aggregate.mjs
+      - run: node --test scripts/r23-memory-aggregate.node.test.mjs
+  pss:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run compile
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r23_baseline
+      - name: Compile immutable historical baseline independently
+        working-directory: __r23_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cac07a4108086718bc9511663346e1b9fcf4e226
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Isolated PSS AB/BA plus balanced same-source baseline XY/YX null
+        run: node scripts/r23-ancestor-pss.mjs
+        env:
+          SNAPDOM_R23_HOST: ${{ matrix.host }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r23-pss-${{ matrix.host }}
+          path: lane6-scratch/r23/evidence/pss-${{ matrix.host }}.json
+          if-no-files-found: error
+  aggregate:
+    needs: pss
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r23-pss-*
+          path: lane6-scratch/r23/memory-artifacts
+      - name: Image-revision selection and runner-level null-aware intervals
+        run: node scripts/r23-ancestor-memory-aggregate.mjs lane6-scratch/r23/memory-artifacts
+        env:
+          SNAPDOM_R23_SUMMARY: lane6-scratch/r23/summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r23-native-memory-summary
+          path: lane6-scratch/r23/summary.json
+          if-no-files-found: error
