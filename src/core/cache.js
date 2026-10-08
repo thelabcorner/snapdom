@@ -11,7 +11,7 @@
 
 /** Max entries before evicting oldest (FIFO). Keeps lib lightweight, avoids memory leaks. */
 const MAX_IMAGE = 100
-const MAX_SVG_IMAGE = 50
+export const MAX_SVG_IMAGE = 50
 // Keep a bounded source-identity ghost set. Single-use sources should not pin
 // multi-MB data URLs or scan the full retained-byte budget on every miss.
 const MAX_SVG_IMAGE_CANDIDATES = 128
