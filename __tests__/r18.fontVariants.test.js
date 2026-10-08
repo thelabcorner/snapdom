@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { collectFontUsage } from '../src/modules/fonts.js'
+import { invalidateStyleCaches } from '../src/modules/styles.js'
 
 const mounted = []
 const host = () => {
@@ -63,6 +64,8 @@ describe('R18 capture-local font variants', () => {
     style.textContent = '.r18-fix::before { content: "★"; font-family: "R18 Pseudo"; font-weight: 700 }'
     document.head.appendChild(style)
     mounted.push(style)
+    // CSSOM writes need explicit invalidation when exercising the bare collector.
+    invalidateStyleCaches()
     root.className = 'r18-fix'
     const shell = document.createElement('div')
     const shadow = shell.attachShadow({ mode: 'open' })
