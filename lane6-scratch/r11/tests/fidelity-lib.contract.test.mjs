@@ -805,7 +805,7 @@ test('a baseline that never touches the worker on a claim arm is refused', () =>
   cell.A.baseline.steps[1] = { ...cell.A.baseline.steps[1], telemetry: zeroed }
   const verdict = cellVerdict('chromium', 'large-repeat-scale', { cells: { 'large-repeat-scale': cell } })
   assert.equal(verdict.state, 'FIDELITY_FAILURE')
-  assert.ok(verdict.problems.some((p) => /baseline telemetry at scale-1/.test(p)))
+  assert.ok(verdict.problems.some((p) => /baseline telemetry at scale-0/.test(p)))
 })
 
 test('the gate records the exact cell and engine inventory it was decided against', () => {
