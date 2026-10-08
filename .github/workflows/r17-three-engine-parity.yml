@@ -4,7 +4,7 @@ on:
   push:
     branches: ['perf/v3-r17-three-engine-parity']
     paths:
-      - 'scripts/r17-three-engine-browser.mjs'
+      - 'scripts/r17-three-engine-*.mjs'
       - '.github/workflows/r17-three-engine-parity.yml'
   workflow_dispatch:
 
