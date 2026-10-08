@@ -1,4 +1,4 @@
-name: snapDOM R12 decoded-bitmap experimental contracts
+name: snapDOM R12 decoded-bitmap experimental contracts and hosted paired benchmarks
 
 on:
   push:
@@ -29,12 +29,72 @@ jobs:
           node-version: '22.21.1'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Falsify bitmap cache behavior using the production Worker source in a VM
-        run: node --test lane6-scratch/r12/bitmap-worker.contract.test.mjs
-      - name: Validate source without claiming browser speed
+      - run: node --test lane6-scratch/r12/bitmap-worker.contract.test.mjs
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+      - run: npm run test:asset-proof
+
+  benchmark:
+    needs: contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact candidate measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout exact AS-BLOB frozen comparison baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d391556b80be7a6d97bc4834d2ce6e24137515b2
+          path: baseline
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Prove exact baseline
+        run: test "$(git -C baseline rev-parse HEAD)" = "d391556b80be7a6d97bc4834d2ce6e24137515b2"
+      - name: Build separately to prevent cross-side module/cache contamination
         run: |
-          npm run lint
-          npm run test:types
+          npm ci --no-audit --no-fund
           npm run compile
-      - name: Keep the frozen R10 AS-BLOB cache contracts green
-        run: npm run test:asset-proof
+          (cd baseline && npm ci --no-audit --no-fund && npm run compile)
+          npx playwright install --with-deps chromium
+      - name: Run R12 paired trial on hosted browser
+        env:
+          RUNNER_INDEX: ${{ matrix.replica }}
+        run: node lane6-scratch/r12/bench.mjs
+      - name: Upload original experiment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-runner-${{ matrix.replica }}
+          path: lane6-scratch/r12/results/replica-*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r12-runner-*
+          path: lane6-scratch/r12/results
+          merge-multiple: true
+      - name: Aggregate all six independently acquired paired trials
+        run: node lane6-scratch/r12/aggregate.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-six-runner-summary
+          path: lane6-scratch/r12/results/summary.json
+          if-no-files-found: error
+          retention-days: 60
