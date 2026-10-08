@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/r13-singleflight-browser.yml'
       - 'scripts/r13-singleflight-browser.mjs'
+      - 'scripts/r13-singleflight-aggregate.mjs'
+      - 'lane6-scratch/r10/host-settle.mjs'
       - 'src/modules/compress.js'
       - 'lane6-scratch/r12/bitmap-worker.contract.test.mjs'
   workflow_dispatch:
@@ -78,3 +80,35 @@ jobs:
             lane6-scratch/r5/results/timing-environment-latest.json
           if-no-files-found: warn
           retention-days: 45
+
+  aggregate:
+    name: Six-runner independent paired aggregation
+    needs: browser
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact experiment head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Download all original browser records
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r13-realworker-r*-${{ github.run_id }}
+          path: lane6-scratch/r13/results
+      - name: Decide evidence completeness and confidence interval
+        run: node scripts/r13-singleflight-aggregate.mjs
+      - name: Save independent-runner summary even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r13-singleflight-summary-${{ github.run_id }}
+          path: lane6-scratch/r13/results/summary.json
+          if-no-files-found: warn
+          retention-days: 60
