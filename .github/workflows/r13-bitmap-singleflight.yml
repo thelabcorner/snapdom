@@ -1,0 +1,46 @@
+name: snapDOM R13 bitmap single-flight experimental contracts
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r13-singleflight-bitmap-decode'
+    paths:
+      - '.github/workflows/r13-bitmap-singleflight.yml'
+      - 'src/modules/compress.js'
+      - 'lane6-scratch/r12/bitmap-worker.contract.test.mjs'
+      - 'scripts/as-blob.node.test.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r13-bitmap-singleflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    name: Browser-free exact-identity and lifetime contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact experiment head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Lint and verify standalone decode contracts
+        run: |
+          npm run lint
+          node --test lane6-scratch/r12/bitmap-worker.contract.test.mjs scripts/as-blob.node.test.mjs
+      - name: Compile experimental source
+        run: npm run compile
