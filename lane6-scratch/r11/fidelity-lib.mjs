@@ -515,10 +515,10 @@ export const MISSING_FIXTURE = Object.freeze({
  *  - `rawForbids`   substrings that must not survive into the candidate's raw output.
  *  - `expect.steps` per-step candidate route shape plus a Worker telemetry shape, keyed by label.
  *  - `expect.rest`  the same, for every step after the named ones.
- *  - `telemetryBySide` per-side override for the repeat arms, where the mechanism deliberately
- *                   changes the payload: c523ddb has no Blob sidecar to re-post, so it must post
- *                   the base64 string where the candidate posts the Blob. Asserting one shape for
- *                   both sides would fail the frozen baseline for a correct reason.
+ *  - `telemetryBySide` explicitly pins both R12 sides to the AS-BLOB transport. The
+ *                   baseline d391556 retains fetched Blob sidecars; the candidate ce135fb
+ *                   changes decoded-bitmap reuse inside the worker, not the posted payload.
+ *                   The two-image eviction arm still has one retained Blob and one string.
  */
 export const CELLS = Object.freeze([
   {
@@ -554,7 +554,7 @@ export const CELLS = Object.freeze([
       rest: {
         shape: 'workerBlobOnce',
         telemetry: 'blobPost',
-        telemetryBySide: { baseline: 'stringPost', candidate: 'blobPost' },
+        telemetryBySide: { baseline: 'blobPost', candidate: 'blobPost' },
       },
     },
   },
@@ -570,7 +570,7 @@ export const CELLS = Object.freeze([
       rest: {
         shape: 'workerBlobOnce',
         telemetry: 'blobPost',
-        telemetryBySide: { baseline: 'stringPost', candidate: 'blobPost' },
+        telemetryBySide: { baseline: 'blobPost', candidate: 'blobPost' },
       },
     },
   },
@@ -676,7 +676,7 @@ export const CELLS = Object.freeze([
       rest: {
         shape: 'workerBlobStringOnce',
         telemetry: 'blobAndStringPost',
-        telemetryBySide: { baseline: 'twoStringPosts', candidate: 'blobAndStringPost' },
+        telemetryBySide: { baseline: 'blobAndStringPost', candidate: 'blobAndStringPost' },
       },
     },
   },
