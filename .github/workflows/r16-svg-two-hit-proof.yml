@@ -32,7 +32,6 @@ jobs:
       - run: npm run test:types
       - run: npm run compile
       - run: npm run test:asset-proof
-      - run: npx vitest run __tests__/core.cache.test.js --reporter=dot
   browser:
     needs: source-contracts
     runs-on: ubuntu-24.04
@@ -51,4 +50,4 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps ${{ matrix.browser }}
-      - run: npx vitest run __tests__/modules.images.svgMemo.test.js __tests__/modules.images.test.js --browser.headless --reporter=dot
+      - run: npx vitest run __tests__/modules.images.svgMemo.test.js __tests__/modules.images.test.js __tests__/core.cache.test.js --browser.headless --reporter=dot
