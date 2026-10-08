@@ -368,6 +368,22 @@ test('CSP is served as a response header rather than a meta tag', () => {
   assert.match(source, /worker-src 'none'/)
 })
 
+test('image references are counted inside decoded SVG, not its data URL wrapper', () => {
+  const source = fs.readFileSync(RUNNER, 'utf8')
+  assert.ok(source.includes('new DOMParser().parseFromString(xml, "image/svg+xml")'))
+  assert.ok(source.includes('doc.querySelectorAll("img, image")'))
+  assert.ok(source.includes('return sources.size'))
+  assert.equal(source.includes('raw.indexOf("data:image/"'), false)
+})
+
+test('two-image eviction waits for all Worker responses before assigning a per-step delta', () => {
+  const source = fs.readFileSync(RUNNER, 'utf8')
+  assert.ok(source.includes('spec.id === "budget-eviction"'))
+  assert.ok(source.includes('budget-eviction worker replies did not match posts'))
+  assert.ok(source.includes('window.__routeReaderSeen = true'))
+  assert.ok(source.includes('window.__routeReaderSeen = false'))
+})
+
 test('the runner refuses an incomplete record rather than admitting a partial step', () => {
   const source = fs.readFileSync(RUNNER, 'utf8')
   assert.match(source, /incomplete evidence at/)

@@ -242,8 +242,18 @@ test('terminal route shapes accept only the exact tally', () => {
   assert.equal(candidateRouteVerdict({ shape: 'memoOnce' }, ROUTE_SHAPES.memoOnce).ok, true)
   assert.equal(candidateRouteVerdict({ shape: 'zeros' }, ROUTE_SHAPES.zeros).ok, true)
   assert.equal(candidateRouteVerdict({ shape: 'zeros' }, ROUTE_SHAPES.memoOnce).ok, false)
+  assert.equal(candidateRouteVerdict({ shape: 'headerOnce' }, ROUTE_SHAPES.headerOnce).ok, true)
   assert.equal(candidateRouteVerdict({ shape: 'unknown-shape' }, ROUTE_SHAPES.zeros).ok, false)
   assert.equal(candidateRouteVerdict({ shape: 'memoOnce' }, null).ok, false)
+})
+
+test('compression disabled: absent counters require confirmed afterRender', () => {
+  const exp = { shape: 'noCountersWhenDisabled' }
+  assert.equal(candidateRouteVerdict(exp, null, true).ok, true)
+  assert.equal(candidateRouteVerdict(exp, null, false).ok, false)
+  assert.equal(candidateRouteVerdict(exp, undefined, true).ok, false)
+  assert.equal(candidateRouteVerdict(exp, ROUTE_SHAPES.zeros, true).ok, false)
+  assert.equal(candidateRouteVerdict({ shape: 'zeros' }, null, true).ok, false)
 })
 
 test('a candidate that publishes no counters at all is a failure, not a skip', () => {
@@ -428,6 +438,8 @@ test('page specs describe the DOM and sequence the hosted page must build', () =
   assert.equal(missing.images[0].src, '/fixtures/missing.png')
   assert.equal(cellPageSpec(cellById('image-fetch-fallback')).fallbackURL, '/fixtures/fallback.png')
   assert.deepEqual(cellPageSpec(cellById('compress-off-large')).rawForbids, undefined)
+  assert.equal(stepExpectation(cellById('compress-off-large'), 'cold').shape, 'noCountersWhenDisabled')
+  assert.equal(stepExpectation(cellById('image-fetch-fallback'), 'cold').shape, 'headerOnce')
   assert.deepEqual(cellPageSpec(cellById('image-fetch-error')).rawForbids, undefined)
   assert.deepEqual(cellById('image-fetch-error').rawForbids, ['/missing.png'])
 })
@@ -497,7 +509,7 @@ function satisfiedSide(cellId, which) {
       Object.assign(telemetry, { attempts: 1, constructed: 1, errors: 1 })
     }
 
-    let routes = ROUTE_SHAPES[expectation.shape] ?? ROUTE_SHAPES.zeros
+    let routes = expectation.shape === 'noCountersWhenDisabled' ? null : (ROUTE_SHAPES[expectation.shape] ?? ROUTE_SHAPES.zeros)
     if (expectation.cspDenied) {
       routes = { memo: 0, inflight: 0, header: 0, workerBlob: 1, workerString: 0, main: 1 }
     }
@@ -514,6 +526,7 @@ function satisfiedSide(cellId, which) {
       // Follow the frozen cell contract rather than fabricating a payload for `missing`.
       inlineDataUrls: cell.expectedInlineDataUrls ?? cell.images.length,
       canvas: goodCanvas(),
+      routeReaderSeen: true,
       routes: which === 'candidate' ? routes : null,
       telemetry,
     }

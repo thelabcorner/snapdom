@@ -269,6 +269,7 @@ export const ROUTE_SHAPES = Object.freeze({
   workerBlobOnce: routes({ workerBlob: 1 }),
   workerBlobTwice: routes({ workerBlob: 2 }),
   workerBlobStringOnce: routes({ workerBlob: 1, workerString: 1 }),
+  headerOnce: routes({ header: 1 }),
   mainOnce: routes({ main: 1 }),
 })
 
@@ -407,7 +408,14 @@ export function telemetryVerdict(
  * an attempted post AND the main-thread fallback. That allowance is `candidateWarmRouteValid`'s,
  * imported from r10 rather than restated, so it has exactly one definition in the repository.
  */
-export function candidateRouteVerdict(expectation, observed) {
+export function candidateRouteVerdict(expectation, observed, routeReaderSeen = true) {
+  // Production deliberately has no counter object with compress:false. Only admit null
+  // after the caller's instrumentation confirms afterRender executed.
+  if (expectation.shape === 'noCountersWhenDisabled') {
+    return routeReaderSeen === true && observed === null
+      ? { ok: true, shape: 'noCountersWhenDisabled', routes: null, total: 0 }
+      : { ok: false, reason: 'compress:false requires verified afterRender and no counters' }
+  }
   if (!observed) {
     return { ok: false, reason: 'candidate afterRender published no __assetRoutes' }
   }
@@ -595,8 +603,8 @@ export const CELLS = Object.freeze([
     compress: false,
     repeat: { kind: 'scale', count: 3 },
     expect: {
-      steps: { cold: { shape: 'zeros', telemetry: 'noWorker' } },
-      rest: { shape: 'zeros', telemetry: 'noWorker' },
+      steps: { cold: { shape: 'noCountersWhenDisabled', telemetry: 'noWorker' } },
+      rest: { shape: 'noCountersWhenDisabled', telemetry: 'noWorker' },
     },
   },
   {
@@ -699,8 +707,8 @@ export const CELLS = Object.freeze([
     repeat: { kind: 'scale', count: 2 },
     rawForbids: ['/missing.png'],
     expect: {
-      steps: { cold: { shape: 'zeros', telemetry: 'noWorker' } },
-      rest: { shape: 'zeros', telemetry: 'noWorker' },
+      steps: { cold: { shape: 'headerOnce', telemetry: 'noWorker' } },
+      rest: { shape: 'headerOnce', telemetry: 'noWorker' },
     },
   },
 ])
@@ -868,7 +876,7 @@ export function cellVerdict(engine, cellId, evidence, options = {}) {
       if (!expectation) {
         problems.push('step ' + step.label + ' has no expectation')
       } else {
-        const routeVerdict = candidateRouteVerdict(expectation, candidate.routes)
+        const routeVerdict = candidateRouteVerdict(expectation, candidate.routes, candidate.routeReaderSeen)
         if (!routeVerdict.ok) {
           problems.push('candidate route at ' + step.label + ': ' + routeVerdict.reason)
         }
