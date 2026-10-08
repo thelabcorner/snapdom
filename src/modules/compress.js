@@ -888,7 +888,13 @@ export async function compressCloneAssets(clone, options, nodeMap) {
   options.__assetRoutes = routes
   if (!options.compress) return
   const geometry = {}
-  await compressClonedImages(clone, options, nodeMap, geometry, routes)
-  await compressClonedBackgrounds(clone, options, nodeMap, geometry, routes)
-  await compressClonedSvgImages(clone, options, nodeMap, geometry, routes)
+  // Three disjoint destination channels (HTML src, CSS background-image, SVG href).
+  // Start all bounded per-channel queues together so an idle Worker can accept work
+  // while another channel is awaiting decode/encode. The final asset-token renumbering
+  // restores deterministic DOM order regardless of completion order.
+  await Promise.all([
+    compressClonedImages(clone, options, nodeMap, geometry, routes),
+    compressClonedBackgrounds(clone, options, nodeMap, geometry, routes),
+    compressClonedSvgImages(clone, options, nodeMap, geometry, routes),
+  ])
 }
