@@ -1,4 +1,4 @@
-// R15 SVG <image> cross-capture memo: precise successes, failures, invalidation,
+// R16 SVG <image> two-hit admission: precise successes, failures, invalidation,
 // bounded retention and complete partitioning from HTML image/proxy identities.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { inlineImages } from '../src/modules/images.js'
@@ -26,6 +26,7 @@ function svgImage(url, attr = 'href') {
 beforeEach(() => {
   cache.image.clear()
   cache.svgImage.clear()
+  cache.svgImageCandidates.clear()
   vi.mocked(snapFetch).mockReset()
   vi.mocked(snapFetch).mockResolvedValue({ ok: true, data: DATA_A })
 })
@@ -34,11 +35,16 @@ describe('SVG image cross-capture reuse (R15)', () => {
   it('reuses a fetched absolute URL for later clones without touching the source again', async () => {
     const one = svgImage(URL_A)
     const two = svgImage(URL_A)
+    const three = svgImage(URL_A)
     await inlineImages(one)
+    expect(cache.svgImage.get(URL_A)).toBeUndefined()
+    expect(cache.svgImageCandidates.has(URL_A)).toBe(true)
     await inlineImages(two)
+    await inlineImages(three)
     expect(one.getAttribute('href')).toBe(DATA_A)
     expect(two.getAttribute('href')).toBe(DATA_A)
-    expect(snapFetch).toHaveBeenCalledTimes(1)
+    expect(three.getAttribute('href')).toBe(DATA_A)
+    expect(snapFetch).toHaveBeenCalledTimes(2)
     expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
   })
 
@@ -47,13 +53,18 @@ describe('SVG image cross-capture reuse (R15)', () => {
     html.src = URL_A
     vi.mocked(snapFetch).mockResolvedValueOnce({ ok: true, data: DATA_A })
       .mockResolvedValueOnce({ ok: true, data: DATA_B })
+      .mockResolvedValueOnce({ ok: true, data: DATA_B })
     await inlineImages(html, { compress: false, useProxy: '/proxy?url=' })
     const svg = svgImage(URL_A)
     await inlineImages(svg)
+    expect(cache.svgImageCandidates.has(URL_A)).toBe(true)
+    const secondSvg = svgImage(URL_A)
+    await inlineImages(secondSvg)
     expect(svg.getAttribute('href')).toBe(DATA_B)
+    expect(secondSvg.getAttribute('href')).toBe(DATA_B)
     expect(cache.image.get(URL_A)?.data).toBe(DATA_A)
     expect(cache.svgImage.get(URL_A)).toBe(DATA_B)
-    expect(snapFetch).toHaveBeenCalledTimes(2)
+    expect(snapFetch).toHaveBeenCalledTimes(3)
   })
 
   it('preserves unrelated successful source identities', async () => {
@@ -65,7 +76,8 @@ describe('SVG image cross-capture reuse (R15)', () => {
     const again = svgImage(URL_A)
     await inlineImages(again)
     expect(again.getAttribute('href')).toBe(DATA_A)
-    expect(snapFetch).toHaveBeenCalledTimes(2)
+    expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
+    expect(snapFetch).toHaveBeenCalledTimes(3)
   })
 
   it('does not memoize failures and preserves the original source on failure', async () => {
@@ -78,6 +90,8 @@ describe('SVG image cross-capture reuse (R15)', () => {
     const retried = svgImage(URL_A)
     await inlineImages(retried)
     expect(retried.getAttribute('href')).toBe(DATA_A)
+    expect(cache.svgImage.has(URL_A)).toBe(false)
+    expect(cache.svgImageCandidates.has(URL_A)).toBe(true)
     expect(snapFetch).toHaveBeenCalledTimes(2)
   })
 
@@ -114,6 +128,7 @@ describe('SVG image cross-capture reuse (R15)', () => {
 
   it('evicts old SVG entries without touching the HTML image memo', async () => {
     await inlineImages(svgImage(URL_A))
+    await inlineImages(svgImage(URL_A))
     cache.image.set('image-with-blob', { data: DATA_A, blob: new Blob([DATA_A]) })
     for (let i = 0; i < 60; i++) cache.svgImage.set('https://assets.example.test/' + i, DATA_B)
     expect(cache.image.has('image-with-blob')).toBe(true)
@@ -121,7 +136,7 @@ describe('SVG image cross-capture reuse (R15)', () => {
     const again = svgImage(URL_A)
     await inlineImages(again)
     expect(again.getAttribute('href')).toBe(DATA_A)
-    expect(snapFetch).toHaveBeenCalledTimes(2)
+    expect(snapFetch).toHaveBeenCalledTimes(3)
   })
 
   it('honors the pre-existing global disabled-cache clearing mechanism', async () => {
@@ -134,13 +149,15 @@ describe('SVG image cross-capture reuse (R15)', () => {
   it('preserves the href/xlink canonicalization contract on both miss and hit', async () => {
     const first = svgImage(URL_A, 'xlink')
     const next = svgImage(URL_A, 'xlink')
+    const third = svgImage(URL_A, 'xlink')
     await inlineImages(first)
     await inlineImages(next)
-    for (const image of [first, next]) {
+    await inlineImages(third)
+    for (const image of [first, next, third]) {
       expect(image.getAttribute('href')).toBe(DATA_A)
       expect(image.getAttributeNS(XLINK, 'href')).toBeNull()
     }
-    expect(snapFetch).toHaveBeenCalledTimes(1)
+    expect(snapFetch).toHaveBeenCalledTimes(2)
   })
 
   it('does not rewrite embedded data or blob URLs', async () => {
@@ -160,6 +177,7 @@ describe('SVG image cross-capture reuse (R15)', () => {
     await inlineImages(svgImage(URL_A), { cache: false })
     expect(snapFetch).toHaveBeenCalledTimes(8)
     expect(cache.svgImage.has(URL_A)).toBe(false)
+    expect(cache.svgImageCandidates.has(URL_A)).toBe(false)
   })
 
   it('reuses successful SVG sources across a capture batch boundary with cache enabled', async () => {
@@ -172,10 +190,25 @@ describe('SVG image cross-capture reuse (R15)', () => {
     expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
   })
 
+  it('leaves a bounded URL-only probation set under one-off high-cardinality scans', async () => {
+    const root = document.createElementNS(NS, 'svg')
+    for (let i = 0; i < 120; i++) root.appendChild(svgImage(URL_A + '?id=' + i))
+    await inlineImages(root)
+    expect(snapFetch).toHaveBeenCalledTimes(120)
+    expect(cache.svgImage.size).toBe(0)
+    expect(cache.svgImageCandidates.size).toBe(120)
+    const reused = svgImage(URL_A + '?id=119')
+    await inlineImages(reused)
+    expect(reused.getAttribute('href')).toBe(DATA_A)
+    expect(cache.svgImage.has(URL_A + '?id=119')).toBe(true)
+    expect(cache.svgImageCandidates.has(URL_A + '?id=119')).toBe(false)
+  })
+
   it('rejects a single oversized source instead of pinning unbounded data URL memory', async () => {
     const huge = 'data:image/png;base64,' + 'A'.repeat(MAX_SVG_IMAGE_MEMO_CHARS)
     vi.mocked(snapFetch).mockResolvedValue({ ok: true, data: huge })
     await inlineImages(svgImage(URL_A))
     expect(cache.svgImage.has(URL_A)).toBe(false)
+    expect(cache.svgImageCandidates.has(URL_A)).toBe(false)
   })
 })
