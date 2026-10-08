@@ -55,7 +55,7 @@ export const sha256 = (data) =>
 // ---------------------------------------------------------------------------
 
 /** The frozen mechanism under acceptance. Production src stays byte-identical to it. */
-export const CANDIDATE_SHA = 'ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b'
+export const CANDIDATE_SHA = '2d27ad49b39bd6414b2fda925e6678dd7b35eb5a'
 /** The frozen baseline the candidate is compared against, side by side. */
 export const BASELINE_SHA = 'd391556b80be7a6d97bc4834d2ce6e24137515b2'
 /** The only engines that may satisfy this gate. */
@@ -515,8 +515,8 @@ export const MISSING_FIXTURE = Object.freeze({
  *  - `rawForbids`   substrings that must not survive into the candidate's raw output.
  *  - `expect.steps` per-step candidate route shape plus a Worker telemetry shape, keyed by label.
  *  - `expect.rest`  the same, for every step after the named ones.
- *  - `telemetryBySide` explicitly pins both R12 sides to the AS-BLOB transport. The
- *                   baseline d391556 retains fetched Blob sidecars; the candidate ce135fb
+ *  - `telemetryBySide` explicitly pins both R13 sides to the AS-BLOB transport. The
+ *                   baseline d391556 retains fetched Blob sidecars; the candidate 2d27ad4
  *                   changes decoded-bitmap reuse inside the worker, not the posted payload.
  *                   The two-image eviction arm still has one retained Blob and one string.
  */
