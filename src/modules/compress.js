@@ -335,15 +335,52 @@ function gainFactor(nw, nh, targetW, targetH) {
 // the pipeline. Inline worker (no build infra); any failure flips to the sync path.
 // The worker repeats gainFactor's guard on its own decoded size (the header fast path in
 // downsampleDataURL only covers containers it can parse) and answers null for "no gain".
-const WORKER_SRC = `self.onmessage = async (e) => {
-  const { id, dataURL, blob: given, srcLength, targetW, targetH, resFactor, quality, mime } = e.data
+// R12 hypothesis: keep a *bounded* decoded backing image on its worker for repeated changes to
+// output geometry. A Blob is immutable; the main thread assigns each exact Blob object an identity,
+// and routes its jobs to the same worker. No source URL, sampled hash, or mutable DOM identity can
+// accidentally alias distinct bytes. The 12 MiB cap is PER WORKER, a hypothesis, not yet measured.
+// Uncacheable images and string payloads take the original decode/close path.
+const WORKER_SRC = `
+const BITMAP_CAP_BYTES = 12 * 1024 * 1024
+const decoded = new Map()
+let decodedBytes = 0
+let tail = Promise.resolve()
+
+async function compressJob(message) {
+  const { id, dataURL, blob: given, bitmapKey, srcLength, targetW, targetH, resFactor, quality, mime } = message
+  let bmp = null
+  let retained = false
+  let bitmapCacheHit = false
   try {
-    const blob = given || await (await fetch(dataURL)).blob()
-    const bmp = await createImageBitmap(blob)
+    const entry = given && bitmapKey ? decoded.get(bitmapKey) : null
+    if (entry) {
+      bitmapCacheHit = true
+      decoded.delete(bitmapKey)
+      decoded.set(bitmapKey, entry)
+      bmp = entry.bitmap
+      retained = true
+    } else {
+      const blob = given || await (await fetch(dataURL)).blob()
+      bmp = await createImageBitmap(blob)
+      const bytes = bmp.width * bmp.height * 4
+      if (given && Number.isSafeInteger(bitmapKey) && bitmapKey > 0 &&
+          Number.isSafeInteger(bytes) && bytes > 0 && bytes <= BITMAP_CAP_BYTES) {
+        while (decodedBytes + bytes > BITMAP_CAP_BYTES && decoded.size) {
+          const oldestKey = decoded.keys().next().value
+          const oldest = decoded.get(oldestKey)
+          decoded.delete(oldestKey)
+          decodedBytes -= oldest.bytes
+          oldest.bitmap.close()
+        }
+        decoded.set(bitmapKey, { bitmap: bmp, bytes })
+        decodedBytes += bytes
+        retained = true
+      }
+    }
     const nw = bmp.width, nh = bmp.height
-    if (!nw || !nh) { bmp.close(); self.postMessage({ id, url: null }); return }
+    if (!nw || !nh) { self.postMessage({ id, url: null, bitmapCacheHit }); return }
     const raw = Math.min(1, Math.max(targetW / nw, targetH / nh))
-    if (!(raw > 0) || raw >= 0.95) { bmp.close(); self.postMessage({ id, url: null }); return }
+    if (!(raw > 0) || raw >= 0.95) { self.postMessage({ id, url: null, bitmapCacheHit }); return }
     const factor = raw * resFactor
     const ow = Math.max(1, Math.round(nw * factor))
     const oh = Math.max(1, Math.round(nh * factor))
@@ -352,14 +389,24 @@ const WORKER_SRC = `self.onmessage = async (e) => {
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(bmp, 0, 0, ow, oh)
-    bmp.close()
     const out = await canvas.convertToBlob({ type: mime, quality })
     const url = new FileReaderSync().readAsDataURL(out)
-    self.postMessage({ id, url: (url && url.length < srcLength) ? url : null })
+    self.postMessage({ id, url: (url && url.length < srcLength) ? url : null, bitmapCacheHit })
   } catch (err) {
-    self.postMessage({ id, error: String(err) })
+    self.postMessage({ id, error: String(err), bitmapCacheHit })
+  } finally {
+    if (bmp && !retained) bmp.close()
   }
-}`
+}
+
+// One in-flight image job per worker makes bitmap ownership and LRU eviction deterministic:
+// a bitmap cannot be closed by another async job between lookup and drawImage. The existing
+// four-worker pool continues processing *distinct* images in parallel.
+self.onmessage = (e) => {
+  const message = e.data
+  tail = tail.then(() => compressJob(message)).catch(() => {})
+}
+`
 
 // A small POOL, filled lazily: decode + scale + encode are CPU-bound and independent per
 // image, and one worker serialized them — the 9-photo gallery's jobs took 219 ms on one
@@ -368,6 +415,17 @@ const WORKER_SRC = `self.onmessage = async (e) => {
 // as they were for the single worker: a construction that throws (CSP) or a worker that
 // errors fails every pending request over to the sync path and stops the worker route.
 const POOL_SIZE = Math.max(1, Math.min(4, ((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2) - 1))
+const _bitmapTokens = new WeakMap()
+let _bitmapSequence = 0
+function bitmapTokenFor(blob) {
+  if (!blob || typeof blob !== 'object') return 0
+  let token = _bitmapTokens.get(blob)
+  if (!token) {
+    token = ++_bitmapSequence
+    _bitmapTokens.set(blob, token)
+  }
+  return token
+}
 let _workers = null // null = not tried, false = unavailable/broken, else lazily filled slots
 let _next = 0
 let _seq = 0
@@ -412,13 +470,13 @@ function spawnWorker() {
 /** The next slot round-robin, spawned on first use. `false` once the route is closed, which
  *  is also the answer where Worker or OffscreenCanvas do not exist.
  *  Pinned by __tests__/compress.syncfallback.test.js. */
-function getCompressWorker() {
+function getCompressWorker(bitmapToken = 0) {
   if (_workers === false) return false
   if (_workers === null) {
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') return (_workers = false)
     _workers = []
   }
-  const i = _next++ % POOL_SIZE
+  const i = bitmapToken > 0 ? (bitmapToken - 1) % POOL_SIZE : _next++ % POOL_SIZE
   if (!_workers[i]) {
     const w = spawnWorker()
     if (!w) { disableWorkers(); return false }
@@ -479,7 +537,8 @@ const WORKER_JOB_TIMEOUT = 5000
 /** Runs the downsample in the worker. Resolves null (no gain / skip), a data URL, or
  *  undefined when the worker path failed and the caller must use the sync fallback. */
 function workerDownsample(dataURL, targetW, targetH, mime, blob, routes) {
-  const w = getCompressWorker()
+  const bitmapKey = bitmapTokenFor(blob)
+  const w = getCompressWorker(bitmapKey)
   if (!w) return Promise.resolve(undefined)
   return new Promise((resolve) => {
     const id = ++_seq
@@ -488,7 +547,7 @@ function workerDownsample(dataURL, targetW, targetH, mime, blob, routes) {
     _pending.set(id, (value) => { clearTimeout(timer); resolve(value) })
     try {
       // With a Blob the string stays home: it is only there for the size comparison.
-      w.postMessage({ id, dataURL: blob ? '' : dataURL, blob, srcLength: dataURL.length, targetW, targetH, resFactor: RES_FACTOR, quality: LOSSY_QUALITY, mime })
+      w.postMessage({ id, dataURL: blob ? '' : dataURL, blob, bitmapKey, srcLength: dataURL.length, targetW, targetH, resFactor: RES_FACTOR, quality: LOSSY_QUALITY, mime })
       // Counted HERE, after the post landed, and not where the Blob was attached to the clone:
       // the memo, the header probe, the size threshold and worker availability can each answer
       // before this line, and a postMessage that throws answers below instead of running.
