@@ -1,0 +1,52 @@
+name: snapDOM R15 SVG-image memo proof
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r15-svg-image-memo'
+    paths:
+      - 'src/modules/images.js'
+      - '__tests__/modules.images.svgMemo.test.js'
+      - 'lane6-scratch/r15/**'
+      - '.github/workflows/r15-svg-image-memo.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+      - run: npm run test:asset-proof
+  browser:
+    needs: source-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npx vitest run __tests__/modules.images.svgMemo.test.js __tests__/modules.images.test.js --browser.headless --reporter=dot
