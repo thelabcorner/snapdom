@@ -44,3 +44,7 @@ P1: R15 joined capture/memory interpretation, R14 WebKit shadow discrepancy (fix
 P2: New frontier research on compression candidate indexing, capture-session asset registry, clone/style traversal count, serialization, Worker fairness and retained-memory cleanup. Any new code requires independent preregistered falsification and exact fidelity gate.
 
 This ledger deliberately contains unaccepted experiments for coordination; it should be updated after new evidence rather than retroactively declaring success.
+
+## Update — R16 experiment resolved: rejected
+
+[Completed run #37745225552](https://github.com/thelabcorner/snapdom/actions/runs/37745225552) passed all source preparation, 3 browser fidelity and six Chromium timing runner jobs. The aggregate reports **`NO_TIMING_ACCEPTANCE`**, and its substantive verdict supersedes any inference from green job badges. The no-background effect was −1.99% (95% CI [−4.85%, +0.97%]); sparse-background +0.12% (CI [−6.38%, +7.07%]); **dense-background +3.18% slower (CI [+2.12%, +4.25%])**. Runner images were heterogeneous, another independent invalidation of homogeneous timing acceptance. **Do not promote R16's source patch**. Experimental source is retained only on `perf/v3-r16-background-selector-frontier`; no production branch changed.
