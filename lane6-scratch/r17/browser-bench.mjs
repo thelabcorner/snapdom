@@ -46,9 +46,10 @@ try{
  browser=await ({chromium,firefox,webkit})[engine].launch({headless:true})
  for(const c of cases){
   const sides={}
+  const sharedContext=selfNull&&process.argv.includes('--shared-context')?await browser.newContext({deviceScaleFactor:1}):null
   try {
    for(const side of ['baseline','candidate']){
-    const context=await browser.newContext({deviceScaleFactor:1})
+    const context=sharedContext||await browser.newContext({deviceScaleFactor:1})
     const page=await context.newPage()
     const errors=[]
     page.on('pageerror',e=>errors.push(e.message))
@@ -67,7 +68,10 @@ try{
       const canvas=await result.toCanvas()
       const totalMs=performance.now()-t0
       const pixels=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height).data
-      return {captureMs,totalMs,rawHash:await digest(new TextEncoder().encode(raw)),pixelHash:await digest(pixels),width:canvas.width,height:canvas.height,rawLength:raw.length,compressedAssets:((raw.startsWith('data:image/svg+xml')?decodeURIComponent(raw.slice(raw.indexOf(',')+1)):raw).match(/data-snapdom-asset=/g)||[]).length}
+      let nontransparent=0
+      for(let p=3;p<pixels.length;p+=4)if(pixels[p])nontransparent++
+      const probe=(x,y)=>Array.from(pixels.slice((y*canvas.width+x)*4,(y*canvas.width+x)*4+4))
+      return {captureMs,totalMs,rawHash:await digest(new TextEncoder().encode(raw)),pixelHash:await digest(pixels),nontransparent,centerPixel:probe(Math.floor(canvas.width/2),Math.floor(canvas.height/2)),width:canvas.width,height:canvas.height,rawLength:raw.length,compressedAssets:((raw.startsWith('data:image/svg+xml')?decodeURIComponent(raw.slice(raw.indexOf(',')+1)):raw).match(/data-snapdom-asset=/g)||[]).length}
      }
     },{side,compress:c.compress})
     sides[side]={context,page,errors}
@@ -79,7 +83,7 @@ try{
     const pair={order}
     for(const side of order)pair[side]=await sides[side].page.evaluate(()=>window.__capture())
     for(const metric of ['rawHash','pixelHash','width','height','rawLength','compressedAssets']){
-     if(pair.baseline[metric]!==pair.candidate[metric])throw Error('PARITY '+engine+'/'+c.id+'/'+k+'/'+metric+': '+JSON.stringify({baseline:pair.baseline[metric],candidate:pair.candidate[metric]}))
+     if(pair.baseline[metric]!==pair.candidate[metric])throw Error('PARITY '+engine+'/'+c.id+'/'+k+'/'+metric+': '+JSON.stringify({baseline:{value:pair.baseline[metric],nontransparent:pair.baseline.nontransparent,centerPixel:pair.baseline.centerPixel},candidate:{value:pair.candidate[metric],nontransparent:pair.candidate.nontransparent,centerPixel:pair.candidate.centerPixel}}))
     }
     for(const side of order)if(!Number.isFinite(pair[side].captureMs)||pair[side].captureMs<=0)throw Error('bad timing')
     if(c.compress&&c.id==='mixed-assets'&&pair.candidate.compressedAssets<3)throw Error('FAIL_CLOSED: mixed-assets compression paths not reached')
@@ -90,7 +94,7 @@ try{
    for(const side of ['baseline','candidate'])if(sides[side].errors.length)throw Error('console/page errors: '+side+' '+sides[side].errors.join(';'))
    arms[c.id]={samples,layout:c}
    console.log('R17 '+engine+' r'+replica+' '+c.id+' fidelity '+pairs+'/'+pairs+' compressionAssets '+samples[0].candidate.compressedAssets)
-  } finally {await Promise.all(Object.values(sides).map(s=>s.context.close().catch(()=>{})))}
+  } finally {if(sharedContext)await sharedContext.close().catch(()=>{});else await Promise.all(Object.values(sides).map(s=>s.context.close().catch(()=>{})))}
  }
  const sha=v=>crypto.createHash('sha256').update(v).digest('hex')
  const out={schema:'snapdom-r17-mixed-asset-v1',engine,replica,selfNull,runId:process.env.GITHUB_RUN_ID,measurementSha:process.env.GITHUB_SHA,baselineSha:process.env.R17_BASELINE_SHA,browserVersion:browser.version(),runnerImage:process.env.ImageVersion,bundles:Object.fromEntries(Object.entries(bundles).map(([k,v])=>[k,sha(v)])),fixtures:fixtureImages.map(sha),arms}
