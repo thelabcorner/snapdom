@@ -55,3 +55,16 @@ must fail closed. Further stress extends nested depth from 20/24 to 64/192
 and breadth to 32 leaves per branch; do not conflate this synthetic stress
 with representative applications. Memory and six-host replicated CIs still gate
 any production optimization.
+
+## Engagement falsifier (run 37750877566)
+
+The first instrumentation attempt correctly failed on `deep-inherited` with
+`summaryUses=0`. Source inspection showed that `getSnapshot` short-circuits
+on a valid prior cross-capture WeakMap snapshot before reaching
+`elementUniverseFor`. Ordinary repeated captures can therefore bypass R20,
+even with `cache:'disabled'`; earlier repeat-capture timings did not reliably
+measure this mechanism. This is a test-design failure, not a source correctness
+failure. For R20's true fresh/dirty-style target, revised fixture uses
+`invalidate:true` before **every** capture in both independently compiled
+arms, and performs the telemetry probe before the initial parity captures.
+Any `summaryUses=0` in a non-veto deep fixture remains a hard failure.

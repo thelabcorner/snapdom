@@ -67,7 +67,11 @@ try {
         }
       }
       document.body.append(root)
-      const options={burst:false,cache:'disabled',compress:false,embedFonts:false,dpr:1,__styleShare:false,__elementUniverse:true}
+      // R20 acts only on fresh or invalidated snapshots. A warm repeated capture may
+      // bypass elementUniverseFor via the separate cross-capture snapshot WeakMap; merely
+      // using cache:'disabled' does not establish that this mechanism was exercised.
+      // Force the documented style-cache invalidation on EACH capture in both arms.
+      const options={burst:false,cache:'disabled',invalidate:true,compress:false,embedFonts:false,dpr:1,__styleShare:false,__elementUniverse:true}
       const hex=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))
         .map(v=>v.toString(16).padStart(2,'0')).join('')
       window.__runner={
@@ -100,15 +104,16 @@ try {
       pages.forEach(p=>p.setDefaultTimeout(180000))
       await Promise.all(pages.map((p,i)=>initialize(p,i?sourceB:sourceA,cfg)))
       const take=(i,pixels=false)=>pages[i].evaluate(p=>window.__runner.snap(p),pixels)
-      const rawProbe=await Promise.all(pages.map((_,i)=>take(i,true)))
-      if(rawProbe[0].raw!==rawProbe[1].raw || rawProbe[0].pixelHash!==rawProbe[1].pixelHash)
-        throw new Error('fresh parity mismatch '+cfg.name)
       // A source-level optimization must prove that the experiment actually exercised it.
-      // Probe separately, outside all timed iterations; a missing hit invalidates timing.
+      // Probe FIRST, before any other snapshots can be reused; invalidate:true ensures
+      // that every later timing sample is also genuinely eligible.
       const telemetry=sourceB==='candidate'
         ? await pages[1].evaluate(()=>window.__runner.probe()) : null
       if(sourceB==='candidate' && !cfg.veto && !(telemetry?.summaryUses > 0))
         throw new Error('candidate ancestor-memo was never exercised '+cfg.name+' '+JSON.stringify(telemetry))
+      const rawProbe=await Promise.all(pages.map((_,i)=>take(i,true)))
+      if(rawProbe[0].raw!==rawProbe[1].raw || rawProbe[0].pixelHash!==rawProbe[1].pixelHash)
+        throw new Error('fresh parity mismatch '+cfg.name)
       // Verify between-capture changed inherited styles produce identical frozen snapshots.
       if(cfg.name==='deep-inherited'){
         await Promise.all(pages.map(p=>p.evaluate(()=>window.__runner.change('rgb(15, 78, 93)'))))
