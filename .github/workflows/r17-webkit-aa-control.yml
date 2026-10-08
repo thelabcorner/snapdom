@@ -32,7 +32,7 @@ jobs:
           npm run compile
       - run: npx playwright install --with-deps webkit
       - name: Independent pages from same exact bundle, eight A/A raw and pixel pairs
-        run: node lane6-scratch/r17/browser-bench.mjs --engine=webkit --replica=0 --pairs=8 --self-null
+        run: node lane6-scratch/r17/browser-bench.mjs --engine=webkit --replica=0 --pairs=8 --self-null --shared-context
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
