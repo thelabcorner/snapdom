@@ -35,9 +35,11 @@ const playwrightVersion = require('playwright/package.json').version
 // R10 keeps its historical default. R12 must hash its OWN hosted workflow, rather
 // than requiring a stale R10 filename absent from the experiment head.
 const workflowRel = arg('workflow', '.github/workflows/r10-asset-bench.yml')
-if (!['.github/workflows/r10-asset-bench.yml', '.github/workflows/r12-bitmap-pss.yml', '.github/workflows/r12-pss-verification-retry.yml'].includes(workflowRel)) {
+if (!['.github/workflows/r10-asset-bench.yml', '.github/workflows/r12-bitmap-pss.yml', '.github/workflows/r12-pss-verification-retry.yml', '.github/workflows/r12-pss-image-cohort.yml'].includes(workflowRel)) {
   throw new Error('unrecognised measurement workflow: ' + workflowRel)
 }
+const cohortRunners = Number(process.env.SNAPDOM_COHORT_RUNNERS || 6)
+if (![6,12].includes(cohortRunners)) throw new Error('unsupported cohort replicate policy')
 const measurementFiles = [
   workflowRel,
   'lane6-scratch/r5/run-with-timing-gate.mjs',
@@ -46,6 +48,7 @@ const measurementFiles = [
   'lane6-scratch/r10/assets-bench.mjs',
   'lane6-scratch/r10/asset-bench-lib.mjs',
   'lane6-scratch/r10/asset-aggregate.mjs',
+  ...(cohortRunners === 12 ? ['lane6-scratch/r12/select-image-cohort.mjs'] : []),
 ]
 const fileIdentity = {}
 for (const rel of measurementFiles) {
@@ -78,7 +81,7 @@ const doc = {
     retentionCapStatus: 'HYPOTHESIS',
   },
   acquisition: {
-    runnerReplicates: 6,
+    runnerReplicates: cohortRunners,
     repeats: 8,
     warmup: 2,
     timingPrimary: 'capture',
