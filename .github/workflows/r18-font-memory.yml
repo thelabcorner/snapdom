@@ -49,7 +49,7 @@ jobs:
         env:
           BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
           CANDIDATE_SHA: 70045ebd68a276554ef50151ce2505e772689e6a
-        run: node scripts/r18font-pss-isolated-browser.mjs --runner=${{ matrix.replica }} --baseline=baseline/dist/snapdom.mjs --candidate=candidate/dist/snapdom.mjs --out=r18-font-memory-evidence/runner-${{ matrix.replica }}.json
+        run: node scripts/r18font-pss-browser.mjs --runner=${{ matrix.replica }} --baseline=baseline/dist/snapdom.mjs --candidate=candidate/dist/snapdom.mjs --out=r18-font-memory-evidence/runner-${{ matrix.replica }}.json
       - name: Preserve native-memory measurements
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
