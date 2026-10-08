@@ -588,6 +588,16 @@ test('a complete, consistent, self-null evidence set is accepted', () => {
   }
 })
 
+test('an encoded missing URL fails the forbidden-resource guard', () => {
+  const docs = Object.fromEntries(ENGINES.map((e) => [e, passingEngineDoc(e)]))
+  const evidence = docs.chromium.cells['image-fetch-error']
+  const encodedRaw = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg><image href="/missing.png"/></svg>')
+  for (const context of ['A', 'B']) evidence[context].candidate.steps[0].raw = encodedRaw
+  const summary = acceptanceVerdict({ prepared: PREPARED, engineDocuments: docs })
+  assert.equal(summary.state, 'FIDELITY_FAILURE')
+  assert.ok(summary.engines.chromium.problems.some((p) => p.includes('candidate raw output still carries /missing.png')))
+})
+
 test('a missing engine is INCOMPLETE_EVIDENCE, never a pass', () => {
   const docs = Object.fromEntries(ENGINES.map((e) => [e, passingEngineDoc(e)]))
   delete docs.webkit

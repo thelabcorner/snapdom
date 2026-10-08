@@ -837,7 +837,10 @@ export function cellVerdict(engine, cellId, evidence, options = {}) {
       const raw = rawParityVerdict(baseline, candidate)
       if (!raw.ok) problems.push('raw output differs at ' + step.label + ': ' + raw.reason)
       for (const needle of cell.rawForbids ?? []) {
-        if (typeof candidate.raw === 'string' && candidate.raw.includes(needle)) {
+        // The raw SVG transport is percent-encoded. Without the encoded check,
+        // a forbidden missing-image URL can survive as %2Fmissing.png unnoticed.
+        if (typeof candidate.raw === 'string' &&
+            (candidate.raw.includes(needle) || candidate.raw.includes(encodeURIComponent(needle)))) {
           problems.push('candidate raw output still carries ' + needle + ' at ' + step.label)
         }
       }
