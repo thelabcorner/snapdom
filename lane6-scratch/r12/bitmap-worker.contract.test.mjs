@@ -74,15 +74,28 @@ test('different source tokens never alias identical-dimension images', async () 
   assert.ok(t.counts.closeCount >= 2, 'evicted resources are explicitly closed')
 })
 
-test('concurrent misses close the losing bitmap without closing an active borrower', async () => {
+test('simultaneous same-token requests single-flight exactly one bitmap decode', async () => {
   const t = sandbox()
   await Promise.all([t.send(1, 7), t.send(2, 7)])
-  assert.equal(t.counts.decodeCount, 2)
+  assert.equal(t.counts.decodeCount, 1, 'duplicate concurrent decoding must be eliminated')
   assert.equal(t.counts.drawCount, 2)
-  assert.equal(t.counts.closeCount, 1)
+  assert.equal(t.counts.closeCount, 0, 'retained bitmap remains live')
+  assert.deepEqual(t.replies.map((x) => x.bitmapHit).sort(), [false, true])
   await t.send(3, 7)
-  assert.equal(t.counts.decodeCount, 2)
+  assert.equal(t.counts.decodeCount, 1)
   assert.equal(t.replies.find((x) => x.id === 3)?.bitmapHit, true)
+})
+
+test('oversized simultaneous same-token decodes share one transient bitmap, closed once', async () => {
+  const t = sandbox({ width: 2600, height: 2600 })
+  await Promise.all([t.send(1, 21), t.send(2, 21), t.send(3, 21)])
+  assert.equal(t.counts.decodeCount, 1)
+  assert.equal(t.counts.drawCount, 3)
+  assert.equal(t.counts.closeCount, 1, 'transient resource closed only after final borrower')
+  assert.equal(t.replies.filter((x) => !x.error).length, 3)
+  await t.send(4, 21)
+  assert.equal(t.counts.decodeCount, 2, 'oversized bitmap must not stay cached')
+  assert.equal(t.counts.closeCount, 2)
 })
 
 test('oversized sources and no-token messages never retain decoded memory', async () => {
