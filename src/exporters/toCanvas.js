@@ -12,6 +12,7 @@ import { isSafari } from '../utils/browser'
 import { sessionWarn } from '../utils/debug.js'
 import { isHTMLEl, isTag } from '../utils/helpers.js'
 import { markInternalNode } from '../utils/ownership.js'
+import { clampEncodedSvgHeader } from './svgHeaderFast.js'
 
 // #425: browsers cap how large an image they will decode and how large a canvas they
 // will back. Chrome/Firefox reject > 16384px on a side and a total decoded-image area
@@ -619,7 +620,19 @@ export async function toCanvas(url, options) {
     const h = parseFloat((head.match(/\bheight="([\d.]+)/i) || [])[1])
     const oversized = Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 &&
       Math.min(1, MAX_RASTER_SIDE / w, MAX_RASTER_SIDE / h, Math.sqrt(MAX_RASTER_AREA / (w * h))) < 1
-    if (crop || oversized || isSafari()) {
+    const fastClamp = oversized && !crop && !isSafari()
+      ? clampEncodedSvgHeader(url, MAX_RASTER_SIDE, MAX_RASTER_AREA)
+      : null
+    if (fastClamp) {
+      src = fastClamp.url
+      sessionWarn(options.__session, 'raster-clamp',
+        `capture ${Math.round(fastClamp.width)}x${Math.round(fastClamp.height)}px exceeds decode limits; downscaled to ${fastClamp.nextWidth}x${fastClamp.nextHeight}px`)
+      console.warn(
+        `[snapDOM] Capture ${Math.round(fastClamp.width)}×${Math.round(fastClamp.height)}px exceeds the browser image-decode ` +
+        `limit (${MAX_RASTER_SIDE}px/side); downscaling to ${fastClamp.nextWidth}×${fastClamp.nextHeight}px. Lower \`scale\` or set ` +
+        '\`width\`/\`height\` to control output size.'
+      )
+    } else if (crop || oversized || isSafari()) {
       try {
         let svgText = decodeSvgFromDataURL(url)
         if (crop) svgText = cropSvgText(svgText, crop)

@@ -1,0 +1,75 @@
+name: snapDOM R13 oversize raster clamp frontier
+on:
+  push:
+    branches:
+      - 'perf/v3-r13-raster-header-*'
+    paths:
+      - '.github/workflows/r13-raster-clamp.yml'
+      - 'src/exporters/svgHeaderFast.js'
+      - 'src/exporters/toCanvas.js'
+      - 'scripts/r13-svg-clamp.node.test.mjs'
+      - 'scripts/r13-raster-clamp-browser.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r13-raster-clamp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node --test scripts/r13-svg-clamp.node.test.mjs
+      - run: node --test scripts/svg-header-fast.node.test.mjs
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+
+  browsers:
+    name: ${{ matrix.engine }} exact oversize raster comparison
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Existing Chromium/Firefox raster limits remain correct
+        run: npx vitest run __tests__/exporters.rasterLimit.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
+      - name: Checkout pinned pre-R13 baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r13_baseline
+          fetch-depth: 1
+      - name: Compile independent old-path baseline
+        working-directory: __r13_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "cac07a4108086718bc9511663346e1b9fcf4e226"
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Compare real oversized raster exports and crop fallback
+        run: node scripts/r13-raster-clamp-browser.mjs --engine=${{ matrix.engine }}
