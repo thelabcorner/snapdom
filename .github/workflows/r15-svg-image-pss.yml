@@ -1,0 +1,119 @@
+name: snapDOM R15 isolated-process native PSS
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r15-svg-image-memo'
+    paths:
+      - '.github/workflows/r15-svg-image-pss.yml'
+      - 'scripts/r15-svg-pss-browser.mjs'
+      - 'scripts/r15-svg-pss-aggregate.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r15-svg-pss-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22.21.1'
+  BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+  CANDIDATE_SHA: 9a90bd591897cc9dcdc1494c0704dd3a3006e149
+
+jobs:
+  prepare:
+    name: Compile immutable source builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Prove source exactly matches candidate and scripts parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+          git diff --exit-code "$CANDIDATE_SHA" -- src/ package.json package-lock.json esbuild.config.mjs
+          node --check scripts/r15-svg-pss-browser.mjs
+          node --check scripts/r15-svg-pss-aggregate.mjs
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: .r15-baseline
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: .r15-candidate
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - working-directory: .r15-baseline
+        run: npm ci --no-audit --no-fund && npm run compile
+      - working-directory: .r15-candidate
+        run: npm ci --no-audit --no-fund && npm run compile
+      - run: |
+          mkdir -p lane6-scratch/r15/bundles
+          cp .r15-baseline/dist/snapdom.mjs lane6-scratch/r15/bundles/baseline.mjs
+          cp .r15-candidate/dist/snapdom.mjs lane6-scratch/r15/bundles/candidate.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r15-pss-prepared-${{ github.run_id }}
+          path: lane6-scratch/r15/bundles/
+          if-no-files-found: error
+          retention-days: 30
+
+  runner:
+    needs: prepare
+    name: Isolated browser process PSS r${{ matrix.replicate }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        replicate: [0, 1, 2, 3, 4, 5]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r15-pss-prepared-${{ github.run_id }}
+          path: lane6-scratch/r15/bundles
+      - run: npx playwright install --with-deps chromium
+      - name: Run balanced separate-browser source PSS trials
+        run: node scripts/r15-svg-pss-browser.mjs --runner=${{ matrix.replicate }}
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r15-pss-runner-${{ matrix.replicate }}-${{ github.run_id }}
+          path: lane6-scratch/r15/memory/runner-${{ matrix.replicate }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    needs: [prepare, runner]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r15-pss-runner-*-${{ github.run_id }}
+          path: lane6-scratch/r15/memory/aggregate-input
+      - run: node scripts/r15-svg-pss-aggregate.mjs
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r15-pss-summary-${{ github.run_id }}
+          path: lane6-scratch/r15/memory/summary.json
+          if-no-files-found: warn
+          retention-days: 60
