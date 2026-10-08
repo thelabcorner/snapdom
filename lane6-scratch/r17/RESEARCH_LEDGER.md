@@ -27,3 +27,18 @@ Launch three existing compression passes concurrently using `Promise.all` with t
 ## Expected outcome
 
 Potentially lower mixed-media capture latency without altering compression algorithms. Might lose because the browser/pool is CPU-saturated, concurrent serialization increases contention, or all work already benefits from shared compression memo; require independent evidence, not assumption.
+
+## First hosted verdict — INCOMPLETE / NO PERFORMANCE ACCEPTANCE
+
+Frozen baseline `ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b`. Experimental production change `c7858f634416e42166a4d70044b602618c365624`. Browser harness correction `caa71b95c12ef141b3fb91385ab35d27a09adf52`, which decodes the public percent-encoded SVG data URL before counting compressed asset markers, was required to reach the measurement phase. [Run 37746367847](https://github.com/thelabcorner/snapdom/actions/runs/37746367847).
+
+All six hosted Chromium A/B runner jobs succeeded; Chromium and Firefox fidelity jobs passed; WebKit passed compressed `html-only`, `mixed-assets` and `svg-background-only` fixtures with exact raw and RGBA hashes, but its `no-compress` fixture failed RGBA hash while raw output hashes matched. This null-arm instability is unresolved; exact cross-engine fidelity was **not** accepted.
+
+| Arm / capture | Estimated change | Runner-level 95% CI |
+| --- | ---: | --- |
+| HTML-only | +2.8844% | [−10.6787%, +18.5070%] |
+| Mixed HTML/CSS/SVG | −6.0481% | [−13.1655%, +1.6527%] |
+| SVG+background | −4.2711% | [−10.2704%, +2.1292%] |
+| `compress:false` negative control | −0.6856% | [−5.5398%, +4.4180%] |
+
+All four effect confidence intervals intersect zero; the runner image revisions were heterogeneous (`20260927.320.1`, `20261004.327.1`). The exact preregistered aggregator returned `NO_TIMING_ACCEPTANCE`. **No accepted speedup or Pareto win and no production promotion.** Remains isolated only for research into mixed-media concurrency and WebKit A/A null-arm variance. If follow-up is warranted, require two same-source A/A controls before concluding WebKit rendered-pixel differences are implementation-specific.
