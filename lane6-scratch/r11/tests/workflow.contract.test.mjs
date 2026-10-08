@@ -64,7 +64,7 @@ test('the workflow has exactly the four stages and no pull_request trigger', () 
 })
 
 test('the workflow triggers only on the measurement branch', () => {
-  assert.match(WORKFLOW, /branches:\n {6}- 'perf\/v3-r12-fidelity-gate'/)
+  assert.match(WORKFLOW, /branches:\n {6}- 'perf\/v3-r13-singleflight-fidelity-gate'/)
   assert.match(WORKFLOW, /workflow_dispatch:/)
 })
 
