@@ -335,15 +335,68 @@ function gainFactor(nw, nh, targetW, targetH) {
 // the pipeline. Inline worker (no build infra); any failure flips to the sync path.
 // The worker repeats gainFactor's guard on its own decoded size (the header fast path in
 // downsampleDataURL only covers containers it can parse) and answers null for "no gain".
-const WORKER_SRC = `self.onmessage = async (e) => {
-  const { id, dataURL, blob: given, srcLength, targetW, targetH, resFactor, quality, mime } = e.data
+const WORKER_SRC = `// R12 experiment: pin decoded ImageBitmap by exact Blob identity, not sampled hashes.
+const BITMAP_BUDGET = 4 * 1024 * 1024
+const bitmaps = new Map()
+let retainedBytes = 0
+const dispose = (bitmap) => { try { bitmap.close() } catch {} }
+async function borrow(blob, key) {
+  if (key) {
+    const old = bitmaps.get(key)
+    if (old) {
+      bitmaps.delete(key)
+      bitmaps.set(key, old)
+      old.users++
+      return { bitmap: old.bitmap, entry: old, hit: true }
+    }
+  }
+  const bitmap = await createImageBitmap(blob)
+  // Distinct worker events can overlap while createImageBitmap awaits.
+  if (key) {
+    const raced = bitmaps.get(key)
+    if (raced) {
+      dispose(bitmap)
+      bitmaps.delete(key)
+      bitmaps.set(key, raced)
+      raced.users++
+      return { bitmap: raced.bitmap, entry: raced, hit: true }
+    }
+  }
+  const bytes = bitmap.width * bitmap.height * 4
+  if (key && Number.isSafeInteger(bytes) && bytes > 0 && bytes <= BITMAP_BUDGET) {
+    for (const [other, entry] of bitmaps) {
+      if (retainedBytes + bytes <= BITMAP_BUDGET) break
+      // Active borrowers may be encoding asynchronously; never close their bitmap.
+      if (entry.users) continue
+      bitmaps.delete(other)
+      retainedBytes -= entry.bytes
+      dispose(entry.bitmap)
+    }
+    if (retainedBytes + bytes <= BITMAP_BUDGET) {
+      const entry = { bitmap, bytes, users: 1 }
+      bitmaps.set(key, entry)
+      retainedBytes += bytes
+      return { bitmap, entry, hit: false }
+    }
+  }
+  return { bitmap, entry: null, hit: false }
+}
+const release = (value) => {
+  if (!value) return
+  if (value.entry) value.entry.users--
+  else dispose(value.bitmap)
+}
+self.onmessage = async (e) => {
+  const { id, dataURL, blob: given, bitmapKey, srcLength, targetW, targetH, resFactor, quality, mime } = e.data
+  let decoded
   try {
     const blob = given || await (await fetch(dataURL)).blob()
-    const bmp = await createImageBitmap(blob)
+    decoded = await borrow(blob, bitmapKey)
+    const bmp = decoded.bitmap
     const nw = bmp.width, nh = bmp.height
-    if (!nw || !nh) { bmp.close(); self.postMessage({ id, url: null }); return }
+    if (!nw || !nh) { self.postMessage({ id, url: null, bitmapHit: decoded.hit }); return }
     const raw = Math.min(1, Math.max(targetW / nw, targetH / nh))
-    if (!(raw > 0) || raw >= 0.95) { bmp.close(); self.postMessage({ id, url: null }); return }
+    if (!(raw > 0) || raw >= 0.95) { self.postMessage({ id, url: null, bitmapHit: decoded.hit }); return }
     const factor = raw * resFactor
     const ow = Math.max(1, Math.round(nw * factor))
     const oh = Math.max(1, Math.round(nh * factor))
@@ -352,12 +405,13 @@ const WORKER_SRC = `self.onmessage = async (e) => {
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(bmp, 0, 0, ow, oh)
-    bmp.close()
     const out = await canvas.convertToBlob({ type: mime, quality })
     const url = new FileReaderSync().readAsDataURL(out)
-    self.postMessage({ id, url: (url && url.length < srcLength) ? url : null })
+    self.postMessage({ id, url: (url && url.length < srcLength) ? url : null, bitmapHit: decoded.hit })
   } catch (err) {
     self.postMessage({ id, error: String(err) })
+  } finally {
+    release(decoded)
   }
 }`
 
@@ -372,6 +426,20 @@ let _workers = null // null = not tried, false = unavailable/broken, else lazily
 let _next = 0
 let _seq = 0
 const _pending = new Map()
+// Worker-side decoded bitmaps are addressed only by identity of retained source Blob objects.
+// WeakMap must not extend the lifetime of those Blobs on the main thread.
+const _bitmapTokens = new WeakMap()
+let _bitmapSeq = 0
+function bitmapTokenFor(blob) {
+  if (!blob || typeof blob !== 'object') return 0
+  let token = _bitmapTokens.get(blob)
+  if (!token) {
+    token = ++_bitmapSeq
+    if (!Number.isSafeInteger(token)) return 0
+    _bitmapTokens.set(blob, token)
+  }
+  return token
+}
 
 /** Fail every pending job over to the sync path and close the worker route for good. */
 function disableWorkers() {
@@ -412,13 +480,15 @@ function spawnWorker() {
 /** The next slot round-robin, spawned on first use. `false` once the route is closed, which
  *  is also the answer where Worker or OffscreenCanvas do not exist.
  *  Pinned by __tests__/compress.syncfallback.test.js. */
-function getCompressWorker() {
+function getCompressWorker(bitmapKey = 0) {
   if (_workers === false) return false
   if (_workers === null) {
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') return (_workers = false)
     _workers = []
   }
-  const i = _next++ % POOL_SIZE
+  // Sticky routing is mandatory: a decoded bitmap exists only inside its owning Worker.
+  // Sources without a retained Blob use the original round-robin worker selection.
+  const i = bitmapKey > 0 ? bitmapKey % POOL_SIZE : _next++ % POOL_SIZE
   if (!_workers[i]) {
     const w = spawnWorker()
     if (!w) { disableWorkers(); return false }
@@ -479,7 +549,8 @@ const WORKER_JOB_TIMEOUT = 5000
 /** Runs the downsample in the worker. Resolves null (no gain / skip), a data URL, or
  *  undefined when the worker path failed and the caller must use the sync fallback. */
 function workerDownsample(dataURL, targetW, targetH, mime, blob, routes) {
-  const w = getCompressWorker()
+  const bitmapKey = bitmapTokenFor(blob)
+  const w = getCompressWorker(bitmapKey)
   if (!w) return Promise.resolve(undefined)
   return new Promise((resolve) => {
     const id = ++_seq
@@ -488,7 +559,7 @@ function workerDownsample(dataURL, targetW, targetH, mime, blob, routes) {
     _pending.set(id, (value) => { clearTimeout(timer); resolve(value) })
     try {
       // With a Blob the string stays home: it is only there for the size comparison.
-      w.postMessage({ id, dataURL: blob ? '' : dataURL, blob, srcLength: dataURL.length, targetW, targetH, resFactor: RES_FACTOR, quality: LOSSY_QUALITY, mime })
+      w.postMessage({ id, dataURL: blob ? '' : dataURL, blob, bitmapKey, srcLength: dataURL.length, targetW, targetH, resFactor: RES_FACTOR, quality: LOSSY_QUALITY, mime })
       // Counted HERE, after the post landed, and not where the Blob was attached to the clone:
       // the memo, the header probe, the size threshold and worker availability can each answer
       // before this line, and a postMessage that throws answers below instead of running.
