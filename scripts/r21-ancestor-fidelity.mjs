@@ -106,7 +106,8 @@ try {
           const canvas=await cap.toCanvas()
           const rgba=canvas.getContext('2d',{willReadFrequently:true})
             .getImageData(0,0,canvas.width,canvas.height).data
-          return {raw,pixels:await sha(rgba),stats,width:canvas.width,height:canvas.height}
+          return {raw,pixels:await sha(rgba),stats,width:canvas.width,height:canvas.height,
+            hovered:root.matches(':hover')}
         },
         async change(stage){
           if(stage==='attribute')root.setAttribute('data-state','changed')
@@ -147,9 +148,19 @@ try {
       if(cfg.mode==='hover')steps.push('hover')
       let previous=null, active=0
       for(const step of steps){
-        if(step==='hover')await Promise.all([a,b].map(p=>p.hover('.scene')))
-        else if(step!=='initial')await Promise.all([a,b].map(p=>p.evaluate(s=>window.__r21.change(s),step)))
-        const [left,right]=await Promise.all([a,b].map(p=>p.evaluate(()=>window.__r21.capture())))
+        let left,right
+        if(step==='hover'){
+          // Browser tab activation may clear the other page's :hover state.
+          // Capture each source WHILE it owns the pointer, never afterwards.
+          await a.hover('.scene')
+          left=await a.evaluate(()=>window.__r21.capture())
+          await b.hover('.scene')
+          right=await b.evaluate(()=>window.__r21.capture())
+          if(!left.hovered || !right.hovered)throw Error('Hover stimulus inactive '+engine)
+        } else {
+          if(step!=='initial')await Promise.all([a,b].map(p=>p.evaluate(s=>window.__r21.change(s),step)))
+          ;[left,right]=await Promise.all([a,b].map(p=>p.evaluate(()=>window.__r21.capture())))
+        }
         const x=fingerprint(left),y=fingerprint(right)
         if(x.raw!==y.raw||x.pixels!==y.pixels||x.width!==y.width||x.height!==y.height)
           throw new Error('R21 exact output/pixel mismatch '+engine+' '+cfg.name+' '+step)
