@@ -21,3 +21,18 @@ Replace the unconditional every-descendant collection with an attribute substrin
 ## Comparability
 
 Do not combine these experimental percentages with R10/R12 percentages by arithmetic addition. Record branch SHA, frozen comparison SHA, browser revision, runner image, timings and exact output hashes for every paired measurement. A failing or incomplete job yields **NO_CLAIM**.
+
+## Final experiment result — REJECTED (2026-10-08)
+
+Source candidate commit `f495f11c9a8018cae7684874ba20a6c96dfdf61d`.
+GitHub Actions [run #37745225552](https://github.com/thelabcorner/snapdom/actions/runs/37745225552) completed all build/type/lint/contract, 3-engine fidelity, 6 Chromium paired timing, and aggregation jobs successfully. The aggregator's **substantive** decision is `NO_TIMING_ACCEPTANCE`.
+
+| Regime (capture) | Candidate vs R12 baseline | Runner-level 95% CI | Verdict |
+| --- | ---: | ---: | --- |
+| no-background | −1.9857% | [−4.8539%, +0.9690%] | CI crosses zero |
+| sparse-background | +0.1216% | [−6.3776%, +7.0719%] | CI crosses zero |
+| dense-background | **+3.1784%** | **[+2.1183%, +4.2494%]** | **significant regression** |
+
+All 3 browser fidelity jobs (Chromium, Firefox, WebKit) and all 6 Chromium timing runner jobs passed their exact-output gates. The runner images nonetheless mixed `20261004.327.1` and `20260927.320.1`; the preregistered homogeneous-host timing acceptance condition also fails.
+
+**Disposition: `REJECTED_NO_PROMOTION`.** Do not cherry-pick or merge the native `[style*="data:image"]` compression candidate-selector source patch. A passing workflow exit code is not a passing performance acceptance decision. Preserve the experiment and artifacts for falsification/research. Future asset-index work must first establish an actual end-to-end breakeven against dense and sparse controls.
