@@ -240,7 +240,7 @@ try{
     })
   }
   const report={
-    schema:'snapdom-r18-image-pss-v1',runner,
+    schema:'snapdom-r18-font-pss-v1',runner,
     baselineSha:process.env.BASELINE_SHA,
     candidateSha:process.env.CANDIDATE_SHA,
     measurementSha:process.env.GITHUB_SHA,
