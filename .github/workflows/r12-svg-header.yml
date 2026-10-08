@@ -7,6 +7,7 @@ on:
       - '.github/workflows/r12-svg-header.yml'
       - 'scripts/svg-header-fast.node.test.mjs'
       - 'scripts/r12-svg-header-browser.mjs'
+      - 'scripts/r12-svg-export-bench.mjs'
       - 'src/exporters/svgHeaderFast.js'
       - 'src/exporters/toImg.js'
       - '__tests__/exporter.toImg.test.js'
@@ -62,3 +63,19 @@ jobs:
           BROWSER: ${{ matrix.engine }}
       - name: Prove exact encoding and pixel parity; measure isolated URL rewrite
         run: node scripts/r12-svg-header-browser.mjs --engine=${{ matrix.engine }}
+      - name: Checkout pinned pre-R12 baseline in a separate directory
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: f513db53570f8233dc71b1a2502d5daf2e030b6f
+          path: __r12_baseline
+          fetch-depth: 1
+      - name: Compile independent pinned baseline
+        working-directory: __r12_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "f513db53570f8233dc71b1a2502d5daf2e030b6f"
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Benchmark actual scaled SVG exporter against pinned baseline
+        run: node scripts/r12-svg-export-bench.mjs --engine=${{ matrix.engine }}
