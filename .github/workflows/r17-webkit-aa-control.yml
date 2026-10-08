@@ -1,0 +1,41 @@
+name: snapDOM R17 WebKit same-source A/A null fixture
+on:
+  push:
+    branches: ['perf/v3-r17-webkit-aa-control']
+    paths: ['lane6-scratch/r17/browser-bench.mjs', '.github/workflows/r17-webkit-aa-control.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  R17_BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+  NODE_VERSION: '22.21.1'
+jobs:
+  webkit-self-null:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '${{ env.NODE_VERSION }}'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: '${{ env.R17_BASELINE_SHA }}'
+          path: r17-baseline
+      - name: Build exact same-source frozen mechanism
+        run: |
+          test "$(git -C r17-baseline rev-parse HEAD)" = "$R17_BASELINE_SHA"
+          cd r17-baseline
+          npm ci --no-audit --no-fund
+          npm run compile
+      - run: npx playwright install --with-deps webkit
+      - name: Independent pages from same exact bundle, eight A/A raw and pixel pairs
+        run: node lane6-scratch/r17/browser-bench.mjs --engine=webkit --replica=0 --pairs=8 --self-null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: r17-webkit-aa-${{ github.run_id }}
+          path: lane6-scratch/r17/results/webkit-r0.json
+          if-no-files-found: warn
