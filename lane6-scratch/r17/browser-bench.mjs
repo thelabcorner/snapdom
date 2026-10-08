@@ -9,14 +9,16 @@ if(process.env.GITHUB_ACTIONS!=='true'||process.env.GITHUB_REPOSITORY!=='thelabc
 const a=key=>process.argv.find(x=>x.startsWith('--'+key+'='))?.split('=')[1]
 const engine=a('engine')||'chromium',replica=Number(a('replica')||0),pairs=Number(a('pairs')||8)
 if(!['chromium','firefox','webkit'].includes(engine)||!Number.isInteger(replica)||replica<0||!Number.isInteger(pairs)||pairs<2||pairs%2)throw Error('bad args')
-const bundles={baseline:fs.readFileSync('r17-baseline/dist/snapdom.mjs'),candidate:fs.readFileSync('dist/snapdom.mjs')}
+const selfNull = process.argv.includes('--self-null')
+const sameSource = fs.readFileSync('r17-baseline/dist/snapdom.mjs')
+const bundles={baseline:sameSource,candidate:selfNull?sameSource:fs.readFileSync('dist/snapdom.mjs')}
 const fixtureImages=Array.from({length:9},(_,i)=>makeDeterministicPng(960,640,{seed:0x7654321+i,entropy:true}))
 const cases=[
  {id:'html-only',html:5,bg:0,svg:0,compress:true},
  {id:'mixed-assets',html:2,bg:2,svg:2,compress:true},
  {id:'svg-background-only',html:0,bg:2,svg:3,compress:true},
  {id:'no-compress',html:2,bg:2,svg:2,compress:false},
-]
+].filter(x=>!selfNull||x.id==='no-compress')
 const imageUrl=i=>'/image-'+i+'.png'
 function htmlFor(c){
  let out=''
@@ -91,7 +93,7 @@ try{
   } finally {await Promise.all(Object.values(sides).map(s=>s.context.close().catch(()=>{})))}
  }
  const sha=v=>crypto.createHash('sha256').update(v).digest('hex')
- const out={schema:'snapdom-r17-mixed-asset-v1',engine,replica,runId:process.env.GITHUB_RUN_ID,measurementSha:process.env.GITHUB_SHA,baselineSha:process.env.R17_BASELINE_SHA,browserVersion:browser.version(),runnerImage:process.env.ImageVersion,bundles:Object.fromEntries(Object.entries(bundles).map(([k,v])=>[k,sha(v)])),fixtures:fixtureImages.map(sha),arms}
+ const out={schema:'snapdom-r17-mixed-asset-v1',engine,replica,selfNull,runId:process.env.GITHUB_RUN_ID,measurementSha:process.env.GITHUB_SHA,baselineSha:process.env.R17_BASELINE_SHA,browserVersion:browser.version(),runnerImage:process.env.ImageVersion,bundles:Object.fromEntries(Object.entries(bundles).map(([k,v])=>[k,sha(v)])),fixtures:fixtureImages.map(sha),arms}
  fs.mkdirSync('lane6-scratch/r17/results',{recursive:true})
  fs.writeFileSync('lane6-scratch/r17/results/'+engine+'-r'+replica+'.json',JSON.stringify(out,null,2))
 }finally{
