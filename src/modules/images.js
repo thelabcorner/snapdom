@@ -28,7 +28,7 @@
 
 import { snapFetch } from './snapFetch.js'
 import { sessionWarn } from '../utils/debug.js'
-import { cache, rememberImageAsset, rememberSvgImageAsset, normalizeCachePolicy } from '../core/cache.js'
+import { cache, rememberImageAsset, rememberSvgImageAsset, normalizeCachePolicy, MAX_SVG_IMAGE } from '../core/cache.js'
 import { compressWorkerRouteOpen } from './compress.js'
 import { pickSrcsetCandidate } from './pictureResolver.js'
 
@@ -195,6 +195,20 @@ export async function inlineImages(clone, options = {}) {
   // href stays as it was and the rasterizer draws nothing there.
   const svgImages = Array.from(clone.querySelectorAll('image'))
   if (clone.localName === 'image') svgImages.unshift(clone)
+  // Large unique-source collections thrash a FIFO image memo when the number
+  // of different URLs exceeds the retention capacity. Only allow admission
+  // for images repeated within this capture or already retained from a prior
+  // capture. Small collections avoid the extra scan entirely.
+  let frequentSvgSources = null
+  if (svgImages.length > MAX_SVG_IMAGE) {
+    const observed = new Set()
+    frequentSvgSources = new Set()
+    for (const image of svgImages) {
+      const href = getSvgImageHref(image)
+      if (observed.has(href)) frequentSvgSources.add(href)
+      else observed.add(href)
+    }
+  }
   const processSvgImage = async (el) => {
     const href = getSvgImageHref(el)
     if (!href || href.startsWith('data:') || href.startsWith('blob:')) return
@@ -206,7 +220,8 @@ export async function inlineImages(clone, options = {}) {
     // Ignore relative URLs (mutable base URI), proxy-dependent fetches, and the
     // explicit cache-disabled policy, including within-capture batch boundaries.
     const memoKey = !options.useProxy && normalizeCachePolicy(options.cache) !== 'disabled' &&
-      /^https?:\/\//i.test(href) ? href : null
+      /^https?:\/\//i.test(href) &&
+      (!frequentSvgSources || frequentSvgSources.has(href) || cache.svgImage.has(href)) ? href : null
     let data = memoKey ? cache.svgImage.get(memoKey) : null
 
     if (!data) {
