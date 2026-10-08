@@ -338,53 +338,61 @@ function gainFactor(nw, nh, targetW, targetH) {
 const WORKER_SRC = `// R12 experiment: pin decoded ImageBitmap by exact Blob identity, not sampled hashes.
 const BITMAP_BUDGET = 4 * 1024 * 1024
 const bitmaps = new Map()
+const decoding = new Map()
 let retainedBytes = 0
 const dispose = (bitmap) => { try { bitmap.close() } catch {} }
 async function borrow(blob, key) {
-  if (key) {
-    const old = bitmaps.get(key)
-    if (old) {
-      bitmaps.delete(key)
-      bitmaps.set(key, old)
-      old.users++
-      return { bitmap: old.bitmap, entry: old, hit: true }
-    }
+  // Unknown identities do not pay for the single-flight registry.
+  if (!key) return { bitmap: await createImageBitmap(blob), entry: null, hit: false }
+  const old = bitmaps.get(key)
+  if (old) {
+    bitmaps.delete(key)
+    bitmaps.set(key, old)
+    old.users++
+    return { bitmap: old.bitmap, entry: old, hit: true }
   }
-  const bitmap = await createImageBitmap(blob)
-  // Distinct worker events can overlap while createImageBitmap awaits.
-  if (key) {
-    const raced = bitmaps.get(key)
-    if (raced) {
-      dispose(bitmap)
-      bitmaps.delete(key)
-      bitmaps.set(key, raced)
-      raced.users++
-      return { bitmap: raced.bitmap, entry: raced, hit: true }
-    }
+  const pending = decoding.get(key)
+  if (pending) {
+    // Reserve a borrower BEFORE awaiting the shared decode, including the narrow
+    // interval between decode completion and removal from the inflight registry.
+    pending.waiters++
+    if (pending.entry) pending.entry.users++
+    const entry = await pending.promise
+    return { bitmap: entry.bitmap, entry, hit: true }
   }
-  const bytes = bitmap.width * bitmap.height * 4
-  if (key && Number.isSafeInteger(bytes) && bytes > 0 && bytes <= BITMAP_BUDGET) {
-    for (const [other, entry] of bitmaps) {
-      if (retainedBytes + bytes <= BITMAP_BUDGET) break
-      // Active borrowers may be encoding asynchronously; never close their bitmap.
-      if (entry.users) continue
-      bitmaps.delete(other)
-      retainedBytes -= entry.bytes
-      dispose(entry.bitmap)
+  const task = { waiters: 1, entry: null, promise: null }
+  decoding.set(key, task)
+  task.promise = Promise.resolve().then(() => createImageBitmap(blob)).then((bitmap) => {
+    const bytes = bitmap.width * bitmap.height * 4
+    const entry = { bitmap, bytes, users: task.waiters, retained: false }
+    task.entry = entry
+    if (Number.isSafeInteger(bytes) && bytes > 0 && bytes <= BITMAP_BUDGET) {
+      for (const [other, cached] of bitmaps) {
+        if (retainedBytes + bytes <= BITMAP_BUDGET) break
+        // An ImageBitmap used by another active encode must never be closed.
+        if (cached.users) continue
+        bitmaps.delete(other)
+        retainedBytes -= cached.bytes
+        dispose(cached.bitmap)
+      }
+      if (retainedBytes + bytes <= BITMAP_BUDGET) {
+        entry.retained = true
+        bitmaps.set(key, entry)
+        retainedBytes += bytes
+      }
     }
-    if (retainedBytes + bytes <= BITMAP_BUDGET) {
-      const entry = { bitmap, bytes, users: 1 }
-      bitmaps.set(key, entry)
-      retainedBytes += bytes
-      return { bitmap, entry, hit: false }
-    }
-  }
-  return { bitmap, entry: null, hit: false }
+    return entry
+  }).finally(() => {
+    if (decoding.get(key) === task) decoding.delete(key)
+  })
+  const entry = await task.promise
+  return { bitmap: entry.bitmap, entry, hit: false }
 }
 const release = (value) => {
   if (!value) return
-  if (value.entry) value.entry.users--
-  else dispose(value.bitmap)
+  if (!value.entry) { dispose(value.bitmap); return }
+  value.entry.users--
+  if (!value.entry.retained && value.entry.users === 0) dispose(value.entry.bitmap)
 }
 self.onmessage = async (e) => {
   const { id, dataURL, blob: given, bitmapKey, srcLength, targetW, targetH, resFactor, quality, mime } = e.data
