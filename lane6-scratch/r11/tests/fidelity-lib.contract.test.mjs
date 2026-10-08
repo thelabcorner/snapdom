@@ -79,7 +79,7 @@ test('the guard message is stable', () => {
 // --------------------------------------------------------------------------
 
 test('the frozen mechanism and baseline are the exact commits', () => {
-  assert.equal(CANDIDATE_SHA, 'ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b')
+  assert.equal(CANDIDATE_SHA, '2d27ad49b39bd6414b2fda925e6678dd7b35eb5a')
   assert.equal(BASELINE_SHA, 'd391556b80be7a6d97bc4834d2ce6e24137515b2')
   assert.deepEqual(ENGINES, ['chromium', 'firefox', 'webkit'])
   assert.deepEqual(SELF_NULL_CONTEXTS, ['A', 'B'])
@@ -411,8 +411,8 @@ test('every step of every cell has a route expectation and a telemetry expectati
   assert.equal(stepExpectation(cellById('large-first-capture'), 'no-such-step'), null)
 })
 
-test('R12 repeat arms pin Blob transport on both AS-BLOB sides', () => {
-  // Both R12 commits retain fetched Blob sidecars; decoded-bitmap reuse happens inside the Worker.
+test('R13 repeat arms pin Blob transport on both AS-BLOB sides', () => {
+  // Both the R13 candidate and R12 baseline retain fetched Blob sidecars; decoded-bitmap reuse happens inside the Worker.
   const claim = stepExpectation(cellById('large-repeat-scale'), 'scale-1')
   assert.equal(claim.telemetryBySide.baseline, 'blobPost')
   assert.equal(claim.telemetryBySide.candidate, 'blobPost')
