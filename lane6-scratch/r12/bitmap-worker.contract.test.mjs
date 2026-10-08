@@ -9,7 +9,7 @@ const marker = 'const WORKER_SRC = ' + tick
 const workerScript = source.split(marker)[1]?.split(tick)[0]
 if (!workerScript) throw new Error('cannot inspect inline production Worker source')
 
-function sandbox({ width = 1200, height = 800 } = {}) {
+function sandbox({ width = 1200, height = 800, failFirstDecode = false } = {}) {
   let decodeCount = 0
   let closeCount = 0
   let drawCount = 0
@@ -20,6 +20,7 @@ function sandbox({ width = 1200, height = 800 } = {}) {
     createImageBitmap: async (blob) => {
       decodeCount++
       await Promise.resolve()
+      if (failFirstDecode && decodeCount === 1) throw new Error('intentional decode failure')
       return {
         width: blob.width ?? width, height: blob.height ?? height,
         close: () => { closeCount++ },
@@ -107,6 +108,26 @@ test('oversized sources and no-token messages never retain decoded memory', asyn
   assert.equal(t.counts.decodeCount, 4)
   assert.equal(t.counts.closeCount, 4)
   assert.ok(t.replies.every((x) => !x.error))
+})
+
+test('a rejected concurrent decode clears the inflight entry and retries cleanly', async () => {
+  const t = sandbox({ failFirstDecode: true })
+  await Promise.all([t.send(1, 73), t.send(2, 73)])
+  assert.equal(t.counts.decodeCount, 1, 'failed simultaneous calls shared one decode')
+  assert.equal(t.replies.filter((x) => x.error).length, 2)
+  await t.send(3, 73)
+  assert.equal(t.counts.decodeCount, 2, 'failure must not poison subsequent requests')
+  assert.ok(t.replies.find((x) => x.id === 3)?.url)
+  await t.send(4, 73)
+  assert.equal(t.counts.decodeCount, 2, 'successful retry is retained')
+  assert.equal(t.replies.find((x) => x.id === 4)?.bitmapHit, true)
+})
+
+test('anonymous Blob tasks do not coalesce without an exact source token', async () => {
+  const t = sandbox()
+  await Promise.all([t.send(1, 0), t.send(2, 0)])
+  assert.equal(t.counts.decodeCount, 2)
+  assert.equal(t.counts.closeCount, 2)
 })
 
 test('source-bearing posts are keyed by exact WeakMap Blob identity with worker affinity', () => {
