@@ -79,8 +79,8 @@ test('the guard message is stable', () => {
 // --------------------------------------------------------------------------
 
 test('the frozen mechanism and baseline are the exact commits', () => {
-  assert.equal(CANDIDATE_SHA, 'd391556b80be7a6d97bc4834d2ce6e24137515b2')
-  assert.equal(BASELINE_SHA, 'c523ddb6e141846d55af1c8f315f65babbc32a7e')
+  assert.equal(CANDIDATE_SHA, 'ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b')
+  assert.equal(BASELINE_SHA, 'd391556b80be7a6d97bc4834d2ce6e24137515b2')
   assert.deepEqual(ENGINES, ['chromium', 'firefox', 'webkit'])
   assert.deepEqual(SELF_NULL_CONTEXTS, ['A', 'B'])
 })
