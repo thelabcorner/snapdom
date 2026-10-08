@@ -5,7 +5,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import { chromium } from 'playwright'
-import { makeDeterministicPng } from '../r10/asset-bench-lib.mjs'
+import { makeDeterministicPng } from '../lane6-scratch/r10/asset-bench-lib.mjs'
 
 if (process.env.GITHUB_ACTIONS !== 'true' ||
     process.env.GITHUB_REPOSITORY !== 'thelabcorner/snapdom') {
