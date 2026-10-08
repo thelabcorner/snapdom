@@ -37,3 +37,21 @@ pixel guards, adds a same-source A/A two-page null control, and reports
 runner-level paired log effects with all samples. The A/A null is mandatory to
 interpret candidate-vs-baseline effects. Six independent runners and native
 memory evidence remain required for promotion.
+
+## Isolated-page scout, run 37750517060
+
+All historical selector contract checks, raw SVG and pixel parity passed in Chromium,
+Firefox, and WebKit. Paired geometric timing effects (candidate minus baseline,
+negative faster) on deep-inherited: Chromium +3.45%, Firefox -2.34%, WebKit -0.12%;
+deep-neutral: Chromium -7.54%, Firefox -1.31%, WebKit +9.47%.
+Shallow controls likewise varied in sign. Same-source A/A null remained nonzero
+(Chromium -2.02%, Firefox +5.04%, WebKit -6.43%). These data do not demonstrate
+practical Pareto gain, so R20 is **not** promotion-ready.
+
+Next falsifier is direct *engagement*. The new counters are opt-in through the
+internal `__ancestorUniverseTelemetry` object and read in a separate untimed
+capture. A regime that claims to test the mechanism but has zero summary uses
+must fail closed. Further stress extends nested depth from 20/24 to 64/192
+and breadth to 32 leaves per branch; do not conflate this synthetic stress
+with representative applications. Memory and six-host replicated CIs still gate
+any production optimization.

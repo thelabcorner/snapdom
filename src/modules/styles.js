@@ -1455,14 +1455,19 @@ function matchesElementAllRule(el, rules) {
  * The sets are immutable once published; copy-on-write prevents changing a cached parent's
  * property summary when a child contributes more inherited inline/UA declarations.
  */
-function inheritedAncestorUniverse(from, doc, st, universe, memo) {
+function inheritedAncestorUniverse(from, doc, st, universe, memo, telemetry = null) {
   const missing = []
   let node = from
   let prior = { depth: 0, blocked: false, props: new Set() }
   while (node && node.nodeType === 1) {
     const cached = memo.get(node)
-    if (cached) { prior = cached; break }
+    if (cached) {
+      if (telemetry) telemetry.cacheHits = (telemetry.cacheHits || 0) + 1
+      prior = cached
+      break
+    }
     missing.push(node)
+    if (telemetry) telemetry.ancestorMisses = (telemetry.ancestorMisses || 0) + 1
     if (node === doc.documentElement) break
     node = node.parentElement
     if (missing.length > 1023) return null
@@ -1574,6 +1579,8 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   // Element-all selectors can be stateful (:hover, :has, ...). In their presence keep
   // matching each ancestor on each visit instead of assuming the result is stationary.
   let ancestorMemo = null
+  const ancestorStats = options?.__ancestorUniverseTelemetry
+  if (ancestorStats) ancestorStats.universeCalls = (ancestorStats.universeCalls || 0) + 1
   if (options?.__ancestorUniverseMemo !== false && options?.__session &&
       !(scan.elementAllRules?.length)) {
     let holder = options.__ancestorUniverseMemoState
@@ -1589,8 +1596,9 @@ function elementUniverseFor(el, style, options, universe, backgroundState = null
   let a = el, depth = 0
   while (a && a.nodeType === 1 && depth++ < 1024) {
     if (a !== el && ancestorMemo) {
-      const inherited = inheritedAncestorUniverse(a, doc, st, universe, ancestorMemo)
+      const inherited = inheritedAncestorUniverse(a, doc, st, universe, ancestorMemo, ancestorStats)
       if (inherited && inherited.depth <= 1024 - (depth - 1)) {
+        if (ancestorStats) ancestorStats.summaryUses = (ancestorStats.summaryUses || 0) + 1
         if (inherited.blocked) return bail()
         for (const prop of inherited.props) push(prop)
         break

@@ -166,6 +166,8 @@ export function createContext(options = {}) {
     // inherited-ancestor summary only when elementUniverseFor can prove safe to reuse it.
     // False restores the historical per-element ancestor walk.
     __ancestorUniverseMemo: options.__ancestorUniverseMemo,
+    // Experimental instrumentation object, only used by explicit R20 test fixtures.
+    __ancestorUniverseTelemetry: options.__ancestorUniverseTelemetry,
     // Internal R4 counterfactual: false preserves every data-* attribute in the style-share
     // identity while leaving R2 sharing, R3 narrowing, DOM/CSS and rendering untouched.
     __styleIdentityDataAttrs: options.__styleIdentityDataAttrs,
