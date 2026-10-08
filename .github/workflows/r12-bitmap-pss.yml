@@ -1,3 +1,4 @@
+# Measurement retry after hosted image rollover; preserve six-runner same-image evidence gate.
 name: snapDOM R12 decoded-bitmap process-PSS confirmation
 
 on:
