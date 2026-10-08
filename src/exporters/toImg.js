@@ -11,6 +11,7 @@ import { isSafari, debugWarn } from '../utils'
 import { sessionWarn } from '../utils/debug.js'
 import { rasterize } from '../modules/rasterize'
 import { fixSafariShadows, decodeSvgFromDataURL, encodeSvgToDataURL } from './toCanvas.js'
+import { scaleEncodedSvgHeader } from './svgHeaderFast.js'
 /**
  * Load a capture's data URL into an <img> sized by the shared exporter rule.
  *
@@ -76,15 +77,23 @@ export async function toImg(url, options) {
   let scaledSvg = false
   if (!hasW && !hasH && scale !== 1 && typeof url === 'string' && url.startsWith('data:image/svg+xml')) {
     try {
-      const svg = decodeSvgFromDataURL(url)
-      const head = (svg.match(/<svg\b[^>]*>/i) || [])[0] || ''
-      const w = Number((head.match(/\bwidth="([\d.]+)"/i) || [])[1])
-      const h = Number((head.match(/\bheight="([\d.]+)"/i) || [])[1])
-      if (w > 0 && h > 0) {
-        const next = head.replace(/\bwidth="[^"]*"/i, `width="${Math.max(1, Math.round(w * scale))}"`)
-          .replace(/\bheight="[^"]*"/i, `height="${Math.max(1, Math.round(h * scale))}"`)
-        source = encodeSvgToDataURL(svg.replace(head, next))
+      const fast = scaleEncodedSvgHeader(url, scale)
+      if (fast !== null) {
+        source = fast
         scaledSvg = true
+      } else {
+        // Preserve the historical semantics for externally-authored data URLs
+        // (noncanonical encoding, atypical header or unsupported dimensions).
+        const svg = decodeSvgFromDataURL(url)
+        const head = (svg.match(/<svg\b[^>]*>/i) || [])[0] || ''
+        const w = Number((head.match(/\bwidth="([\d.]+)"/i) || [])[1])
+        const h = Number((head.match(/\bheight="([\d.]+)"/i) || [])[1])
+        if (w > 0 && h > 0) {
+          const next = head.replace(/\bwidth="[^"]*"/i, `width="${Math.max(1, Math.round(w * scale))}"`)
+            .replace(/\bheight="[^"]*"/i, `height="${Math.max(1, Math.round(h * scale))}"`)
+          source = encodeSvgToDataURL(svg.replace(head, next))
+          scaledSvg = true
+        }
       }
     } catch { /* resolve unusual inputs from the decoded image below */ }
   }

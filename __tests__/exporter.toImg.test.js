@@ -65,6 +65,38 @@ describe('toImg', () => {
     expect(decodeURIComponent(img.src)).toContain('width="40"')
   })
 
+  it('produces exactly the original full-reencode URL for a large image-rich SVG', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="32" viewBox="0 0 48 32">' +
+      '<metadata>' + 'Abc/+=01'.repeat(25000) + '</metadata>' +
+      '<rect width="48" height="32" fill="rgb(17, 68, 102)"/></svg>'
+    const input = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+    const head = (svg.match(/<svg\b[^>]*>/i) || [])[0]
+    const expected = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.replace(head,
+      head.replace(/\bwidth="[^"]*"/i, 'width="96"').replace(/\bheight="[^"]*"/i, 'height="64"')))
+    const img = await toImg(input, { scale: 2 })
+    expect(img.src).toBe(expected)
+    expect(img.complete).toBe(true)
+    expect(img.naturalWidth).toBe(96)
+    expect(img.naturalHeight).toBe(64)
+    const canvas = document.createElement('canvas')
+    canvas.width = 96
+    canvas.height = 64
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const pixel = ctx.getImageData(5, 5, 1, 1).data
+    expect([...pixel]).toEqual([17, 68, 102, 255])
+  })
+
+  it('keeps the old whole-document route for noncanonical percent-encoding', async () => {
+    const atypical = DATA_SVG.replace('%3Csvg', '%3csvg')
+    const svg = decodeURIComponent(atypical.split(',')[1])
+    const head = svg.match(/<svg\b[^>]*>/i)[0]
+    const expected = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.replace(head,
+      head.replace(/\bwidth="[^"]*"/i, 'width="40"').replace(/\bheight="[^"]*"/i, 'height="20"')))
+    const img = await toImg(atypical, { scale: 2 })
+    expect(img.src).toBe(expected)
+  })
+
   it('uses rasterize path on Safari when wantsScale', async () => {
     vi.mocked(isSafari).mockReturnValue(true)
     const img = await toImg(DATA_PNG, { scale: 2 })

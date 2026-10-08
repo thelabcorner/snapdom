@@ -1,0 +1,64 @@
+name: snapDOM R12 exact SVG header frontier
+on:
+  push:
+    branches:
+      - 'perf/v3-r12-svg-header-*'
+    paths:
+      - '.github/workflows/r12-svg-header.yml'
+      - 'scripts/svg-header-fast.node.test.mjs'
+      - 'scripts/r12-svg-header-browser.mjs'
+      - 'src/exporters/svgHeaderFast.js'
+      - 'src/exporters/toImg.js'
+      - '__tests__/exporter.toImg.test.js'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r12-svg-header-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Browser-free exact-output and build checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node --test scripts/svg-header-fast.node.test.mjs
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+
+  browsers:
+    name: ${{ matrix.engine }} integration, pixels and benchmark
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Run integrated scaled SVG export tests
+        run: npx vitest run __tests__/exporter.toImg.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
+      - name: Prove exact encoding and pixel parity; measure isolated URL rewrite
+        run: node scripts/r12-svg-header-browser.mjs --engine=${{ matrix.engine }}
