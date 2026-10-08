@@ -75,7 +75,10 @@ async function measure(sc) {
       const root = document.getElementById('stage')
       const ns = 'http://www.w3.org/2000/svg'
       const inline = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='
-      const record = { A: modules[0].default, B: modules[1].default, calls: [], inFlight: 0, maxFlight: 0 }
+      if (typeof modules[0].snapdom !== 'function' || typeof modules[1].snapdom !== 'function') {
+        throw new Error('R17 measurement requires named snapdom export on both frozen bundles')
+      }
+      const record = { A: modules[0].snapdom, B: modules[1].snapdom, calls: [], inFlight: 0, maxFlight: 0 }
       const realFetch = window.fetch.bind(window)
       window.fetch = (...args) => {
         const url = String(args[0])
