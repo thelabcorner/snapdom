@@ -1,4 +1,4 @@
-name: snapDOM R12 bitmap-cache cross-engine fidelity acceptance
+name: snapDOM R13 single-flight bitmap cross-engine fidelity acceptance
 
 # Public Actions only. No secrets, no self-hosted runner, `contents: read` and nothing else.
 # Chromium, Firefox and WebKit are all REQUIRED: a two-engine result is INCOMPLETE_EVIDENCE, not a
@@ -7,7 +7,7 @@ name: snapDOM R12 bitmap-cache cross-engine fidelity acceptance
 on:
   push:
     branches:
-      - 'perf/v3-r12-fidelity-gate'
+      - 'perf/v3-r13-singleflight-fidelity-gate'
     paths:
       - '.github/workflows/r11-fidelity.yml'
       - 'lane6-scratch/r11/**'
@@ -35,7 +35,7 @@ concurrency:
 env:
   NODE_VERSION: '22.21.1'
   MEASUREMENT_SHA: ${{ github.sha }}
-  CANDIDATE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+  CANDIDATE_SHA: 2d27ad49b39bd6414b2fda925e6678dd7b35eb5a
   BASELINE_SHA: d391556b80be7a6d97bc4834d2ce6e24137515b2
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       # The gate is only meaningful if the mechanism is still exactly the mechanism that was
-      # measured. Production src, the public types and the build inputs are all compared to ce135fb
+      # measured. Production src, the public types and the build inputs are all compared to 2d27ad4
       # byte for byte, so a harness commit can never quietly redefine the candidate.
       - name: Prove production src is byte-identical to the frozen candidate
         shell: bash
