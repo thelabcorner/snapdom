@@ -71,25 +71,38 @@ function internInlineStyles(foString, fo) {
   // Author <style> elements survive into the clone and their CSS text may contain the
   // literal sequence the attribute regex matches (attribute selectors, content strings).
   // Split the markup into style-element spans and everything else, and transform only the
-  // latter. Span 0 ends inside the engine's own style tag, where the rules are injected.
+  // latter. Keep offsets, not potentially multi-megabyte substring copies: the most common
+  // outcome is below the interning threshold, so no transformed spans are needed at all.
+  // Span 0 ends inside the engine's own style tag, where the rules are injected.
   const STYLE_SPAN = /<style\b[^>]*>[\s\S]*?<\/style>/g
   const segments = []
   let cursor = styleClose
   let sm
   STYLE_SPAN.lastIndex = styleClose
   while ((sm = STYLE_SPAN.exec(foString))) {
-    segments.push({ text: foString.slice(cursor, sm.index), intern: true })
-    segments.push({ text: sm[0], intern: false })
+    segments.push({ start: cursor, end: sm.index, intern: true })
+    segments.push({ start: sm.index, end: STYLE_SPAN.lastIndex, intern: false })
     cursor = STYLE_SPAN.lastIndex
   }
-  segments.push({ text: foString.slice(cursor), intern: true })
+  segments.push({ start: cursor, end: foString.length, intern: true })
   const counts = new Map()
+  // Native substring search can skip long inline base64 payloads without materializing a
+  // regex match array for every ordinary style attribute. Scan each eligible span exactly
+  // once, deferring any output slicing/replacement until the 2 KiB savings test succeeds.
   const ATTR = / style="([^"]*)"/g
-  let m
   for (const seg of segments) {
     if (!seg.intern) continue
-    ATTR.lastIndex = 0
-    while ((m = ATTR.exec(seg.text))) counts.set(m[1], (counts.get(m[1]) || 0) + 1)
+    let i = seg.start
+    while (i < seg.end) {
+      const at = foString.indexOf(' style="', i)
+      if (at < 0 || at >= seg.end) break
+      const valueStart = at + 8
+      const valueEnd = foString.indexOf('"', valueStart)
+      if (valueEnd < 0 || valueEnd >= seg.end) break
+      const css = foString.slice(valueStart, valueEnd)
+      counts.set(css, (counts.get(css) || 0) + 1)
+      i = valueEnd + 1
+    }
   }
   // Worth it only when real bytes repeat: singletons stay inline (a rule per unique node
   // would add cascade work for nothing), and a page with little repetition skips the pass.
@@ -113,7 +126,10 @@ function internInlineStyles(foString, fo) {
     return ` data-sdi="${t}"`
   }
   let out = ''
-  for (const seg of segments) out += seg.intern ? seg.text.replace(ATTR, swap) : seg.text
+  for (const seg of segments) {
+    const text = foString.slice(seg.start, seg.end)
+    out += seg.intern ? text.replace(ATTR, swap) : text
+  }
   return foString.slice(0, styleClose) + rules.join('') + out
 }
 

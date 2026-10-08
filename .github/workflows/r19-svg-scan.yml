@@ -1,0 +1,71 @@
+name: snapDOM R19 serialization scan experiment
+on:
+  push:
+    branches:
+      - 'perf/v3-r19-svg-serialization-*'
+    paths:
+      - '.github/workflows/r19-svg-scan.yml'
+      - 'src/engines/svg.js'
+      - 'scripts/r19-intern-scan.node.test.mjs'
+      - 'scripts/r19-svg-browser.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r19-svg-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node --test scripts/r19-intern-scan.node.test.mjs
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+
+  browser-parity:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Existing inline-style interning suite
+        run: npx vitest run __tests__/engine.svg.intern.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r19_baseline
+      - name: Build pinned independent baseline
+        working-directory: __r19_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "cac07a4108086718bc9511663346e1b9fcf4e226"
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Differential public capture parity and crossover
+        run: node scripts/r19-svg-browser.mjs --engine=${{ matrix.engine }}
