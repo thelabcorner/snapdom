@@ -1,0 +1,74 @@
+name: snapDOM R18 full-capture cross-engine fidelity gate
+
+on:
+  push:
+    branches: ['perf/v3-r18-font-cross-engine']
+    paths:
+      - 'scripts/r18-font-engine-*'
+      - '.github/workflows/r18-font-cross-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout exact parent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          path: baseline
+      - name: Checkout exact font memo production source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 70045ebd68a276554ef50151ce2505e772689e6a
+          path: candidate
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Check frozen source provenance
+        run: |
+          test "$(git -C baseline rev-parse HEAD)" = "ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b"
+          test "$(git -C candidate rev-parse HEAD)" = "70045ebd68a276554ef50151ce2505e772689e6a"
+      - name: Build both sources and install browser
+        run: |
+          npm ci --no-audit --no-fund
+          (cd baseline && npm ci --no-audit --no-fund && npm run compile)
+          (cd candidate && npm ci --no-audit --no-fund && npm run compile)
+          npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Capture end-to-end exact raw and rendered pixels
+        env:
+          BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          CANDIDATE_SHA: 70045ebd68a276554ef50151ce2505e772689e6a
+        run: node scripts/r18-font-engine-browser.mjs --runner=1 --engine=${{ matrix.browser }} --baseline=baseline/dist/snapdom.mjs --candidate=candidate/dist/snapdom.mjs --out=r18-engine-evidence/${{ matrix.browser }}.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: r18-font-engine-${{ matrix.browser }}
+          path: r18-engine-evidence/${{ matrix.browser }}.json
+          if-no-files-found: error
+          retention-days: 60
+
+  verdict:
+    needs: engine
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r18-font-engine-*
+          path: r18-engine-evidence
+          merge-multiple: true
+      - run: node scripts/r18-font-engine-verify.mjs r18-engine-evidence
