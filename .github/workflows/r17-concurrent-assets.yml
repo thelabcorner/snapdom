@@ -1,0 +1,121 @@
+name: snapDOM R17 mixed-asset concurrency exact fidelity and hosted trial
+on:
+  push:
+    branches: ['perf/v3-r17-background-selector-frontier']
+    paths: ['src/modules/compress.js', 'lane6-scratch/r17/**', '.github/workflows/r17-concurrent-assets.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  R17_BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+  NODE_VERSION: '22.21.1'
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '${{ env.NODE_VERSION }}'
+          cache: npm
+      - run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run test:types
+          npm run test:asset-proof
+          npm run compile
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: '${{ env.R17_BASELINE_SHA }}'
+          path: r17-baseline
+          fetch-depth: 1
+      - name: Build frozen baseline
+        run: |
+          test "$(git -C r17-baseline rev-parse HEAD)" = "$R17_BASELINE_SHA"
+          cd r17-baseline
+          npm ci --no-audit --no-fund
+          npm run compile
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r17-prepared-${{ github.run_id }}
+          path: |
+            dist/snapdom.mjs
+            r17-baseline/dist/snapdom.mjs
+          if-no-files-found: error
+          retention-days: 30
+  fidelity:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '${{ env.NODE_VERSION }}'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r17-prepared-${{ github.run_id }}
+          path: .
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: node lane6-scratch/r17/browser-bench.mjs --engine=${{ matrix.engine }} --replica=0 --pairs=2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: r17-fidelity-${{ matrix.engine }}-${{ github.run_id }}
+          path: lane6-scratch/r17/results/${{ matrix.engine }}-r0.json
+          if-no-files-found: warn
+  chromium-paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        replicate: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '${{ env.NODE_VERSION }}'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r17-prepared-${{ github.run_id }}
+          path: .
+      - run: npx playwright install --with-deps chromium
+      - run: node lane6-scratch/r17/browser-bench.mjs --engine=chromium --replica=${{ matrix.replicate }} --pairs=8
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: r17-runner-r${{ matrix.replicate }}-${{ github.run_id }}
+          path: lane6-scratch/r17/results/chromium-r${{ matrix.replicate }}.json
+          if-no-files-found: warn
+  aggregate:
+    needs: [prepare, fidelity, chromium-paired]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '${{ env.NODE_VERSION }}'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r17-runner-r*-${{ github.run_id }}
+          path: lane6-scratch/r17/results
+          merge-multiple: true
+      - run: node lane6-scratch/r17/aggregate.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: r17-summary-${{ github.run_id }}
+          path: lane6-scratch/r17/results/summary.json
+          if-no-files-found: warn
