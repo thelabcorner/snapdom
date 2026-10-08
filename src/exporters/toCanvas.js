@@ -630,7 +630,7 @@ export async function toCanvas(url, options) {
       console.warn(
         `[snapDOM] Capture ${Math.round(fastClamp.width)}×${Math.round(fastClamp.height)}px exceeds the browser image-decode ` +
         `limit (${MAX_RASTER_SIDE}px/side); downscaling to ${fastClamp.nextWidth}×${fastClamp.nextHeight}px. Lower \`scale\` or set ` +
-        '\`width\`/\`height\` to control output size.'
+        '`width`/`height` to control output size.'
       )
     } else if (crop || oversized || isSafari()) {
       try {
