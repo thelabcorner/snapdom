@@ -79,10 +79,13 @@ async function runScenario(sc) {
     await page.evaluate(async (cfg) => {
       const modules = await Promise.all([import('/baseline.mjs'), import('/candidate.mjs')])
       window.__r15 = {
-        A: modules[0].default,
-        B: modules[1].default,
+        A: modules[0].snapdom,
+        B: modules[1].snapdom,
         calls: [],
         realFetch: window.fetch.bind(window)
+      }
+      if (typeof window.__r15.A !== 'function' || typeof window.__r15.B !== 'function') {
+        throw new Error('frozen ESM bundles must export the named snapdom function')
       }
       window.fetch = (...args) => {
         window.__r15.calls.push(String(args[0]))
