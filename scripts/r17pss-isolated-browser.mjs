@@ -3,7 +3,10 @@
 // including child renderers and utility processes; browser-free output contains
 // raw source SHA + pixel equality checks from the separate R15 timing gate.
 import { createServer } from 'node:http'
-import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises'
+import { readFile, readdir, mkdir, writeFile, mkdtemp, rm } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { resolve, dirname } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import { chromium } from 'playwright'
@@ -120,13 +123,56 @@ async function processSetPss(rootPid) {
   if(n<2||!Number.isFinite(totalKiB)||totalKiB<=0)throw new Error('incomplete process set PSS: '+n)
   return {processMiB:totalKiB/1024,rendererMiB:rendererKiB/1024,browserMiB:browserKiB/1024,processes:n}
 }
-async function settledProcessPss(browser,page) {
+// Playwright Browser intentionally does not expose a process() API. Launch Chromium
+// explicitly and connect through its CDP endpoint; the OS child PID is then authoritative
+// for smaps_rollup descendant accounting, without touching undocumented Playwright state.
+async function launchMeasuredBrowser() {
+  const profile = await mkdtemp(join(tmpdir(), 'snapdom-r17-pss-'))
+  const child = spawn(chromium.executablePath(), [
+    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+    '--disable-background-timer-throttling', '--no-first-run',
+    '--js-flags=--expose-gc', '--remote-debugging-port=0',
+    '--user-data-dir=' + profile,
+    'about:blank'
+  ], { stdio: 'ignore' })
+  if (!child.pid) throw Error('unable to launch measurable Chromium process')
+  let browser
+  try {
+    let port
+    for (let i = 0; i < 100; i++) {
+      if (child.exitCode !== null || child.signalCode !== null) throw Error('Chromium exited before CDP readiness')
+      try {
+        const rows = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')
+        const discovered = Number(rows[0])
+        if (Number.isInteger(discovered) && discovered > 0) { port = discovered; break }
+      } catch { /* CDP endpoint has not been written yet */ }
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (!port) throw Error('Chromium CDP readiness timeout')
+    browser = await chromium.connectOverCDP('http://127.0.0.1:' + port, { timeout: 10000 })
+  } catch (e) {
+    child.kill()
+    await rm(profile, { recursive: true, force: true })
+    throw e
+  }
+  return {
+    browser, pid: child.pid,
+    close: async () => {
+      try { await browser.close() } finally {
+        child.kill()
+        await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })
+      }
+    }
+  }
+}
+
+async function settledProcessPss(rootPid,page) {
   const devtools=await page.context().newCDPSession(page)
   const samples=[]
   for(let i=0;i<4;i++){
     await devtools.send('HeapProfiler.collectGarbage')
     await page.waitForTimeout(260)
-    samples.push(await processSetPss(browser.process().pid))
+    samples.push(await processSetPss(rootPid))
   }
   await devtools.detach()
   return {
@@ -137,7 +183,8 @@ async function settledProcessPss(browser,page) {
   }
 }
 async function isolatedSample(side,replicate) {
-  const browser=await chromium.launch({headless:true,args:['--js-flags=--expose-gc']})
+  const measured=await launchMeasuredBrowser()
+  const {browser, pid}=measured
   const page=await browser.newPage({viewport:{width:1280,height:1100},deviceScaleFactor:1})
   try{
     await page.goto(origin+'/',{waitUntil:'load'})
@@ -171,13 +218,13 @@ async function isolatedSample(side,replicate) {
     },{side,origin})
     const warmHashes=[]
     for(let i=0;i<3;i++)warmHashes.push(await page.evaluate(()=>window.__capture(0,40)))
-    const warmed=await settledProcessPss(browser,page)
+    const warmed=await settledProcessPss(pid,page)
     const sweepHashes=[]
     for(let i=0;i<2;i++)sweepHashes.push(await page.evaluate(()=>window.__capture(40,110)))
-    const swept=await settledProcessPss(browser,page)
+    const swept=await settledProcessPss(pid,page)
     return {side,replicate,alreadyWarmed:warmed,afterUniqueSweep:swept,warmHashes,sweepHashes}
   }finally{
-    await browser.close()
+    await measured.close()
   }
 }
 const observations=[]
