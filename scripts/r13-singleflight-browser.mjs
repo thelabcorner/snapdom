@@ -148,6 +148,8 @@ try {
     measurementSha: process.env.GITHUB_SHA, baselineSha: expectedReference,
     referenceWorkerSha256: sha(baseSrc), candidateWorkerSha256: sha(candidateSrc),
     fixtureSha256: sha(fixture), browserVersion: browser.version(),
+    runnerImageVersion: process.env.ImageVersion || null,
+    runnerName: process.env.RUNNER_NAME || null,
     results, rows, interpretation: 'Exploratory paired worker microbenchmark. No production performance claim.',
   }
   const dest = path.resolve('lane6-scratch/r13/results/runner-r' + replicate + '.json')
