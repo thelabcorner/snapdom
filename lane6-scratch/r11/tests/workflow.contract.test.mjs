@@ -375,6 +375,17 @@ test('the runner refuses an incomplete record rather than admitting a partial st
   assert.match(source, /did not reach __ready|waitForFunction/)
 })
 
+test('the intentionally failing resource and worker-CSP fixtures do not invalidate bootstrap', () => {
+  const source = fs.readFileSync(RUNNER, 'utf8')
+  assert.match(source, /img\.getAttribute\("data-fidelity-image"\) !== "missing"/)
+  assert.match(source, /const expectedMissing404 = cell\.images\.includes\('missing'\)/)
+  assert.match(source, /const expectedWorkerCsp = cell\.csp === 'worker-none'/)
+  assert.match(source, /if \(!expectedMissing404 && !expectedWorkerCsp\) bootstrapErrors\.push/)
+  assert.match(source, /page\.on\('pageerror', \(error\) => bootstrapErrors\.push/)
+  assert.match(source, /if \(outcome\.bootstrapErrors\.length\)/)
+  assert.match(source, /if \(bootstrapErrors\.length\)/)
+})
+
 test('the vendored r10 helper library is byte-identical to the measurement branch copy', () => {
   // The fixture generator, the geometry sweeps and the CSP-warmup allowance are reused from r10
   // rather than restated, so this gate and the confirmed timing experiment agree by construction.

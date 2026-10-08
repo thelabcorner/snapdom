@@ -231,7 +231,13 @@ function scriptFor(side, spec) {
     '  }',
     '  document.body.appendChild(root)',
     '  for (const img of root.querySelectorAll("img")) {',
-    '    try { await img.decode() } catch (error) { window.__bootstrapErrors.push("decode " + img.getAttribute("data-fidelity-image") + ": " + error.message) }',
+    // The 404 pseudo-fixture is intentionally undecodable. That specific decode rejection is
+    // evidence of the fixture, not an unexpected bootstrap failure; all other failures stay red.
+    '    try { await img.decode() } catch (error) {',
+    '      if (img.getAttribute("data-fidelity-image") !== "missing") {',
+    '        window.__bootstrapErrors.push("decode " + img.getAttribute("data-fidelity-image") + ": " + error.message)',
+    '      }',
+    '    }',
     '  }',
     '  const records = []',
     '  for (const step of spec.steps) {',
@@ -366,7 +372,17 @@ async function runSidePage(browser, side, cell, contextId) {
     const bootstrapErrors = []
     page.on('pageerror', (error) => bootstrapErrors.push('pageerror: ' + error.message))
     page.on('console', (message) => {
-      if (message.type() === 'error') bootstrapErrors.push('console: ' + message.text())
+      if (message.type() !== 'error') return
+      const value = message.text()
+      // Chromium/Firefox/WebKit may emit a console error for a deliberately failing resource
+      // or for CSP worker-src 'none'. Admit only those precise, declared negative controls.
+      // Unexpected CSP directives and all other page errors remain fatal.
+      const expectedMissing404 = cell.images.includes('missing') && /\b404\b/.test(value) &&
+        (!message.location().url || /\/fixtures\/missing\.png(?:[?#]|$)/.test(message.location().url))
+      const expectedWorkerCsp = cell.csp === 'worker-none' &&
+        /worker-src|Refused to create a worker/i.test(value) &&
+        /Content Security Policy|violat|Refused to create a worker/i.test(value)
+      if (!expectedMissing404 && !expectedWorkerCsp) bootstrapErrors.push('console: ' + value)
     })
     await page.goto(origin + '/?side=' + side + '&cell=' + cell.id)
     await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 })
