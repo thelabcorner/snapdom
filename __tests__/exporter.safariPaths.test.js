@@ -7,6 +7,7 @@
 // the real-WebKit run additionally exercises the genuine quirks.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { snapdom } from '../src/index.js'
+import { toImg } from '../src/exporters/toImg.js'
 
 vi.mock('../src/utils/browser', { spy: true })
 import * as browser from '../src/utils/browser'
@@ -27,6 +28,25 @@ function makeShadowEl() {
 }
 
 describe('Safari toSvg stays vector', () => {
+  it('uses the exact old URL and paints an image-rich no-shadow SVG at scale', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16">' +
+      '<metadata>' + 'a/+Bc=Ω'.repeat(20000) + '</metadata>' +
+      '<style>rect{box-shadow:none;stroke:none}</style>' +
+      '<rect width="32" height="16" fill="rgb(17,68,102)"/></svg>'
+    const input = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+    const oldExpected = 'data:image/svg+xml;charset=utf-8,' +
+      encodeURIComponent(svg.replace(/width="[^"]*"/, 'width="64"').replace(/height="[^"]*"/, 'height="32"'))
+    const img = await toImg(input, { scale: 2 })
+    expect(img.src).toBe(oldExpected)
+    expect(img.complete).toBe(true)
+    expect(img.naturalWidth).toBe(64)
+    expect(img.naturalHeight).toBe(32)
+    const canvas = document.createElement('canvas')
+    canvas.width = 64; canvas.height = 32
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    expect([...ctx.getImageData(5, 5, 1, 1).data]).toEqual([17, 68, 102, 255])
+  })
   it('scale: returns an svg data URL at the scaled natural size, not a PNG', async () => {
     const el = makeShadowEl()
     const res = await snapdom(el, { outerShadows: true })

@@ -12,6 +12,7 @@ import { sessionWarn } from '../utils/debug.js'
 import { rasterize } from '../modules/rasterize'
 import { fixSafariShadows, decodeSvgFromDataURL, encodeSvgToDataURL } from './toCanvas.js'
 import { scaleEncodedSvgHeader } from './svgHeaderFast.js'
+import { definitelyNoEncodedSafariShadows, resizeEncodedSafariSvg } from './safariHeaderFast.js'
 /**
  * Load a capture's data URL into an <img> sized by the shared exporter rule.
  *
@@ -41,6 +42,23 @@ export async function toImg(url, options) {
     // toCanvas uses) and patch the svg's OWN width/height to the display size, so it
     // renders at its natural scale and stays an SVG.
     try {
+      // In the no-shadow case the historical fixSafariShadows would be a
+      // no-op. Prove that from encoded tokens without decoding all embedded
+      // images, then rewrite ONLY the opening SVG dimensions. Any uncertain
+      // case retains the full legacy Safari shadow pipeline.
+      if (definitelyNoEncodedSafariShadows(url)) {
+        const fast = resizeEncodedSafariSvg(url, { scale, width, height, meta })
+        if (fast) {
+          const img = new Image()
+          img.decoding = 'sync'
+          img.loading = 'eager'
+          img.src = fast.url
+          await img.decode()
+          img.style.width = `${fast.width}px`
+          img.style.height = `${fast.height}px`
+          return img
+        }
+      }
       const { svg } = await fixSafariShadows(decodeSvgFromDataURL(url))
       const head = (svg.match(/<svg\b[^>]*>/i) || [])[0] || ''
       const natW = parseFloat((head.match(/\bwidth="([\d.]+)/i) || [])[1])

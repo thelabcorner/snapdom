@@ -1,0 +1,76 @@
+name: snapDOM R14 Safari no-shadow SVG fast path
+on:
+  push:
+    branches:
+      - 'perf/v3-r14-safari-header-*'
+    paths:
+      - '.github/workflows/r14-safari-shadow.yml'
+      - 'src/exporters/toImg.js'
+      - 'src/exporters/safariHeaderFast.js'
+      - 'scripts/r14-safari-shadow.node.test.mjs'
+      - 'scripts/r14-safari-export-bench.mjs'
+      - '__tests__/exporter.safariPaths.test.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r14-safari-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node --test scripts/r14-safari-shadow.node.test.mjs
+      - run: node --test scripts/svg-header-fast.node.test.mjs
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+
+  browsers:
+    name: ${{ matrix.engine }} vector export/shadow fidelity and A/B
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Keep actual shadow orientation, fallback and no-shadow image fidelity
+        run: npx vitest run __tests__/exporter.safariPaths.test.js __tests__/exporter.toImg.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
+      - name: Checkout pinned pre-R14 R12 baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r12_baseline
+          fetch-depth: 1
+      - name: Compile independently frozen R12 baseline
+        working-directory: __r12_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "cac07a4108086718bc9511663346e1b9fcf4e226"
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Measure real public SVG export against pinned baseline
+        run: node scripts/r14-safari-export-bench.mjs --engine=${{ matrix.engine }}
