@@ -1,0 +1,130 @@
+name: snapDOM R21 ancestor memo fidelity and native-memory gate
+on:
+  push:
+    branches:
+      - 'perf/v3-r21-ancestor-acceptance'
+    paths:
+      - '.github/workflows/r21-ancestor-acceptance.yml'
+      - 'scripts/r21-ancestor-*.mjs'
+      - 'lane6-scratch/r21/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: r21-ancestor-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Confirm frozen R20 production implementation remains unchanged
+        run: |
+          set -euo pipefail
+          git diff --exit-code f1259ab411890f8c0a10d5a35b83ef5ec5c56e04 HEAD -- src/
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run test:types
+      - run: npm run compile
+      - run: node --check scripts/r21-ancestor-fidelity.mjs
+      - run: node --check scripts/r21-ancestor-pss.mjs
+      - run: node --check scripts/r21-ancestor-memory-aggregate.mjs
+  fidelity:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r21_baseline
+      - name: Independently compile frozen pre-R20 baseline
+        working-directory: __r21_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cac07a4108086718bc9511663346e1b9fcf4e226
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Check exact SVG + decoded RGBA across DOM and CSS mutations
+        run: node scripts/r21-ancestor-fidelity.mjs --engine=${{ matrix.engine }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r21-fidelity-${{ matrix.engine }}
+          path: lane6-scratch/r21/evidence/${{ matrix.engine }}.json
+          if-no-files-found: error
+  pss:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run compile
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cac07a4108086718bc9511663346e1b9fcf4e226
+          path: __r21_baseline
+      - name: Independently compile frozen pre-R20 baseline
+        working-directory: __r21_baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cac07a4108086718bc9511663346e1b9fcf4e226
+          npm ci --no-audit --no-fund
+          npm run compile
+      - name: Isolated process-tree PSS with balanced source-order controls
+        run: node scripts/r21-ancestor-pss.mjs
+        env:
+          SNAPDOM_R21_HOST: ${{ matrix.host }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r21-pss-${{ matrix.host }}
+          path: lane6-scratch/r21/evidence/pss-${{ matrix.host }}.json
+          if-no-files-found: error
+  aggregate:
+    needs: [fidelity, pss]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r21-pss-*
+          path: lane6-scratch/r21/pss-results
+      - name: Aggregate at independent-host level, not capture level
+        run: node scripts/r21-ancestor-memory-aggregate.mjs lane6-scratch/r21/pss-results
+        env:
+          SNAPDOM_R21_MEMORY_SUMMARY: lane6-scratch/r21/pss-summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r21-acceptance-memory-summary
+          path: lane6-scratch/r21/pss-summary.json
+          if-no-files-found: error
