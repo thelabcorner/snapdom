@@ -122,12 +122,19 @@ async function processSetPss(rootPid) {
 }
 async function settledProcessPss(browser,page) {
   const devtools=await page.context().newCDPSession(page)
+  const browserCDP=await browser.newBrowserCDPSession()
+  const processInfo=await browserCDP.send('SystemInfo.getProcessInfo')
+  const browserPid=processInfo.processInfo?.find(p=>p.type==='browser')?.id
+  if(!Number.isInteger(browserPid)||browserPid<=0) {
+    throw new Error('CDP SystemInfo returned no browser process PID')
+  }
   const samples=[]
   for(let i=0;i<4;i++){
     await devtools.send('HeapProfiler.collectGarbage')
     await page.waitForTimeout(260)
-    samples.push(await processSetPss(browser.process().pid))
+    samples.push(await processSetPss(browserPid))
   }
+  await browserCDP.detach()
   await devtools.detach()
   return {
     processMiB:median(samples.map(x=>x.processMiB)),
