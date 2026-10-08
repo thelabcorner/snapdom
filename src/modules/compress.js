@@ -762,11 +762,13 @@ function originalBox(el) {
 export async function compressClonedBackgrounds(clone, options, nodeMap = new Map(), geometry = {}, routes) {
   if (!options.compress) return { count: 0 }
   const els = []
-  // include the root clone itself, then descendants
-  const candidates = [clone, ...clone.querySelectorAll('*')]
-  for (const el of candidates) {
-    const bg = el.style && el.style.backgroundImage
-    if (bg && bg.includes('data:image')) els.push(el)
+  // All inlined data: backgrounds live in an inline style attribute. Let the browser
+  // filter the otherwise unbounded descendant set before creating JS wrappers/arrays.
+  // Preserve the root (not included by querySelectorAll) and the authoritative CSS
+  // property check: other inline declarations can also mention data:image.
+  if (clone.style?.backgroundImage?.includes('data:image')) els.push(clone)
+  for (const el of clone.querySelectorAll('[style*="data:image"]')) {
+    if (el.style?.backgroundImage?.includes('data:image')) els.push(el)
   }
   let count = 0
 
