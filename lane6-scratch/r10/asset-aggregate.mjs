@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { selectImageCohort } from '../r12/select-image-cohort.mjs'
 import path from 'node:path'
 import { aggregateLinear, aggregateLogPoints, sha256 } from './asset-bench-lib.mjs'
 
@@ -114,7 +115,7 @@ function incomplete() {
   process.exit(1)
 }
 
-const runners = expectedReplicates.filter((r) => byReplicate.has(r)).map((r) => byReplicate.get(r).value)
+let runners = expectedReplicates.filter((r) => byReplicate.has(r)).map((r) => byReplicate.get(r).value)
 const conditionIds = runners.length ? Object.keys(runners[0].conditions || {}) : []
 if (runners.length && !conditionIds.length) invalidEvidence.push('runner artifact has no conditions')
 const fixtureIdentity = runners.length ? JSON.stringify(runners[0].fixtures || {}) : ''
@@ -127,7 +128,7 @@ const runnerImages = [...new Set(runners.map((d) => {
 }).filter(Boolean))]
 const runAttempts = [...new Set(runners.map((d) => d.provenance?.github?.runAttempt).filter(Boolean))].sort()
 if (runners.length && browserVersions.length !== 1) invalidEvidence.push('Chromium version is not homogeneous across fresh runners')
-if (runners.length && runnerImages.length !== 1) invalidEvidence.push('GitHub runner image is not homogeneous across fresh runners')
+if (EXPECTED !== 12 && runners.length && runnerImages.length !== 1) invalidEvidence.push('GitHub runner image is not homogeneous across fresh runners')
 
 const settlePolicy = prepared.acquisition?.memorySettlePolicy || {}
 const memoryStateValid = (state) => (
@@ -192,6 +193,16 @@ for (const d of runners) {
 
 if (missing.length || duplicate.length || wrongIdentity.length || invalidEvidence.length || docs.length !== EXPECTED) incomplete()
 
+// R12 prospective 12-host acquisition: select a homogeneous stratum using ONLY complete
+// runner image identity metadata. Every acquired runner has already passed provenance,
+// fixture and finite-memory checks. Preserve all excluded files and report their IDs.
+const cohort = EXPECTED === 12 ? selectImageCohort(runners, 6) : null
+if (cohort && !cohort.valid) {
+  invalidEvidence.push('no six-runner homogeneous image cohort in prospective twelve-host acquisition')
+  incomplete()
+}
+if (cohort) runners = cohort.selectedDocs
+
 const conditions = {}
 for (const id of conditionIds) {
   const cells = runners.map((d) => d.conditions[id])
@@ -254,12 +265,18 @@ if (cspRetention.every(Number.isFinite)) {
 
 const summary = {
   schema: 'snapdom-r10-asblob-summary-v1',
-  state: 'EXPERIMENT_COMPLETE',
+  state: cohort ? 'EXPERIMENT_COMPLETE_IMAGE_COHORT' : 'EXPERIMENT_COMPLETE',
   complete: true,
   performanceClaim: false,
   generatedAt: new Date().toISOString(),
   expectedRunners: EXPECTED,
   observedRunners: runners.length,
+  totalValidatedRunnerArtifacts: docs.length,
+  samplingPlan: cohort ? 'prospective-12-image-stratum' : 'six-homogeneous',
+  selectedImage: cohort?.selectedImage || null,
+  cohortStrata: cohort?.strata || null,
+  selectedRunnerIds: cohort?.selectedRunnerIds || null,
+  excludedRunnerIds: cohort?.excludedRunnerIds || [],
   measurementGitSha: prepared.measurementGitSha,
   candidateGitSha: prepared.candidateGitSha,
   baselineGitSha: prepared.baselineGitSha,
