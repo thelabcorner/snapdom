@@ -44,10 +44,18 @@ try {
         .replace(/\bheight="[^"]*"/i, `height="${Math.max(1, Math.round(h * scale))}"`)
       return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.replace(tag, next))
     }
-    const run = (fn, url) => {
+    // WebKit/Firefox coarsen performance.now(): a single sub-millisecond header
+    // splice reads as exactly 0ms. Batch enough operations to escape the clock
+    // quantum, and materialize an interior code point so a lazy string rope is
+    // not mistaken for an already-consumable image URL.
+    const run = (fn, url, iterations) => {
       const t0 = performance.now()
-      const output = fn(url, 2)
-      return { ms: performance.now() - t0, output }
+      let checksum = 0, output
+      for (let j = 0; j < iterations; j++) {
+        output = fn(url, 2)
+        checksum += output.length + output.charCodeAt(output.length >>> 1)
+      }
+      return { msPerOperation: (performance.now() - t0) / iterations, output, checksum }
     }
     const median = (samples) => samples.slice().sort((a, b) => a - b)[samples.length >> 1]
     const result = []
@@ -57,17 +65,23 @@ try {
         '<rect width="48" height="32" fill="rgb(17,68,102)"/></svg>'
       const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
       const oldTimes = [], newTimes = []
+      const iterations = payloadMiB === 1 ? 100 : 30
       let exact = true
-      // Alternate order to keep V8 warm-up and scheduling bias visible.
-      for (let i = 0; i < 11; i++) {
-        const a = i % 2 ? run(scaleEncodedSvgHeader, url) : run(old, url)
-        const b = i % 2 ? run(old, url) : run(scaleEncodedSvgHeader, url)
-        if (i % 2) { newTimes.push(a.ms); oldTimes.push(b.ms) }
-        else { oldTimes.push(a.ms); newTimes.push(b.ms) }
-        if (a.output !== b.output) exact = false
+      if (old(url, 2) !== scaleEncodedSvgHeader(url, 2)) {
+        throw new Error('warmup URL parity failed')
+      }
+      // Alternate arm order; the first pair also serves as JIT warmup.
+      for (let i = 0; i < 9; i++) {
+        const a = i % 2 ? run(scaleEncodedSvgHeader, url, iterations) : run(old, url, iterations)
+        const b = i % 2 ? run(old, url, iterations) : run(scaleEncodedSvgHeader, url, iterations)
+        if (i === 0) continue
+        if (i % 2) { newTimes.push(a.msPerOperation); oldTimes.push(b.msPerOperation) }
+        else { oldTimes.push(a.msPerOperation); newTimes.push(b.msPerOperation) }
+        if (a.output !== b.output || a.checksum !== b.checksum) exact = false
       }
       if (!exact) throw new Error('encoded SVG bytes differ at payload size ' + payloadMiB)
-      result.push({ payloadMiB, exact, baselineMedianMs: median(oldTimes),
+      result.push({ payloadMiB, exact, iterations,
+        baselineMedianMs: median(oldTimes),
         candidateMedianMs: median(newTimes) })
     }
 
