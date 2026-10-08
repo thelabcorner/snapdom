@@ -1199,14 +1199,40 @@ export function collectFontUsage(root, keep) {
     if (!txt) return
     for (const ch of txt) usedCodepoints.add(ch.codePointAt(0))
   }
+  // Capture-local, bounded memo for parsed font-family + exact variant descriptors.
+  // The common case is thousands of elements with the same one or two fonts. Without
+  // this, every element re-splits its family list and normalizes three descriptors.
+  // Nested Maps preserve exact tuple identity without allocating composite string keys.
+  // Never retain across captures: font sets, CSSOM and shadow trees can change.
+  const variantMemo = new Map()
+  const MAX_VARIANT_MEMOS = 256
+  let memoEntries = 0
   const addFromStyle = (cs) => {
-    // #357: Register ALL families in the fallback chain, not just the primary one.
-    // This ensures that if the first font doesn't have a glyph, the fallback font is also embedded.
-    const families = pickAllFamilies(cs.fontFamily)
-    if (!families.length) return
-    for (const family of families) {
-      required.add(`${family}__${normWeight(cs.fontWeight)}__${normStyle(cs.fontStyle)}__${normStretchPct(cs.fontStretch)}`)
+    const family = cs.fontFamily
+    const weight = cs.fontWeight
+    const style = cs.fontStyle
+    const stretch = cs.fontStretch
+    let byWeight = variantMemo.get(family)
+    let byStyle = byWeight?.get(weight)
+    let byStretch = byStyle?.get(style)
+    let keys = byStretch?.get(stretch)
+    if (keys === undefined) {
+      // #357: fallback chains are not optional. A missing first-face glyph may
+      // need any later non-generic family, so cache the complete exact key list.
+      const families = pickAllFamilies(family)
+      const normalizedWeight = normWeight(weight)
+      const normalizedStyle = normStyle(style)
+      const normalizedStretch = normStretchPct(stretch)
+      keys = families.map(name => `${name}__${normalizedWeight}__${normalizedStyle}__${normalizedStretch}`)
+      if (memoEntries < MAX_VARIANT_MEMOS) {
+        if (!byWeight) { byWeight = new Map(); variantMemo.set(family, byWeight) }
+        if (!byStyle) { byStyle = new Map(); byWeight.set(weight, byStyle) }
+        if (!byStretch) { byStretch = new Map(); byStyle.set(style, byStretch) }
+        byStretch.set(stretch, keys)
+        memoEntries++
+      }
     }
+    for (const key of keys) required.add(key)
   }
   // Same selector gate as inlinePseudoElements: skip the two pseudo style resolutions
   // for nodes no collected ::before/::after selector matches (null gate → probe).
