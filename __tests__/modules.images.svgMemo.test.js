@@ -1,8 +1,8 @@
 // R15 SVG <image> cross-capture memo: precise successes, failures, invalidation,
-// bounded eviction and shared <img> identity without changing proxy semantics.
+// bounded retention and complete partitioning from HTML image/proxy identities.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { inlineImages } from '../src/modules/images.js'
-import { cache, applyCachePolicy } from '../src/core/cache.js'
+import { cache, applyCachePolicy, MAX_SVG_IMAGE_MEMO_CHARS } from '../src/core/cache.js'
 
 vi.mock('../src/modules/snapFetch.js', () => ({
   snapFetch: vi.fn()
@@ -25,6 +25,7 @@ function svgImage(url, attr = 'href') {
 
 beforeEach(() => {
   cache.image.clear()
+  cache.svgImage.clear()
   vi.mocked(snapFetch).mockReset()
   vi.mocked(snapFetch).mockResolvedValue({ ok: true, data: DATA_A })
 })
@@ -38,17 +39,21 @@ describe('SVG image cross-capture reuse (R15)', () => {
     expect(one.getAttribute('href')).toBe(DATA_A)
     expect(two.getAttribute('href')).toBe(DATA_A)
     expect(snapFetch).toHaveBeenCalledTimes(1)
-    expect(cache.image.get(URL_A)).toEqual({ data: DATA_A })
+    expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
   })
 
-  it('shares exactly the same successful URL memo already written by HTML img', async () => {
+  it('never aliases an HTML image/proxy cache entry into an unproxied SVG request', async () => {
     const html = document.createElement('img')
     html.src = URL_A
-    await inlineImages(html, { compress: false })
+    vi.mocked(snapFetch).mockResolvedValueOnce({ ok: true, data: DATA_A })
+      .mockResolvedValueOnce({ ok: true, data: DATA_B })
+    await inlineImages(html, { compress: false, useProxy: '/proxy?url=' })
     const svg = svgImage(URL_A)
     await inlineImages(svg)
-    expect(svg.getAttribute('href')).toBe(DATA_A)
-    expect(snapFetch).toHaveBeenCalledTimes(1)
+    expect(svg.getAttribute('href')).toBe(DATA_B)
+    expect(cache.image.get(URL_A)?.data).toBe(DATA_A)
+    expect(cache.svgImage.get(URL_A)).toBe(DATA_B)
+    expect(snapFetch).toHaveBeenCalledTimes(2)
   })
 
   it('preserves unrelated successful source identities', async () => {
@@ -69,7 +74,7 @@ describe('SVG image cross-capture reuse (R15)', () => {
     const failed = svgImage(URL_A)
     await inlineImages(failed)
     expect(failed.getAttribute('href')).toBe(URL_A)
-    expect(cache.image.has(URL_A)).toBe(false)
+    expect(cache.svgImage.has(URL_A)).toBe(false)
     const retried = svgImage(URL_A)
     await inlineImages(retried)
     expect(retried.getAttribute('href')).toBe(DATA_A)
@@ -104,12 +109,14 @@ describe('SVG image cross-capture reuse (R15)', () => {
     await inlineImages(svgImage('./icon.png'))
     await inlineImages(svgImage('./icon.png'))
     expect(snapFetch).toHaveBeenCalledTimes(2)
-    expect(cache.image.has('./icon.png')).toBe(false)
+    expect(cache.svgImage.has('./icon.png')).toBe(false)
   })
 
-  it('evicts old SVG entries through the existing bounded image memo', async () => {
+  it('evicts old SVG entries without touching the HTML image memo', async () => {
     await inlineImages(svgImage(URL_A))
-    for (let i = 0; i < 110; i++) cache.image.set('https://assets.example.test/' + i, { data: DATA_B })
+    cache.image.set('image-with-blob', { data: DATA_A, blob: new Blob([DATA_A]) })
+    for (let i = 0; i < 60; i++) cache.svgImage.set('https://assets.example.test/' + i, DATA_B)
+    expect(cache.image.has('image-with-blob')).toBe(true)
     expect(cache.image.has(URL_A)).toBe(false)
     const again = svgImage(URL_A)
     await inlineImages(again)
@@ -144,5 +151,31 @@ describe('SVG image cross-capture reuse (R15)', () => {
     expect(data.getAttribute('href')).toBe(DATA_A)
     expect(blob.getAttribute('href')).toBe('blob:https://assets.example.test/r15')
     expect(snapFetch).not.toHaveBeenCalled()
+  })
+
+  it('never caches across or inside explicitly disabled capture batches', async () => {
+    const root = document.createElementNS(NS, 'svg')
+    for (let i = 0; i < 7; i++) root.appendChild(svgImage(URL_A))
+    await inlineImages(root, { cache: 'disabled' })
+    await inlineImages(svgImage(URL_A), { cache: false })
+    expect(snapFetch).toHaveBeenCalledTimes(8)
+    expect(cache.svgImage.has(URL_A)).toBe(false)
+  })
+
+  it('reuses successful SVG sources across a capture batch boundary with cache enabled', async () => {
+    const root = document.createElementNS(NS, 'svg')
+    for (let i = 0; i < 7; i++) root.appendChild(svgImage(URL_A))
+    await inlineImages(root, { cache: 'soft' })
+    // The first six mock snapFetch calls resolve in parallel; the seventh must
+    // see the successful persistent memo. Actual snapFetch also coalesces in-flight.
+    expect(snapFetch).toHaveBeenCalledTimes(6)
+    expect(cache.svgImage.get(URL_A)).toBe(DATA_A)
+  })
+
+  it('rejects a single oversized source instead of pinning unbounded data URL memory', async () => {
+    const huge = 'data:image/png;base64,' + 'A'.repeat(MAX_SVG_IMAGE_MEMO_CHARS)
+    vi.mocked(snapFetch).mockResolvedValue({ ok: true, data: huge })
+    await inlineImages(svgImage(URL_A))
+    expect(cache.svgImage.has(URL_A)).toBe(false)
   })
 })
