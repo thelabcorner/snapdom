@@ -19,7 +19,7 @@ concurrency:
 
 env:
   BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
-  CANDIDATE_SHA: b2fffe0e93b44b0f770cf94ba57623162188fe49
+  CANDIDATE_SHA: 9a90bd591897cc9dcdc1494c0704dd3a3006e149
   NODE_VERSION: '22.21.1'
 
 jobs:
