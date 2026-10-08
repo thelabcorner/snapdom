@@ -1,0 +1,109 @@
+name: snapDOM R13 end-to-end shared-image capture benchmark
+
+on:
+  push:
+    branches: ['perf/v3-r13-singleflight-capture-bench']
+    paths:
+      - '.github/workflows/r13-singleflight-capture.yml'
+      - 'scripts/r13-singleflight-capture-bench.mjs'
+      - 'scripts/r13-capture-aggregate.mjs'
+      - 'src/modules/compress.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r13-singleflight-capture-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  R13_BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+
+jobs:
+  capture:
+    name: Fresh Chromium end-to-end runner r${{ matrix.replica }}
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout exact experimental capture measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout frozen R12 reference independently
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.R13_BASELINE_SHA }}
+          path: __r12_reference
+          persist-credentials: false
+      - name: Confirm independent source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C __r12_reference rev-parse HEAD)" = "$R13_BASELINE_SHA"
+          for filename in src/core/cache.js src/core/capture.js src/modules/images.js esbuild.config.mjs package.json package-lock.json; do
+            cmp "__r12_reference/$filename" "$filename"
+          done
+      - name: Pin Node and install locked dependencies
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Build source in separate exact checkouts and install Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npm run compile
+          (cd __r12_reference && npm ci --no-audit --no-fund && npm run compile)
+          npx playwright install --with-deps chromium
+      - name: Wait for ambient CPU settling
+        run: node lane6-scratch/r10/host-settle.mjs
+      - name: Collect balanced A/B pairs with exact SVG and pixel fidelity
+        env:
+          RUNNER_INDEX: ${{ matrix.replica }}
+        run: node lane6-scratch/r5/run-with-timing-gate.mjs -- node scripts/r13-singleflight-capture-bench.mjs
+      - name: Retain original reproducible record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r13-capture-runner-r${{ matrix.replica }}-${{ github.run_id }}
+          path: |
+            lane6-scratch/r13/capture-results/replica-${{ matrix.replica }}.json
+            lane6-scratch/r5/results/timing-environment-latest.json
+            lane6-scratch/r10/host-settle.json
+          retention-days: 45
+          if-no-files-found: warn
+
+  aggregate:
+    name: Complete six-runner end-to-end comparison
+    needs: capture
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r13-capture-runner-r*-${{ github.run_id }}
+          path: lane6-scratch/r13/capture-results
+      - name: Aggregate isolated fresh-runner latency and parity
+        run: node scripts/r13-capture-aggregate.mjs
+      - name: Upload statistical record even if acceptance fails
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r13-capture-summary-${{ github.run_id }}
+          path: lane6-scratch/r13/capture-results/summary.json
+          if-no-files-found: warn
+          retention-days: 60
