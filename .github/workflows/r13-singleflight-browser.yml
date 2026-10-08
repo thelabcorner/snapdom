@@ -51,7 +51,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C __r12_reference rev-parse HEAD)" = "$R13_REFERENCE_SHA"
-          git diff --exit-code "$R13_REFERENCE_SHA" -- src/core/cache.js src/core/capture.js src/modules/images.js esbuild.config.mjs package.json package-lock.json
+          for filename in src/core/cache.js src/core/capture.js src/modules/images.js esbuild.config.mjs package.json package-lock.json; do
+            cmp "__r12_reference/$filename" "$filename"
+          done
       - name: Set up pinned Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
