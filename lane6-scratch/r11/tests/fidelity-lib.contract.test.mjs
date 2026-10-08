@@ -411,13 +411,12 @@ test('every step of every cell has a route expectation and a telemetry expectati
   assert.equal(stepExpectation(cellById('large-first-capture'), 'no-such-step'), null)
 })
 
-test('repeat arms name the baseline/candidate payload difference explicitly', () => {
-  // c523ddb has no Blob sidecar on a repeat capture, so it MUST post the string there. One shared
-  // shape would have failed the frozen baseline for a correct reason.
+test('R12 repeat arms pin Blob transport on both AS-BLOB sides', () => {
+  // Both R12 commits retain fetched Blob sidecars; decoded-bitmap reuse happens inside the Worker.
   const claim = stepExpectation(cellById('large-repeat-scale'), 'scale-1')
-  assert.equal(claim.telemetryBySide.baseline, 'stringPost')
+  assert.equal(claim.telemetryBySide.baseline, 'blobPost')
   assert.equal(claim.telemetryBySide.candidate, 'blobPost')
-  assert.equal(stepExpectation(cellById('large-repeat-width'), 'width-2').telemetryBySide.baseline, 'stringPost')
+  assert.equal(stepExpectation(cellById('large-repeat-width'), 'width-2').telemetryBySide.baseline, 'blobPost')
   // cache:'disabled' resets the image memo every capture, so BOTH sides refetch and both post a Blob.
   const disabled = stepExpectation(cellById('cache-disabled'), 'scale-1')
   assert.equal(disabled.telemetryBySide.baseline, 'blobPost')
