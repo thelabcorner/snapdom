@@ -18,6 +18,7 @@ for(const p of paths)reports.push(JSON.parse(await readFile(p,'utf8')))
 const ids=new Set(reports.map(r=>r.runner))
 if(reports.length!==6||ids.size!==6||[1,2,3,4,5,6].some(i=>!ids.has(i)))issues.push('require exactly six unique runner records')
 for(const r of reports){
+  if(r.schema!=='snapdom-r18-font-pss-v1')issues.push('wrong memory evidence schema runner '+r.runner)
   if(r.baselineSha!==process.env.BASELINE_SHA||r.candidateSha!==process.env.CANDIDATE_SHA)issues.push('frozen-source identity mismatch runner '+r.runner)
   if(!r.imageVersion)issues.push('missing host image identity runner '+r.runner)
   if(r.observations?.length!==2)issues.push('missing paired isolated-process trials runner '+r.runner)
