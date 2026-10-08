@@ -35,3 +35,13 @@ The local `image-no-intern` fixture did not create an image because it had zero 
 ## Further high-impact frontier
 
 The R19 preflight cost appears too small relative to DOM clone/style acquisition. A likely more promising algorithmic problem is `elementUniverseFor`'s repeated ancestor traversal on deep trees (see `src/modules/styles.js`); investigate snapshot-safe per-capture ancestor summaries with strict mutation/hover/CSSOM invalidation, no optimism around dynamic selectors, and depth 1024 fidelity, before changing that path.
+
+## Hosted outcome — 2026-10-08
+
+- Run: https://github.com/thelabcorner/snapdom/actions/runs/37749296803
+- Full workflow verdict: success across contracts, Chromium, Firefox and WebKit. Raw URLs and pixel hashes matched all measured A/B pairs.
+- Representative median captures in Chromium, baseline → candidate (ms): large image 61.9 → 61.6, repetitive styles 19.4 → 21.2, image+table 79.6 → 81.8.
+- Firefox: 133 → 134, 38 → 41, 173 → 168 respectively.
+- WebKit: 208 → 212, 15 → 15, 236 → 229 respectively.
+- Six measured pairs per workload/browser, one independent browser runner per engine; these single-run medians are **not** a significant improvement claim and must not be treated as confidence intervals.
+- **Decision: REJECT FOR PROMOTION.** The change preserved fidelity but did not establish a practical, replicated, Pareto-improving end-to-end capture speedup. Keep the branch as a falsified experiment, do not merge.
