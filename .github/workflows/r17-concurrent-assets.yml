@@ -1,7 +1,7 @@
 name: snapDOM R17 mixed-asset concurrency exact fidelity and hosted trial
 on:
   push:
-    branches: ['perf/v3-r17-background-selector-frontier']
+    branches: ['perf/v3-r17-concurrent-asset-compression']
     paths: ['src/modules/compress.js', 'lane6-scratch/r17/**', '.github/workflows/r17-concurrent-assets.yml']
   workflow_dispatch:
 permissions:
