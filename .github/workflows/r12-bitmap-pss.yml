@@ -106,7 +106,7 @@ jobs:
           SNAPDOM_MEASUREMENT_GIT_SHA: ${{ env.MEASUREMENT_SHA }}
           SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
           SNAPDOM_BASELINE_GIT_SHA: ${{ env.BASELINE_SHA }}
-        run: node lane6-scratch/r10/prepare.mjs
+        run: node lane6-scratch/r10/prepare.mjs --workflow=.github/workflows/r12-bitmap-pss.yml
 
       - name: Upload immutable prepared experiment
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
