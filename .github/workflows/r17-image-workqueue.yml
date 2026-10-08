@@ -50,3 +50,70 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npx vitest run __tests__/r17.imagesScheduler.test.js __tests__/modules.images.test.js __tests__/modules.images.dataUrlPassthrough.test.js --browser.headless --reporter=dot
+
+  paired-benchmark:
+    needs: [source-contracts, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout frozen parent baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          path: baseline
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Prove exact comparison commits
+        run: |
+          test "$(git -C baseline rev-parse HEAD)" = "ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Build separately and install hosted Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npm run compile
+          (cd baseline && npm ci --no-audit --no-fund && npm run compile)
+          npx playwright install --with-deps chromium
+      - name: Eight balanced end-to-end pairs per regime
+        env:
+          BASELINE_SHA: ce135fbfb73e358e99cfab266cb2ef5ffcff4d8b
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: node scripts/r17-image-browser.mjs --runner=${{ matrix.replica }} --baseline=baseline/dist/snapdom.mjs --candidate=dist/snapdom.mjs --out=r17-evidence/runner-${{ matrix.replica }}.json
+      - name: Preserve original hosted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r17-runner-${{ matrix.replica }}
+          path: r17-evidence/runner-${{ matrix.replica }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: paired-benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r17-runner-*
+          path: r17-evidence
+          merge-multiple: true
+      - name: Reject partial evidence; compute runner-level confidence intervals
+        run: node scripts/r17-image-aggregate.mjs r17-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r17-six-runner-summary
+          path: r17-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 60
