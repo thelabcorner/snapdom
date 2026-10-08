@@ -4,6 +4,7 @@ import fs from 'node:fs'
 
 const runner = fs.readFileSync(new URL('../../r10/assets-bench.mjs', import.meta.url),'utf8')
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/r12-bitmap-pss.yml', import.meta.url),'utf8')
+const preparation = fs.readFileSync(new URL('../../r10/prepare.mjs', import.meta.url),'utf8')
 test('R12 compares two AS-BLOB sources with identical Blob route expectations', () => {
   assert.match(runner,/both R12 sides must post one exact fetched Blob/)
   assert.match(runner,/for \(const side of \['baseline','candidate'\]\)/)
@@ -17,4 +18,10 @@ test('R12 native PSS evidence pins frozen candidate and frozen AS-BLOB baseline'
   assert.match(runner,/settleCdpProcessPss\(cdp, PSS_SETTLE_POLICY\)/)
   assert.match(runner,/candidateMinusBaselineRetentionKb/)
   assert.match(workflow,/matrix:\n {8}replicate: \[0, 1, 2, 3, 4, 5\]/)
+})
+
+test('R12 provenance hashes the R12 workflow and does not require absent R10 YAML', () => {
+  assert.match(workflow, /prepare\\.mjs --workflow=\\.github\\/workflows\\/r12-bitmap-pss\\.yml/)
+  assert.match(preparation, /const workflowRel = arg\\('workflow', '\\.github\\/workflows\\/r10-asset-bench\\.yml'\\)/)
+  assert.match(preparation, /const measurementFiles = \\[\\s*workflowRel,/)
 })
