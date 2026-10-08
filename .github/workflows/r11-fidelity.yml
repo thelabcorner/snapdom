@@ -1,0 +1,298 @@
+name: snapDOM R11 AS-BLOB cross-engine fidelity acceptance
+
+# Public Actions only. No secrets, no self-hosted runner, `contents: read` and nothing else.
+# Chromium, Firefox and WebKit are all REQUIRED: a two-engine result is INCOMPLETE_EVIDENCE, not a
+# pass, because the Chromium speed measurement says nothing about the other two.
+
+on:
+  push:
+    branches:
+      - 'perf/v3-r11-fidelity-gate'
+    paths:
+      - '.github/workflows/r11-fidelity.yml'
+      - 'lane6-scratch/r11/**'
+      - 'lane6-scratch/r10/asset-bench-lib.mjs'
+      - 'scripts/as-blob.node.test.mjs'
+      - 'src/core/cache.js'
+      - 'src/core/capture.js'
+      - 'src/modules/compress.js'
+      - 'src/modules/images.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'esbuild.config.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Scoped to workflow + ref, not a static group: a static group serialises every branch behind one
+# lane and nothing ever supersedes stale work, and a run cancelled by GitHub's pending-workflow
+# limit is indistinguishable from a gate that never answered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.21.1'
+  MEASUREMENT_SHA: ${{ github.sha }}
+  CANDIDATE_SHA: d391556b80be7a6d97bc4834d2ce6e24137515b2
+  BASELINE_SHA: c523ddb6e141846d55af1c8f315f65babbc32a7e
+
+jobs:
+  contracts:
+    name: Browser-free contracts and src identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.MEASUREMENT_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      # The gate is only meaningful if the mechanism is still exactly the mechanism that was
+      # measured. Production src, the public types and the build inputs are all compared to d391556
+      # byte for byte, so a harness commit can never quietly redefine the candidate.
+      - name: Prove production src is byte-identical to the frozen candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MEASUREMENT_SHA"
+          git fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+          git diff --exit-code "$CANDIDATE_SHA" -- \
+            src \
+            types \
+            packages \
+            esbuild.config.mjs \
+            package.json \
+            package-lock.json
+          echo "production src, types, packages and build inputs are byte-identical to $CANDIDATE_SHA"
+
+      - name: Run the frozen browser-free mechanism proof
+        run: npm run test:asset-proof
+
+      - name: Run the fidelity gate contracts
+        run: |
+          npm run lint
+          npm run test:types
+          # A directory argument is a module path to node, not a discovery root, so the glob is
+          # explicit: naming the files is also what stops a future contract from being added and
+          # silently left out of the gate.
+          node --test "lane6-scratch/r11/tests/*.test.mjs"
+
+  prepare:
+    name: Freeze exact baseline and candidate bundles
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.MEASUREMENT_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked measurement dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Compiled separately, from separate exact checkouts, so the two bundles under comparison are
+      # the two mechanisms and not two builds of one.
+      - name: Checkout and compile the exact candidate mechanism
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: __r11_candidate
+          fetch-depth: 1
+
+      - name: Compile the candidate
+        working-directory: __r11_candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          npm ci --no-audit --no-fund
+          npm run compile
+          mkdir -p ../lane6-scratch/r11/bundles
+          cp dist/snapdom.mjs ../lane6-scratch/r11/bundles/candidate.mjs
+
+      - name: Checkout and compile the exact frozen baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: __r11_baseline
+          fetch-depth: 1
+
+      - name: Compile the baseline
+        working-directory: __r11_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASELINE_SHA"
+          npm ci --no-audit --no-fund
+          npm run compile
+          cp dist/snapdom.mjs ../lane6-scratch/r11/bundles/baseline.mjs
+
+      - name: Freeze the acceptance provenance
+        env:
+          SNAPDOM_MEASUREMENT_GIT_SHA: ${{ env.MEASUREMENT_SHA }}
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ env.BASELINE_SHA }}
+        run: node lane6-scratch/r11/prepare.mjs
+
+      - name: Upload the immutable frozen acceptance input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r11-fidelity-prepared-${{ github.run_id }}
+          path: |
+            lane6-scratch/r11/bundles/
+            lane6-scratch/r11/prepared.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  engine:
+    name: ${{ matrix.engine }} fidelity evidence
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # Passed through env rather than through inputs.*, which is only populated by
+      # workflow_dispatch and expands to an EMPTY argument on push — which installs every browser
+      # while BROWSER names one.
+      BROWSER: ${{ matrix.engine }}
+    steps:
+      - name: Checkout exact measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.MEASUREMENT_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Download the immutable frozen acceptance input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r11-fidelity-prepared-${{ github.run_id }}
+          path: lane6-scratch/r11
+
+      - name: Install the pinned ${{ matrix.engine }}
+        shell: bash
+        run: npx playwright install --with-deps "${BROWSER:?BROWSER must name one engine}"
+
+      # The repository's own authoritative browser suites, run against the candidate mechanism on
+      # this engine. Reused rather than reimplemented: these already encode what cross-engine
+      # fidelity means here (blur bleed, clip under a scaled ancestor, target width with a shadow,
+      # oversized background-size:auto, excludeMode:'remove') and the image/compression seams the
+      # mechanism touches. A red result here is attributable to the mechanism, not to the new gate.
+      - name: Reuse the existing authoritative cross-engine and image/compression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run compile
+          npx vitest run \
+            __tests__/visual.fidelity.crossengine.test.js \
+            __tests__/compress.syncfallback.test.js \
+            __tests__/compress.cacheIdentity.test.js \
+            __tests__/modules.images.test.js \
+            __tests__/modules.images.dataUrlPassthrough.test.js \
+            __tests__/exporters.rasterize.routes.test.js \
+            __tests__/regression.imageSelection.test.js \
+            __tests__/utils.clone.blobConcurrency.test.js \
+            --browser.headless --reporter=verbose
+
+      - name: Collect fidelity evidence for ${{ matrix.engine }}
+        env:
+          SNAPDOM_MEASUREMENT_GIT_SHA: ${{ env.MEASUREMENT_SHA }}
+          SNAPDOM_CANDIDATE_GIT_SHA: ${{ env.CANDIDATE_SHA }}
+          SNAPDOM_BASELINE_GIT_SHA: ${{ env.BASELINE_SHA }}
+        run: >-
+          node lane6-scratch/r11/fidelity-run.mjs
+          --engine="${BROWSER}"
+          --prepared=lane6-scratch/r11/prepared.json
+          --out=lane6-scratch/r11/results/engine-${BROWSER}.json
+
+      - name: Upload raw ${{ matrix.engine }} evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r11-fidelity-engine-${{ matrix.engine }}-${{ github.run_id }}
+          path: lane6-scratch/r11/results/engine-${{ matrix.engine }}.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  accept:
+    name: Cross-engine fidelity acceptance
+    needs: [contracts, prepare, engine]
+    if: always() && needs.contracts.result == 'success' && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact measurement head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.MEASUREMENT_SHA }}
+          fetch-depth: 1
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the immutable frozen acceptance input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: r11-fidelity-prepared-${{ github.run_id }}
+          path: lane6-scratch/r11
+
+      - name: Download every engine artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: r11-fidelity-engine-*-${{ github.run_id }}
+          path: lane6-scratch/r11/aggregate-input
+
+      # All three engines are required. --expected-engines is the check that says so out loud, and a
+      # missing engine is INCOMPLETE_EVIDENCE with a non-zero exit rather than a quiet pass.
+      - name: Decide the acceptance verdict
+        run: >-
+          node lane6-scratch/r11/fidelity-aggregate.mjs
+          --input-dir=lane6-scratch/r11/aggregate-input
+          --prepared=lane6-scratch/r11/prepared.json
+          --out=lane6-scratch/r11/summary.json
+          --expected-engines=chromium,firefox,webkit
+
+      - name: Upload the acceptance summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r11-fidelity-summary-${{ github.run_id }}
+          path: lane6-scratch/r11/summary.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
