@@ -1,0 +1,40 @@
+name: snapDOM R12 decoded-bitmap experimental contracts
+
+on:
+  push:
+    branches: ['perf/v3-r12-decoded-bitmap-scout']
+    paths:
+      - 'src/modules/compress.js'
+      - 'lane6-scratch/r12/**'
+      - '.github/workflows/r12-bitmap-scout.yml'
+      - 'package-lock.json'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r12-bitmap-scout
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Falsify bitmap cache behavior using the production Worker source in a VM
+        run: node --test lane6-scratch/r12/bitmap-worker.contract.test.mjs
+      - name: Validate source without claiming browser speed
+        run: |
+          npm run lint
+          npm run test:types
+          npm run compile
+      - name: Keep the frozen R10 AS-BLOB cache contracts green
+        run: npm run test:asset-proof
