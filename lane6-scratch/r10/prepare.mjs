@@ -32,8 +32,14 @@ if (!/^[0-9a-f]{40}$/i.test(baselineGitSha)) throw new Error('exact baseline git
 
 const require = createRequire(import.meta.url)
 const playwrightVersion = require('playwright/package.json').version
+// R10 keeps its historical default. R12 must hash its OWN hosted workflow, rather
+// than requiring a stale R10 filename absent from the experiment head.
+const workflowRel = arg('workflow', '.github/workflows/r10-asset-bench.yml')
+if (!['.github/workflows/r10-asset-bench.yml', '.github/workflows/r12-bitmap-pss.yml'].includes(workflowRel)) {
+  throw new Error('unrecognised measurement workflow: ' + workflowRel)
+}
 const measurementFiles = [
-  '.github/workflows/r10-asset-bench.yml',
+  workflowRel,
   'lane6-scratch/r5/run-with-timing-gate.mjs',
   'lane6-scratch/r10/prepare.mjs',
   'lane6-scratch/r10/host-settle.mjs',
