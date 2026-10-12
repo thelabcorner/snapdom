@@ -1,0 +1,27 @@
+name: Diagnostic — untouched v3.3 WebKit shadow baseline
+on:
+  push:
+    branches: ['review/v3-webkit-baseline-diagnostic']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline-export-tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - run: npx vitest run __tests__/exporter.toImg.test.js __tests__/exporter.safariPaths.test.js --browser.headless --reporter=dot
+        env:
+          BROWSER: ${{ matrix.engine }}
