@@ -9,6 +9,7 @@ on:
       - 'src/exporters/toImg.js'
       - '__tests__/exporter.toImg.test.js'
       - 'scripts/svg-header-fast.node.test.mjs'
+      - 'scripts/review-svg-header-browser.mjs'
   workflow_dispatch:
 permissions:
   contents: read
@@ -44,6 +45,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps ${{ matrix.engine }}
       - run: npm run compile
+      - name: Exact decoded pixel guard and isolated header transform timing
+        run: node scripts/review-svg-header-browser.mjs --engine=${{ matrix.engine }}
       - run: npx vitest run __tests__/exporter.toImg.test.js __tests__/exporter.safariPaths.test.js --browser.headless --reporter=dot
         env:
           BROWSER: ${{ matrix.engine }}
