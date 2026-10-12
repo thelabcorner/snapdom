@@ -7,6 +7,8 @@ on:
       - '.github/workflows/review-svg-header.yml'
       - 'src/exporters/svgHeaderFast.js'
       - 'src/exporters/toImg.js'
+      - 'src/exporters/toCanvas.js'
+      - 'scripts/r13-svg-clamp.node.test.mjs'
       - '__tests__/exporter.toImg.test.js'
       - 'scripts/svg-header-fast.node.test.mjs'
       - 'scripts/review-svg-header-browser.mjs'
@@ -25,6 +27,7 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: node --test scripts/svg-header-fast.node.test.mjs
+      - run: node --test scripts/r13-svg-clamp.node.test.mjs
       - run: npm run lint
       - run: npm run test:types
       - run: npm run test:bundle
