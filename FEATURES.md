@@ -1,6 +1,6 @@
 # SnapDOM features
 
-SnapDOM captures rendered interface state in the browser. The core produces reusable image and canvas exports; plugins add HTML, structured context, element maps, PDF and recordings.
+SnapDOM captures rendered interface state in the browser. The core produces reusable image and canvas exports; plugins add HTML, structured context, element maps, PDF, editable vectors and recordings.
 
 This is the technical feature reference for v3. For setup and examples, see the [README](README.md) and [API documentation](https://snapdom.dev/docs/). [简体中文](FEATURES_CN.md).
 
@@ -34,7 +34,7 @@ Non-rendered nodes such as scripts and templates are skipped. The clone's root m
 - Root transforms include individual `translate`, `rotate` and `scale`, with origin-aware bounds. Root translation is normalized; `outerTransforms: false` also removes rotation while preserving `scale` and `skew`.
 - `outerShadows: false` removes root shadows, outlines and `drop-shadow()` while keeping blur. `true` includes root effects; `'subtree'` also includes descendant shadow ink. Explicit clip edges never expand.
 - Backgrounds, masks, border images, clip paths and blend modes preserve their captured styles.
-- Custom scrollbar styles are included where the capture path supports them; scrolled content is captured without the custom scrollbar.
+- Custom scrollbar styles and styled `<meter>`, `<progress>` and range parts (`::-webkit-*` / `::-moz-*` rules) are included where the capture path supports them; scrolled content is captured without the custom scrollbar.
 
 `reconcile: true` measures the styled clone against the source and corrects diverging boxes. It can fix text wrapping or layout differences, at the cost of another measurement pass. `excludeStyleProps` omits properties selected by a RegExp or predicate.
 
@@ -45,8 +45,6 @@ Images, SVG image references, CSS background layers, masks and border images are
 Responsive images use the selected source rather than a fallback `src`. Common lazy-loading attributes are also resolved. Image fetching shares in-flight work and caches resources. `useProxy` supports a proxy URL or template; `fallbackURL` provides a replacement for failed images.
 
 Inlined raster images are downsampled to the resolution the capture needs, preserving the source codec when possible. The smaller image is used only if it saves bytes. Larger exports can restore the captured original; they do not reread a later version of the live image.
-
-Canvas dimensions are bounded by the browser's safe limits. Oversized exports may be downscaled with a warning.
 
 ## Fonts & icon fonts
 
@@ -81,6 +79,16 @@ Static shortcuts include `snapdom.toPng(element)`, `snapdom.toCanvas(element)` a
 
 SVG captures contain HTML inside `<foreignObject>`; non-browser SVG viewers may not render them. `result.meta` exposes frozen capture geometry for overlays and image placement. `result.warnings` reports capture diagnostics.
 
+### Oversized PNG files
+
+With the default SVG engine, `toBlob({ format: 'png' })` and `download({ format: 'png' })` automatically preserve the requested resolution when the capture or output exceeds the browser's decode/canvas size guards. No new option is needed, and return types stay the same.
+
+SnapDOM renders the frozen SVG in bounded windows and encodes them into one PNG file, without allocating a full-image canvas or recapturing the live DOM. Output sizing preserves width/height overrides, scale, DPR, shadows and padding. Downloads still use DPR 1. Ordinary-sized exports use the native encoder.
+
+This requires `CompressionStream`; browsers without it retain the existing downscale and warning. Incremental PNG encoding can take longer than native encoding for the same pixel count. The compressed file remains in memory, and image viewers have their own size limits.
+
+`toCanvas()`, `toPng()`, JPEG/WebP exports and successful `html-in-canvas` captures retain their existing canvas-based paths and size limits. Use `toCanvas({ crop })` when separate canvases are needed. See [long-page exports](README.md#export-a-long-page) for examples.
+
 ## Options
 
 Every public option is documented in the [options reference](https://snapdom.dev/docs/options/). The [API reference](https://snapdom.dev/docs/api/) covers per-export options.
@@ -90,6 +98,7 @@ Every public option is documented in the [options reference](https://snapdom.dev
 - Rendering: `backgroundColor`, `quality`, `outerTransforms`, `outerShadows` and `reconcile` control the output.
 - Resources: font options, `useProxy`, `fallbackURL` and `placeholders` control embedding and fallbacks.
 - Reuse: `canvas` accepts an existing render target, and `invalidate` refreshes after unobservable changes.
+- Responsiveness: `fast: false` pauses a long capture about every frame, so the page keeps painting and taking input at nearly the same total time.
 
 ## Plugin system
 
@@ -100,11 +109,14 @@ Plugins can modify a clone, resolve a source node or define an exporter. They re
 | `html-export` | Captured HTML with embedded styles and fonts |
 | `context-export` | Text outline or JSON page context |
 | `agent-map` | Image and element map with roles, names, state and bounding boxes |
-| `pdf-image` | Downloadable PDF containing a JPEG capture |
+| `pdf` | Searchable, paginated PDF with selectable text, links, optional form fields, headers/footers and encryption |
+| `vector` | Editable SVG without `<foreignObject>` and Figma clipboard export |
 | `gif-export` / `video-export` | Recordings of the live element over time |
 | `ascii-export` | Text representation of the image |
 | `filter` / `color-tint` / `timestamp-overlay` | Visual changes to the captured clone |
 | `replace-text` / `redact-inputs` | Text replacement and form-value masking |
+
+Plugins 4.x in this checkout require core 3.x. The full PDF and Vector exporters are MIT-licensed and have not been published to npm. PDF’s `toPdf()` returns a `Blob`; Vector’s `toVector()` returns an SVG string. `toFigma()` needs the async clipboard API on HTTPS or localhost and a user action. Vector requires a connected source element and preserves supported editable shapes and text; not every CSS paint effect becomes native vector artwork. Tagged PDF output alone does not guarantee PDF/UA conformance.
 
 A per-capture plugin can declare `needs: 'clone'` to skip rendering. Core image exports are then unavailable, while the plugin can still return its own data. The deepest stage requested by any attached plugin wins. Global registration rejects clone-only plugins.
 

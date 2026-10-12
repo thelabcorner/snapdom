@@ -45,11 +45,11 @@ function localFile(base, path) {
 function pluginFile(path) {
   const entry = path.slice('/__plugins/'.length)
   // Public extensionless entries follow package exports; relative helper imports may
-  // request a single .js filename. Neither route can escape the plugin directory.
+  // request relative .js modules, including the PDF source tree. Neither route can escape the plugin directory.
   const exported = pluginEntries[entry ? `./${entry}` : '.']
   const name = typeof exported === 'string' ? exported.slice(2) : entry
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.js$/.test(name)) return null
-  return join(PLUGINS, name)
+  if (!name.endsWith('.js')) return null
+  return localFile(PLUGINS, `/${name}`)
 }
 
 createServer((req, res) => {
@@ -68,11 +68,9 @@ createServer((req, res) => {
     if (!file) { res.writeHead(404).end(); return }
     let body = readFileSync(file)
     const ext = extname(file)
-    // The archive must keep its pinned v2 dependencies even during v3 development.
-    const archived = path.startsWith('/v2/')
-    if (ext === '.html' && !archived) body = rewriteHtml(body.toString())
+    if (ext === '.html') body = rewriteHtml(body.toString())
     else if (plugin) body = rewritePluginJs(body.toString())
-    else if (ext === '.js' && !dist && !archived) body = rewriteJs(body.toString())
+    else if (ext === '.js' && !dist) body = rewriteJs(body.toString())
     res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream' })
     res.end(body)
   } catch {

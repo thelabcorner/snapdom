@@ -11,7 +11,8 @@
  * Correctness: a property outside the universe can't differ from the tag's UA default,
  * so the defaults-diff downstream would have dropped it anyway. Escape hatches:
  * - Any unreadable (cross-origin) stylesheet → null (callers fall back to full reads).
- * - Shadow-root content is snapshotted with full reads (its sheets aren't scanned).
+ * - Shadow-root sheets are not part of this scan: styles.js unions them per capture through
+ *   scanSheetProps, and shadow content without a capture session keeps full reads.
  * - Element inline-style props are unioned in per node at snapshot time.
  * - Web Animations API keyframe props are unioned in (CSS animations come from rules).
  * @module styleScan
@@ -202,13 +203,48 @@ function scanSheet(sheet, universe, pseudoSels, state) {
   return scanRules(rules, universe, pseudoSels, state)
 }
 
+/**
+ * Add the properties WAAPI keyframes animate to `universe`. Programmatic animations live in no
+ * stylesheet, and `document.getAnimations()` misses the ones inside shadow roots on all three
+ * engines, so styles.js also passes each root's own list.
+ * @param {Animation[]} animations
+ * @param {Set<string>} universe
+ */
+export function addAnimationProps(animations, universe) {
+  for (const anim of animations) {
+    const frames = anim.effect?.getKeyframes?.() || []
+    for (const frame of frames) {
+      for (const key of Object.keys(frame)) {
+        if (key === 'offset' || key === 'easing' || key === 'composite' || key === 'computedOffset') continue
+        universe.add(key.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase()))
+      }
+    }
+  }
+}
+
+/**
+ * Collect the properties one stylesheet can set, for the shadow-root sheets scanAuthorStyles
+ * never sees. styles.js memoizes it per sheet and unions the result per capture.
+ * Pinned by __tests__/module.styles.shadowUniverse.test.js.
+ * @param {CSSStyleSheet} sheet
+ * @returns {Set<string>|null} null when the sheet is unreadable or blows the rule budget
+ */
+export function scanSheetProps(sheet) {
+  const props = new Set()
+  const pseudoSels = { before: [], after: [], firstLetter: [], marker: [], firstLine: [] }
+  const state = { budget: MAX_SCAN_RULES, usesHas: false, shareUnsafeSels: new Set(), inContainer: 0, marginUnstable: false, paddingUnstable: false, importantProps: new Set(), pseudoProps: new Set() }
+  return scanSheet(sheet, props, pseudoSels, state) ? props : null
+}
+
 /** Splits `sel` on `sep` outside parentheses, brackets and quotes. */
-function splitTopLevel(sel, sep) {
+export function splitTopLevel(sel, sep) {
+  if (!sel.includes(sep)) return [sel]
   const out = []
   let depth = 0, quote = null, start = 0
   for (let i = 0; i < sel.length; i++) {
     const c = sel[i]
-    if (quote) { if (c === quote && sel[i - 1] !== '\\') quote = null; continue }
+    if (c === '\\') { i++; continue }
+    if (quote) { if (c === quote) quote = null; continue }
     if (c === '"' || c === '\'') quote = c
     else if (c === '(' || c === '[') depth++
     else if (c === ')' || c === ']') depth--
@@ -324,17 +360,7 @@ export function scanAuthorStyles(doc) {
       }
     }
     // Programmatic (WAAPI) animations don't live in stylesheets — union their keyframe props.
-    if (typeof doc.getAnimations === 'function') {
-      for (const anim of doc.getAnimations()) {
-        const frames = anim.effect?.getKeyframes?.() || []
-        for (const frame of frames) {
-          for (const key of Object.keys(frame)) {
-            if (key === 'offset' || key === 'easing' || key === 'composite' || key === 'computedOffset') continue
-            universe.add(key.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase()))
-          }
-        }
-      }
-    }
+    if (typeof doc.getAnimations === 'function') addAnimationProps(doc.getAnimations(), universe)
     // shareGate: null = a splitting selector the engine cannot match against (share off),
     // else the indexed list styleShareSafe filters by subtree presence and queries with.
     const shareSels = Array.from(state.shareUnsafeSels)
@@ -344,6 +370,11 @@ export function scanAuthorStyles(doc) {
     const pseudoUniverse = new Set(PSEUDO_BOX_PROPS)
     for (const p of INHERITED_PROPS) if (universe.has(p)) pseudoUniverse.add(p)
     for (const p of state.pseudoProps) pseudoUniverse.add(p)
+    // The origins read as used px against the pseudo's own box (`7px 7px`), never as their
+    // UA default, so a transformed pseudo needs its origin read though no rule names it.
+    // Without it the pseudo took the base `0px 0px` and scaled toward its corner (#509).
+    if (state.pseudoProps.has('transform') || state.pseudoProps.has('rotate') || state.pseudoProps.has('scale')) pseudoUniverse.add('transform-origin')
+    if (state.pseudoProps.has('perspective')) pseudoUniverse.add('perspective-origin')
     return { universe, pseudoUniverse, pseudoGates: composePseudoGates(doc, pseudoSels), usesHas: state.usesHas, shareGate, marginUnstable: state.marginUnstable, paddingUnstable: state.paddingUnstable, importantProps: state.importantProps }
   } catch {
     return unreliable

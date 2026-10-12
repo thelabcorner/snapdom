@@ -20,6 +20,8 @@ export function htmlExport(options = {}) {
   const {
     fullDocument = true,
     filename = 'capture.html',
+    title = 'Captured interface',
+    lang = 'en',
   } = options;
 
   // Where the serialized markup is parked between afterRender and toHtml. It has to hang
@@ -72,9 +74,8 @@ export function htmlExport(options = {}) {
           const frozenBody = ctx[BODY];
           if (typeof frozenBody !== 'string') {
             throw new Error(
-              '[snapdom] html-export: this capture produced no render. The plugin\'s afterRender ' +
-              'hook never ran, so there is no markup to export (a capture stopped at ' +
-              'needs:\'clone\' never reaches the render stage).'
+              '[SnapDOM] html-export: this capture produced no render, so there is no HTML ' +
+              'to export (it stopped at needs: \'clone\').'
             );
           }
           const a = ctx.artifacts;
@@ -82,8 +83,9 @@ export function htmlExport(options = {}) {
           const body = frozenBody;
 
           const asDoc = opts.fullDocument ?? fullDocument;
+          const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
           const html = asDoc
-            ? `<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<style>${css}</style>\n</head>\n<body>\n${body}\n</body>\n</html>\n`
+            ? `<!DOCTYPE html>\n<html lang="${escape(opts.lang ?? lang)}">\n<head>\n<meta charset="utf-8">\n<title>${escape(opts.title ?? title)}</title>\n<style>${css}</style>\n</head>\n<body>\n${body}\n</body>\n</html>\n`
             : `<style>${css}</style>\n${body}\n`;
 
           const dl = opts.download;

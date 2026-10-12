@@ -234,9 +234,9 @@ export function freezeViewportPositioned(root, cloneRoot, nodeMap, styleCache, e
 export function stripRootShadows(originalEl, cloneRoot, opts = {}) {
   if (!originalEl || !cloneRoot || !cloneRoot.style) return
   const cs = getComputedStyle(originalEl)
-  try { cloneRoot.style.boxShadow = 'none' } catch (e) { debugWarn(opts, 'stripRootShadows boxShadow', e) }
-  try { cloneRoot.style.textShadow = 'none' } catch (e) { debugWarn(opts, 'stripRootShadows textShadow', e) }
-  try { cloneRoot.style.outline = 'none' } catch (e) { debugWarn(opts, 'stripRootShadows outline', e) }
+  try { cloneRoot.style.boxShadow = 'none' } catch (e) { debugWarn(opts, 'Couldn\'t remove the root box-shadow.', e) }
+  try { cloneRoot.style.textShadow = 'none' } catch (e) { debugWarn(opts, 'Couldn\'t remove the root text-shadow.', e) }
+  try { cloneRoot.style.outline = 'none' } catch (e) { debugWarn(opts, 'Couldn\'t remove the root outline.', e) }
   // Only drop-shadow() is an outer-shadow effect; blur() is part of the element's
   // own appearance and must survive (its bleed is always included in the bbox).
   const f = cs.filter || ''
@@ -246,7 +246,7 @@ export function stripRootShadows(originalEl, cloneRoot, opts = {}) {
     .trim()
     .replace(/\s+/g, ' ')
   try { cloneRoot.style.filter = cleaned.length ? cleaned : 'none' } catch (e) {
-    debugWarn(opts, 'stripRootShadows filter', e)
+    debugWarn(opts, 'Couldn\'t remove the root drop-shadow filter.', e)
   }
 }
 
@@ -384,6 +384,10 @@ const XMLNS_ALLOWED_PREFIXES = new Set(['xml', 'xlink'])
 /** True when an attribute name can't survive XHTML serialization (or is a framework directive). */
 function isInvalidXHTMLAttr(name, stripFrameworkDirectives) {
   if (name.startsWith('*')) return true
+  // `xmlns` set through setAttribute is a plain attribute beside the element's real
+  // namespace, which XMLSerializer writes too. Any other value, even with a trailing
+  // space, leaves two xmlns attributes on one tag and the SVG fails to decode (#511).
+  if (name === 'xmlns') return true
   // "@": never valid in XML attribute names
   if (name.includes('@')) return true
   // ":" requires a declared namespace (xml:, xlink:)
@@ -427,13 +431,13 @@ const BASE64_DATA_URL = /^data:[^,]{0,120};base64,/
 
 /**
  * One pass over the finished clone before serialization (was three separate walks):
- * - drops attribute names invalid in XHTML ("@", unknown ":" prefixes, framework directives)
+ * - drops attribute names invalid in XHTML ("@", unknown ":" prefixes, `xmlns`, framework directives)
  * - strips XML-1.0-invalid chars from attribute values and text (#425 — values re-applied
  *   after cloning, e.g. `input.setAttribute('value', …)` with ExtJS's U+0003 delimiters)
  * - removes HTML comments (invalid XML like "--")
  * Runs after the afterClone plugin hooks (plugins may add attributes), in both the full
- * and diff serialization paths. Pinned by __tests__/core.capture.rootAttrSanitize.test.js
- * and __tests__/utils.capture.helpers.test.js.
+ * and diff serialization paths. Pinned by __tests__/core.capture.rootAttrSanitize.test.js,
+ * __tests__/utils.capture.helpers.test.js and __tests__/snapdom.xmlnsAttribute.test.js.
  * @param {Element} root
  * @param {{stripFrameworkDirectives?: boolean}} [opts] - directives are stripped by default
  */
@@ -618,7 +622,7 @@ function willBeExcluded(el, options) {
   if (Array.isArray(options?.exclude)) {
     for (const sel of options.exclude) {
       try { if (el.matches(sel)) return options.excludeMode === 'remove' } catch (e) {
-        debugWarn(options, 'exclude selector match failed', e)
+        debugWarn(options, 'Invalid exclude selector; ignored.', e)
       }
     }
   }
@@ -626,13 +630,13 @@ function willBeExcluded(el, options) {
   if (Array.isArray(options?.excludePredicates)) {
     for (const pred of options.excludePredicates) {
       try { if (pred(el)) return options.excludeMode === 'remove' } catch (e) {
-        debugWarn(options, 'exclude predicate failed', e)
+        debugWarn(options, 'Your exclude function threw; ignored.', e)
       }
     }
   }
   if (typeof options?.filter === 'function' && options.filterMode === 'remove') {
     try { if (!options.filter(el)) return true } catch (e) {
-      debugWarn(options, 'filter function failed', e)
+      debugWarn(options, 'Your filter function threw; ignored.', e)
     }
   }
   return false
@@ -843,12 +847,17 @@ export function reconcileCloneLayout(element, clone, cssText, nodeMap, w0, h0) {
   return pinned
 }
 
-/** Match ::-webkit-scrollbar and related pseudos (#334) */
-const SCROLLBAR_PSEUDO = /::-webkit-scrollbar(-[a-z]+)?\b/i
+/**
+ * UA part pseudos the clone can only style through the author rules: scrollbars (#334), meter
+ * and progress (#502), and the slider Chromium clones natively. Chromium and WebKit answer
+ * getComputedStyle for these parts with the host element's own style; Firefox does read its
+ * `::-moz-*` parts, but the rules are the one path all three share. No `::-moz-range-*`:
+ * Firefox always paints the range replacement from clone.js.
+ */
+const PART_PSEUDO = /::-(?:webkit-(?:scrollbar|meter|progress|slider)|moz-(?:meter|progress))/i
 
 /**
- * Recursively collect CSS rules that contain ::-webkit-scrollbar selectors.
- * Fixes #334: custom scrollbar styles now apply in capture.
+ * Recursively collect the CSS rules whose selectors name a part pseudo.
  * @param {CSSRuleList} rules
  * @param {Set<string>} seen - dedupe by cssText
  * @returns {string}
@@ -870,7 +879,7 @@ function collectScrollbarRulesFromRules(rules, seen = new Set()) {
       }
       if (rule.type === CSSRule.STYLE_RULE) {
         const sel = rule.selectorText || ''
-        if (SCROLLBAR_PSEUDO.test(sel)) {
+        if (PART_PSEUDO.test(sel)) {
           const text = rule.cssText
           if (text && !seen.has(text)) {
             seen.add(text)
@@ -902,9 +911,12 @@ function scrollbarFingerprint(doc) {
 }
 
 /**
- * Extract ::-webkit-scrollbar rules from the document's stylesheets, so custom scrollbar
- * styling appears in the capture (#334). Memoized per document on the fingerprint above.
- * Pinned by __tests__/utils.capture.helpers.test.js.
+ * Extract the part-pseudo rules (`PART_PSEUDO`) from the document's stylesheets, so a styled
+ * scrollbar (#334), meter or progress (#502) paints in the capture instead of the UA default.
+ * The name, and the public `scrollbarCSS` artifact it fills, predate the meter and progress
+ * parts. Memoized per document on the fingerprint above.
+ * Pinned by __tests__/utils.capture.helpers.test.js and, against the live element,
+ * __tests__/visual.fidelity.livedom.test.js.
  * @param {Document} doc
  * @returns {string}
  */
@@ -943,14 +955,17 @@ export function collectScrollbarCSS(doc) {
 export function assembleCaptureCSS(state, fontsCSS) {
   const usedTags = collectUsedTagNames(state.clone).sort()
   const tagKey = usedTags.join(',')
+  // The reset is pruned by the universe, so a memo keyed on the tags alone served a reset
+  // built before CSS naming `appearance` arrived, and the control painted native (#502).
+  const universe = universeFor(state.element)
+  const memo = cache.baseStyle.get(tagKey)
   let baseCSS
-  if (cache.baseStyle.has(tagKey)) {
-    baseCSS = cache.baseStyle.get(tagKey)
+  if (memo && memo.universe === universe) {
+    baseCSS = memo.css
   } else {
-    baseCSS = generateDedupedBaseCSS(usedTags, universeFor(state.element))
-    cache.baseStyle.set(tagKey, baseCSS)
+    baseCSS = generateDedupedBaseCSS(usedTags, universe)
+    cache.baseStyle.set(tagKey, { universe, css: baseCSS })
   }
-  // #334: inject ::-webkit-scrollbar rules so custom scrollbar styles apply in capture
   const scrollbarCSS = collectScrollbarCSS(state.element?.ownerDocument || document)
   state.fontsCSS = fontsCSS
   state.baseCSS = baseCSS

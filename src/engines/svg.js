@@ -321,7 +321,7 @@ export async function composeAndSerialize(state, ex) {
         'svg{overflow:visible;} foreignObject{overflow:visible;}' + state.classCSS
       reconcileCloneLayout(state.element, state.clone, cssAll, state.nodeMap, w0, h0)
     } catch (e) {
-      console.warn('[snapdom] reconcile pass failed:', e)
+      console.warn('[SnapDOM] reconcile couldn\'t run; captured without it.', e)
     }
   }
 
@@ -492,11 +492,30 @@ export async function composeAndSerialize(state, ex) {
   const padT = Math.max(0, offY)
   const foW = limitDecimals(vbW - Math.min(0, offX))
   const foH = limitDecimals(vbH - Math.min(0, offY))
+  // Lay the clone out on the live device-pixel grid (#508). Chromium implements the device
+  // pixel ratio AS zoom: at 2.625 it resolves fonts at 84px and rounds each line box of
+  // `line-height: normal` there, and snaps borders to whole device pixels. The svg image lays
+  // out at 1x, so the same text took 2164px where the page took 2203.5px, fifty lines apart.
+  // `zoom` on the container reproduces the page's grid exactly, and scale(1/zoom) on a <g>
+  // outside the foreignObject brings it back to CSS pixels: viewBox, output size and meta
+  // are unchanged. Real Chrome, 40 demos, #target against a live screenshot: mean mismatch
+  // 8.24% -> 6.51% at DPR 2.625, 8.15 -> 6.66 at 2, 8.52 -> 6.10 at 1.5, the few that moved
+  // the other way by under 3% (subpixel text placement); the #508 page itself 10.9% -> 2.3%.
+  // It costs the layout at the larger font size: 37.5 -> 39 ms on a 3,000-cell table at DPR
+  // 2.625, nothing at 1. Firefox rounds line boxes the same way: real Firefox 156 at
+  // devPixelsPerPx 2.625 cut the last of fifty `<br>` lines in three #508 columns at 1x, and
+  // kept all of them zoomed. Not WebKit, which does not round line boxes by DPR. The support
+  // check is for Firefox before 126, where `zoom` does not exist and the scale(1/zoom) group
+  // alone would shrink the capture. Pinned by __tests__/engine.svg.layoutZoom.test.js.
+  const view = elDoc.defaultView || window
+  const layoutZoom = !isSafari() && CSS.supports('zoom', '2') ? (view.devicePixelRatio || 1) : 1
+  // toCanvas rasterizes Firefox exports smaller than this grid at it first (#516).
+  options.__layoutZoom = layoutZoom
   const fo = document.createElementNS(svgNS, 'foreignObject')
-  fo.setAttribute('x', String(Math.min(0, offX)))
-  fo.setAttribute('y', String(Math.min(0, offY)))
-  fo.setAttribute('width', String(foW))
-  fo.setAttribute('height', String(foH))
+  fo.setAttribute('x', String(Math.min(0, offX) * layoutZoom))
+  fo.setAttribute('y', String(Math.min(0, offY) * layoutZoom))
+  fo.setAttribute('width', String(foW * layoutZoom))
+  fo.setAttribute('height', String(foH * layoutZoom))
   fo.style.overflow = 'visible'
 
   const styleTag = document.createElement('style')
@@ -524,7 +543,9 @@ export async function composeAndSerialize(state, ex) {
     // `padding-inline: initial` AFTER this shorthand, so on data-URL re-parse it
     // would reset the left/right padding (rotated-root offset) unless it loses
     // the cascade to importance.
-    ((padL !== 0 || padT !== 0) ? `;padding:${padT}px 0 0 ${padL}px !important` : '')
+    ((padL !== 0 || padT !== 0) ? `;padding:${padT}px 0 0 ${padL}px !important` : '') +
+    // !important for the same `all:initial` serialization order as the padding.
+    (layoutZoom !== 1 ? `;zoom:${layoutZoom} !important` : '')
 
   //state.clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml')
   container.appendChild(state.clone)
@@ -574,8 +595,12 @@ export async function composeAndSerialize(state, ex) {
     : (hasH ? h : limitDecimals(vbH * (w / vbW)))
 
   const rootFontSize = parseFloat(getStyle(elDoc.documentElement)?.fontSize) || 16
-  const svgHeader = `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">`
-  const svgFooter = '</svg>'
+  // The scale(1/zoom) group rides in the header and footer: the line that joins them to the
+  // foreignObject keeps its original shape, which measured 1.4 ms cheaper per capture on a
+  // 3,000-cell table than a conditional expression in the middle of it.
+  const zoomed = layoutZoom !== 1
+  const svgHeader = `<svg xmlns="${svgNS}" width="${svgOutW}" height="${svgOutH}" viewBox="0 0 ${vbW} ${vbH}" font-size="${rootFontSize}px">${zoomed ? `<g transform="scale(${1 / layoutZoom})">` : ''}`
+  const svgFooter = zoomed ? '</g></svg>' : '</svg>'
   svgString = svgHeader + internInlineStyles(foString, fo) + svgFooter
   dataURL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`
   state.svgString = svgString

@@ -73,6 +73,8 @@ export function contextExport(options = {}) {
     maxNodes = 800,
     geometry = true,
   } = options
+  if (!Number.isInteger(maxNodes) || maxNodes < 1) throw new RangeError('[SnapDOM] context-export: maxNodes must be a positive integer')
+  if (!Number.isInteger(maxTextLength) || maxTextLength < 1) throw new RangeError('[SnapDOM] context-export: maxTextLength must be a positive integer')
   // `needs` names how far the capture has to run. This export reads the live page in
   // beforeClone, so it does not need pixels: `contextExport({ needs: 'clone' })` skips the
   // render. It cannot go shallower than that any more, and it should not: a capture that
@@ -106,11 +108,12 @@ export function contextExport(options = {}) {
       return {
         context: async (ctx, opts = {}) => {
           const snap = ctx.__contextSnapshot
-          if (!snap) throw new Error('[snapdom] context-export: this capture carries no snapshot (it never ran beforeClone). It is not re-read on demand — that would be a different instant.')
+          if (!snap) throw new Error('[SnapDOM] context-export: this capture has no snapshot (the plugin did not run with it). It is not re-read later, since that would be a different instant.')
           // Core carries its image format in every normalized export bag. Only this
           // plugin's two formats override its factory default.
           const _format = opts.format === 'json' || opts.format === 'outline' ? opts.format : format
           const _maxText = opts.maxTextLength ?? maxTextLength
+          if (!Number.isInteger(_maxText) || _maxText < 1) throw new RangeError('[SnapDOM] context-export: maxTextLength must be a positive integer')
           const _geometry = opts.geometry ?? geometry
 
           const root = snap.root && project(snap.root, _maxText, _geometry)

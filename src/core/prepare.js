@@ -11,12 +11,12 @@
  * @module prepare
  */
 
-import { generateCSSClasses, stripTranslate, debugWarn, getStyle, isShadowRoot } from '../utils/index.js'
+import { generateCSSClasses, stripTranslate, debugWarn, getStyle, isShadowRoot, shadowHost } from '../utils/index.js'
 import { deepClone } from './clone.js'
 import { inlinePseudoElements } from '../modules/pseudo.js'
 import { flushStyleInvalidations, invalidateHoverChanges } from '../modules/styles.js'
 import { inlineExternalDefsAndSymbols } from '../modules/svgDefs.js'
-import { resolveBlobUrlsInTree, resolveMediaQueries } from '../utils/clone.helpers.js'
+import { resolveBlobUrlsInTree, resolveMediaQueries, freezeInflatedFontSizes } from '../utils/clone.helpers.js'
 import { stabilizeLayout, forceContentVisibility } from '../utils/prepare.helpers.js'
 import { prepareSelectionContext } from '../modules/selection.js'
 import { resolveClipRect, freezeViewportPositioned } from '../utils/capture.helpers.js'
@@ -25,6 +25,12 @@ import { nextFrame } from '../utils/browser.js'
 /** In-flight #488 reveals, `{ root, promise }`. A concurrent capture whose root contains or
  *  sits inside one of these waits for it instead of forcing the same styles twice. */
 const visibilityWarmups = new Set()
+
+/** #315/#512: paints ::placeholder from --sd-ph/--sd-ph-o, which deepClone sets on the input
+ *  clone. Emitted only when a placeholder was cloned: its -webkit-text-fill-color, mounted in a
+ *  page, joins the document's property universe and changes every later pseudo's snapshot key
+ *  (__tests__/regression.pseudo.afterPosition.test.js). */
+const PLACEHOLDER_RULE = '[data-sd-ph]::placeholder{color:var(--sd-ph)!important;opacity:var(--sd-ph-o)!important;-webkit-text-fill-color:var(--sd-ph)!important}'
 
 /**
  * Clone an element for capture and return the clone with everything the render step needs.
@@ -52,7 +58,10 @@ export async function prepareClone(element, options = {}) {
     styleMap: session.styleMap,
     styleCache: session.styleCache,
     nodeMap: session.nodeMap,
-    options
+    options,
+    // On the session, not read from options: diff.js clones through a context whose
+    // __slicer belongs to an earlier capture.
+    slicer: options.__slicer || null
   }
 
   let clipWindow = null
@@ -68,7 +77,7 @@ export async function prepareClone(element, options = {}) {
     try {
       sessionCache.selection = prepareSelectionContext(element)
     } catch (e) {
-      debugWarn(sessionCache, 'prepareSelectionContext failed', e)
+      debugWarn(sessionCache, 'Couldn\'t read the text selection.', e)
     }
   }
 
@@ -82,7 +91,7 @@ export async function prepareClone(element, options = {}) {
   // styles are restored first, and concurrent captures share the same warmup.
   if (visibilityWarmups.size) {
     const containsComposed = (root, child) => {
-      for (let node = child; node; node = node.assignedSlot || node.parentElement || node.getRootNode()?.host) {
+      for (let node = child; node; node = node.assignedSlot || node.parentElement || shadowHost(node)) {
         if (node === root) return true
       }
       return false
@@ -231,26 +240,28 @@ export async function prepareClone(element, options = {}) {
   try {
     clone = await deepClone(element, sessionCache, options)
   } catch (e) {
-    console.warn('deepClone failed:', e)
+    console.warn('[SnapDOM] Capture failed while copying the element.', e)
     throw e
   } finally {
     undoContentVisibility()
     undoStabilizeLayout()
   }
+  freezeInflatedFontSizes(sessionCache.nodeMap, element.ownerDocument || document)
 
   // Inline external <defs>/<symbol> into the CLONE, not the live source. Operating on the
   // source mutated the user's DOM (a hidden <svg> was inserted as firstChild and never
   // removed) and shifted :first-child/nth-child matches while deepClone read computed
   // styles. The clone is detached; external refs are still resolved from the live document.
+  if (sessionCache.slicer?.due()) await sessionCache.slicer.pause()
   try {
     inlineExternalDefsAndSymbols(clone, undefined, element)
   } catch (e) {
-    console.warn('inlineExternal defs or symbol failed:', e)
+    console.warn('[SnapDOM] Couldn\'t copy external SVG icons; some may be missing.', e)
   }
   try {
     await inlinePseudoElements(element, clone, sessionCache, options)
   } catch (e) {
-    console.warn('inlinePseudoElements failed:', e)
+    console.warn('[SnapDOM] Couldn\'t copy ::before/::after content; some decorations may be missing.', e)
   }
   await resolveBlobUrlsInTree(clone, sessionCache)
 
@@ -276,9 +287,10 @@ export async function prepareClone(element, options = {}) {
       s.remove() // Do not leave <style> inside the visual clone
     }
   } catch (e) {
-    debugWarn(sessionCache, 'Failed to extract shadow CSS from style[data-sd]', e)
+    debugWarn(sessionCache, 'Couldn\'t copy shadow DOM styles.', e)
   }
 
+  if (sessionCache.slicer?.due()) await sessionCache.slicer.pause()
   const keyToClass = generateCSSClasses(sessionCache.styleMap)
   classCSS = Array.from(keyToClass.entries())
     .map(([key, className]) => `.${className}{${key}}`)
@@ -288,7 +300,7 @@ export async function prepareClone(element, options = {}) {
   const PSEUDO_SUPPRESS = '[data-snapdom-has-after]::after,[data-snapdom-has-before]::before{content:none!important;display:none!important}'
   // prepend shadow CSS so variables/rules are available for everything; scoped
   // ::marker/::first-line rules (emitScopedPseudoRule) ride along with it
-  const classPrefixCSS = shadowScopedCSS + PSEUDO_SUPPRESS + (sessionCache.__pseudoCSS || '')
+  const classPrefixCSS = shadowScopedCSS + PSEUDO_SUPPRESS + (sessionCache.__usesPlaceholder ? PLACEHOLDER_RULE : '') + (sessionCache.__pseudoCSS || '')
   classCSS = classPrefixCSS + classCSS
 
   for (const [node, key] of sessionCache.styleMap.entries()) {
@@ -303,7 +315,7 @@ export async function prepareClone(element, options = {}) {
   try {
     liftTopLayerClones(element, clone, sessionCache.nodeMap)
   } catch (e) {
-    debugWarn(sessionCache, 'top-layer lift failed', e)
+    debugWarn(sessionCache, 'Couldn\'t bring an open dialog or popover into the capture.', e)
   }
 
   // Re-anchor fixed/sticky clones to their painted position — in clip mode (the window is
@@ -317,16 +329,33 @@ export async function prepareClone(element, options = {}) {
       const edge = sessionCache.clip && clipWindow ? { x: clipWindow.x, y: clipWindow.y } : { x: 0, y: 0 }
       freezeViewportPositioned(element, clone, sessionCache.nodeMap, sessionCache.styleCache, edge)
     } catch (e) {
-      debugWarn(sessionCache, 'freezeViewportPositioned failed', e)
+      debugWarn(sessionCache, 'Couldn\'t keep fixed-position elements in place.', e)
     }
   }
 
   for (const [cloneNode, originalNode] of sessionCache.nodeMap.entries()) {
-    // Clip mode: the window is derived from gBCRs, which already encode the root's own
-    // scroll — un-scrolling the root here would compensate twice (blank output when
-    // capturing a scrolled documentElement).
-    if (sessionCache.clip && originalNode === element) continue
-    wrapScrolledClone(cloneNode, originalNode)
+    // Clip rects already encode viewport scroll: compensating the document's scrolling
+    // element twice blanks output. Ordinary element roots still need their wrapper.
+    if (sessionCache.clip && originalNode === element && element === element.ownerDocument.scrollingElement) continue
+    wrapScrolledClone(cloneNode, originalNode, sessionCache.nodeMap, sessionCache.styleCache)
+  }
+  // #505: html/body overflow can apply to the viewport, not their own (possibly
+  // zero-height) box. Inside foreignObject they lose that special treatment.
+  // Freeze the used value; retain body clipping when html owns the overflow or
+  // containment disables propagation (CSS Overflow 3, viewport propagation).
+  const doc = element.ownerDocument
+  if ((element === doc.body || element === doc.documentElement) && doc.documentElement.localName === 'html') {
+    const htmlStyle = sessionCache.styleCache.get(doc.documentElement) || getStyle(doc.documentElement)
+    if (element === doc.documentElement) clone.style.overflow = 'visible'
+    const bodyClone = element === doc.body ? clone : clone.querySelector('body')
+    if (bodyClone && htmlStyle.overflowX === 'visible' && htmlStyle.overflowY === 'visible' &&
+        htmlStyle.contain === 'none' && !htmlStyle.containerType?.includes('size') &&
+        htmlStyle.contentVisibility !== 'auto' && htmlStyle.contentVisibility !== 'hidden') {
+      const bodyStyle = sessionCache.styleCache.get(doc.body) || getStyle(doc.body)
+      if (bodyStyle.contain === 'none' && !bodyStyle.containerType?.includes('size') &&
+          bodyStyle.contentVisibility !== 'auto' && bodyStyle.contentVisibility !== 'hidden' &&
+          bodyStyle.display !== 'none') bodyClone.style.overflow = 'visible'
+    }
   }
   // The root clone is the foreignObject's content now, so whatever placed it in the page
   // (margin, inset offsets, float) is zeroed and its transform keeps scale/skew only. The
@@ -448,13 +477,15 @@ export function applyStyleClass(node, key, keyToClass) {
 
 /**
  * Scroll compensation for one clone/source pair: hides scrollbars and wraps the clone's
- * children in a translate(-scrollX,-scrollY) inner div, adjusting fixed/absolute
- * descendants first (#364). No-op for unscrolled sources. Shared by prepareClone's
- * whole-map pass and burst's differential recapture (delta entries only).
+ * children in a translate(-scrollX,-scrollY) inner div, compensating positioned
+ * descendants with external containing blocks (#364/#518). No-op for unscrolled sources.
+ * Shared by prepareClone's whole-map pass and differential recapture (delta entries only).
  * @param {Element} cloneNode
  * @param {Element} originalNode
+ * @param {Map<Node, Node>} nodeMap - clone → source
+ * @param {WeakMap<Element, CSSStyleDeclaration>} styleCache
  */
-export function wrapScrolledClone(cloneNode, originalNode) {
+export function wrapScrolledClone(cloneNode, originalNode, nodeMap, styleCache) {
   const scrollX = originalNode.scrollLeft
   const scrollY = originalNode.scrollTop
   const hasScroll = scrollX || scrollY
@@ -471,14 +502,50 @@ export function wrapScrolledClone(cloneNode, originalNode) {
     const positioned = cloneNode.querySelectorAll('*')
     for (const child of positioned) {
       if (child.nodeType !== 1 || child.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
-      const pos = child.style.position
-      if (pos === 'fixed' || pos === 'absolute') {
-        const curTop = parseFloat(child.style.top) || 0
-        const curLeft = parseFloat(child.style.left) || 0
-        child.style.top = `${curTop + scrollY}px`
-        child.style.left = `${curLeft + scrollX}px`
-        if (pos === 'fixed') child.style.position = 'absolute'
+      const source = nodeMap?.get(child)
+      const cs = source && (styleCache?.get(source) || getStyle(source))
+      const pos = child.style.position || cs?.position
+      if (pos !== 'fixed' && pos !== 'absolute') continue
+      // Frozen fixed/sticky clones carry painted coordinates: retain their cancellation
+      // of the wrapper translation. Ordinary boxes scroll with an internal CB (#518).
+      const frozen = cs && cs.position !== 'absolute' && pos === 'absolute'
+      let cb = null
+      if (source && !frozen) {
+        for (let ancestor = source.parentElement || shadowHost(source); ancestor;
+          ancestor = ancestor.parentElement || shadowHost(ancestor)) {
+          const acs = styleCache?.get(ancestor) || getStyle(ancestor)
+          if ((pos === 'absolute' && acs.position !== 'static') ||
+              (acs.transform && acs.transform !== 'none') ||
+              (acs.translate && acs.translate !== 'none') ||
+              (acs.rotate && acs.rotate !== 'none') ||
+              (acs.scale && acs.scale !== 'none') ||
+              (acs.filter && acs.filter !== 'none') ||
+              (acs.backdropFilter && acs.backdropFilter !== 'none') ||
+              (acs.perspective && acs.perspective !== 'none') ||
+              /transform|perspective|filter/.test(acs.willChange || '') ||
+              /layout|paint|strict|content/.test(acs.contain || '')) {
+            cb = ancestor
+            break
+          }
+          if (ancestor === originalNode) break
+        }
       }
+      if (cb) {
+        // The new wrapper replaces the scroller as CB. Freeze used offsets so %
+        // insets don't resolve against the wrapper's content height instead.
+        if (cb === originalNode) {
+          child.style.top = cs.top
+          child.style.left = cs.left
+          child.style.right = cs.right
+          child.style.bottom = cs.bottom
+        }
+        continue
+      }
+      const curTop = parseFloat(child.style.top || cs?.top) || 0
+      const curLeft = parseFloat(child.style.left || cs?.left) || 0
+      child.style.top = `${curTop + scrollY}px`
+      child.style.left = `${curLeft + scrollX}px`
+      if (pos === 'fixed') child.style.position = 'absolute'
     }
   } catch { /* non-blocking */ }
 

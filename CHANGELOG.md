@@ -2,6 +2,91 @@
 
 All notable changes to this project will be documented in this file. 
 
+#### [v3.3.3](https://github.com/zumerlab/snapdom/compare/v3.3.0...v3.3.3)
+
+> 9 October 2026
+
+- feat(vector): improve SVG export by omitting inactive mask longhands and retaining active masks [`12a197c`](https://github.com/zumerlab/snapdom/commit/12a197cd5d5a1aa97d486f7e3006596735ae804e)
+- fix: preserve positioned content in scrolled captures [`84096ea`](https://github.com/zumerlab/snapdom/commit/84096ea66b28a7b6521bacb51993c381a636e7c2)
+- chore(plugins): update to version 4.0.1, add GitHub Sponsors metadata, and enhance release scripts [`a9e72f8`](https://github.com/zumerlab/snapdom/commit/a9e72f886a467977ab9ec5a5f239d7a3804639e3)
+- chore(plugins): add funding and require SnapDOM 3.3.0 [`61e7ff5`](https://github.com/zumerlab/snapdom/commit/61e7ff5e3e15e7e6fd2097a084b542b2972a04db)
+- chore(plugins): update to version 4.0.1 and add plugin bumping scripts [`1fbe3d9`](https://github.com/zumerlab/snapdom/commit/1fbe3d9cc76abc878eb202d9685366a5f3fc7a89)
+
+
+#### [v3.3.0](https://github.com/zumerlab/snapdom/compare/v3.2.0...v3.3.0)
+
+> 4 October 2026
+
+##### ✨ feat
+
+- feat: add editable vector export and enhance PDF capabilities [`019603a`](https://github.com/zumerlab/snapdom/commit/019603ad0c63fbcbf8000fff84afff0f3b5b1f30)
+- feat(docs): refresh navigation and live demos [`bbc59da`](https://github.com/zumerlab/snapdom/commit/bbc59da6894f6382dad8c395adb653d551d6b6e1)
+- feat(plugins): add open-source vector export [`299c561`](https://github.com/zumerlab/snapdom/commit/299c56168d03911eeb59022c6a7695edebf7bd79)
+- feat: improve plugin export contracts [`b828762`](https://github.com/zumerlab/snapdom/commit/b82876263fd2201d35a5023fe57c1bcecc4dd7be)
+- feat: replace pdf-image with full PDF export [`8acda94`](https://github.com/zumerlab/snapdom/commit/8acda94672c91bbd06cc70fb87dc574f1fc30346)
+
+##### 🛠 fix
+
+- fix: one [SnapDOM] prefix and plain-language console messages [`bbde42f`](https://github.com/zumerlab/snapdom/commit/bbde42f8dad31b523b64b2f6ca89adbb17b2245a)
+- fix: center checkbox and radio replacements in a stretched box [`#516`](https://github.com/zumerlab/snapdom/pull/516)
+- fix: halve Firefox grid rasters before the dpr 1 downscale [`#516`](https://github.com/zumerlab/snapdom/pull/516)
+- fix: rasterize Firefox exports below the layout grid at the grid (#516) [`817390e`](https://github.com/zumerlab/snapdom/commit/817390ea47e26b1e9708b1a7778eb136e0f94528)
+- fix: keep one-line boxes from wrapping in the capture (#516) [`575537e`](https://github.com/zumerlab/snapdom/commit/575537e936a6511c80a2735a7c4a4dbc0914d389)
+- fix: capture text at its inflated size in Firefox for Android (#516) [`5213172`](https://github.com/zumerlab/snapdom/commit/52131728799c705782788f8f967425a66f7bf16c)
+- fix: size form control replacement SVGs with CSS under layout zoom (#516) [`2d6d41d`](https://github.com/zumerlab/snapdom/commit/2d6d41dcd738813d3441e2b62ce4c1af9d3a1d3d)
+- fix: resolve var() in SVG gradient stops (#515) [`b13ed28`](https://github.com/zumerlab/snapdom/commit/b13ed287d0747fa8c94d86b2faa65f3a7724ea18)
+- fix: emit the placeholder rule only when a placeholder was cloned [`eb26e15`](https://github.com/zumerlab/snapdom/commit/eb26e1530ef39bdde695d52cfc5355b537898103)
+- fix: keep placeholder color CSS off void inputs (#512) [`#514`](https://github.com/zumerlab/snapdom/pull/514)
+- fix(capture): drop xmlns attributes set through setAttribute (#511) [`#513`](https://github.com/zumerlab/snapdom/pull/513)
+- fix: read transform-origin on transformed pseudo-elements (#509) [`39ff290`](https://github.com/zumerlab/snapdom/commit/39ff2908481811b37c629538bf7cf89869ba7753)
+
+##### 📦 other (chore/docs/refactor/…)
+
+- docs: update plugin capabilities [`9c0b8a3`](https://github.com/zumerlab/snapdom/commit/9c0b8a347b3a75f22a849f3c2d70c1fa1c235843)
+- docs: home page from the design handoff [`e88be16`](https://github.com/zumerlab/snapdom/commit/e88be16c658a41d7508c57d8a33fbcfcb376e4ed)
+- docs: Labs overview, Showcase, Made with and Plugins join the 3-pane template [`59046e9`](https://github.com/zumerlab/snapdom/commit/59046e9e2f6e91d6c5fe6c495c272c34aacfa25f)
+- docs: move Docs, How-to, Guides, Compare, Blog and Labs pages to the 3-pane template [`f0dbc79`](https://github.com/zumerlab/snapdom/commit/f0dbc79c30b877999af5a54c763f15fc54cf9bba)
+- docs: 3-pane Capabilities and Ecosystem pages from the design handoff [`d8b6688`](https://github.com/zumerlab/snapdom/commit/d8b6688dfa8c4c89e6ac260d1bcc95f355c076ca)
+- test: stop the network gate from skipping demos on a fast link, rerun what it skips [`96fc884`](https://github.com/zumerlab/snapdom/commit/96fc88411f80f49edfc48bcae66614a984f0617b)
+- test: serve the d15 image from a local second origin [`083cbd9`](https://github.com/zumerlab/snapdom/commit/083cbd9f05b53d11586dc26634f3940c00eafaf7)
+- test: restore imageSmoothingQuality only where the engine has it [`#516`](https://github.com/zumerlab/snapdom/pull/516)
+
+
+#### [v3.2.0](https://github.com/zumerlab/snapdom/compare/v3.1.1...v3.2.0)
+
+> 28 September 2026
+
+- feat: export PNG files beyond the canvas limit [`6e6b5eb`](https://github.com/zumerlab/snapdom/commit/6e6b5ebb64b8a4185653af2ba5ead42aff7fbf4b)
+- fix: lay out captures on the device-pixel grid in Firefox too [`#508`](https://github.com/zumerlab/snapdom/pull/508)
+- fix: lay out captures on the live device-pixel grid in Chromium [`#508`](https://github.com/zumerlab/snapdom/pull/508)
+- fix: keep stacked rows aligned on fractional-DPR screens (#508) [`1327c55`](https://github.com/zumerlab/snapdom/commit/1327c55eb60cb16b541e96fc399c81a5d5e6038e)
+- fix: adjust scrollbar gutter calculations for fractional border widths (#508) [`67acb0c`](https://github.com/zumerlab/snapdom/commit/67acb0c3997d91957da3d49fbd4d51980e49018c)
+- fix: keep the settled decode frame when retrying in Firefox [`ab48bce`](https://github.com/zumerlab/snapdom/commit/ab48bce371df7e30b04b25da6e174d8fb0f765b8)
+- update crop option [`19a7e55`](https://github.com/zumerlab/snapdom/commit/19a7e55b660cac9a83da0f16f6663dde6be618bc)
+- chore: shorten console messages [`5bc3511`](https://github.com/zumerlab/snapdom/commit/5bc3511ac891256c75c9cd8e2ec4611c68cea128)
+- chore: color the benchmark verdicts in the terminal [`8d93e24`](https://github.com/zumerlab/snapdom/commit/8d93e24da9f986123a5dbd7adc7ca4be665c3192)
+- test: compare encoded PNGs with the canvas readback [`7a19be9`](https://github.com/zumerlab/snapdom/commit/7a19be9c5b166e74656e4b5a54f5141cd2cb1b49)
+
+
+#### [v3.1.1](https://github.com/zumerlab/snapdom/compare/v3.1.0...v3.1.1)
+
+> 24 September 2026
+
+- fix: paint embedded fonts on first capture (#506) [`f207b37`](https://github.com/zumerlab/snapdom/commit/f207b3740e532ae75fbe4dd0e6c4d8f9e948a5c9)
+- fix: isolate custom element style defaults [`0e7cbf0`](https://github.com/zumerlab/snapdom/commit/0e7cbf007efc48bdbfbfc89bb2b70372f622fba7)
+- fix: preserve document overflow in captures. Ref #505 [`a736115`](https://github.com/zumerlab/snapdom/commit/a73611584e9571f9bb7989d34e2f82f7dc57a354)
+- perf: skip display:none subtrees when cloning. Ref #507 [`f4af040`](https://github.com/zumerlab/snapdom/commit/f4af0405964949ad606ef4fc12e653075c386e96)
+- fix: complete sitemap and add canonical URLs for Pro pages [`5b02330`](https://github.com/zumerlab/snapdom/commit/5b02330fdc6a6591752e7078dceda5ec9dc26559)
+
+#### [v3.1.0](https://github.com/zumerlab/snapdom/compare/v3.0.0...v3.1.0)
+
+> 21 September 2026
+
+- feat(capture): bring back fast: false as a time-sliced capture [`7b7d218`](https://github.com/zumerlab/snapdom/commit/7b7d218e9aeec29e8f613c5f896f38cd65e36165)
+- feat(capture): meter, progress and slider part rules into the capture [`8a32f08`](https://github.com/zumerlab/snapdom/commit/8a32f081a24a904e25c9fa9983b80b4f24a4c4aa)
+- perf(styles): prune shadow-root style reads with a per-capture universe [`9f3ef77`](https://github.com/zumerlab/snapdom/commit/9f3ef77310830944a24500476a29f2317ec3d302)
+- fix: restore ArcGIS table captures. Ref #503 [`ac8cae6`](https://github.com/zumerlab/snapdom/commit/ac8cae66ece4a8390d5f95c5ff53a7b74a7a8b2c)
+
 ### [v3.0.0](https://github.com/zumerlab/snapdom/compare/v3.0.0-beta.1...v3.0.0)
 
 > 14 September 2026
@@ -11,8 +96,7 @@ recapture, automatic font embedding, and new capture APIs. Core and official plu
 now share the v3 release line.
 
 If you're upgrading from v2, read the [migration guide](README.md#migrating-from-v2).
-The [v2 source](https://github.com/zumerlab/snapdom/tree/v2) and
-[v2 documentation](https://snapdom.dev/v2/) remain available.
+The [v2 source](https://github.com/zumerlab/snapdom/tree/v2) remains available.
 
 #### Features and performance
 

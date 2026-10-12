@@ -47,6 +47,34 @@ flag enabled, a build compiled with `SNAPDOM_CANVAS_ENGINE=1`, and the capture o
 `engine: 'html-in-canvas'`. The default build includes SVG only. To test both engines against
 the local development version, run `SNAPDOM_CANVAS_ENGINE=1 npm run site`.
 
+## PNG files beyond canvas limits
+
+`toBlob({ format: 'png' })` and `download({ format: 'png' })` automatically use
+`src/exporters/toLargePng.js` when the SVG's intrinsic dimensions or requested output
+exceed the decode/canvas guards. The ordinary path still uses the native canvas encoder.
+There is no new public option or size-dependent return type; downloads still force DPR 1.
+
+The exporter windows the frozen SVG viewport without changing its layout or percentage
+geometry, rasterizes bounded tiles, and passes complete RGBA row bands to
+`src/modules/png.js`. That encoder applies PNG row filters and feeds a single zlib stream
+through `CompressionStream`, writing RGBA8/sRGB PNG chunks with CRCs. Its reader drains
+concurrently with writes to avoid backpressure deadlock. Export sizing applies once,
+including fractional draw dimensions, bleed, width/height overrides and DPR.
+
+The full-width row band targets 16 MiB, with horizontal tiles for wide captures. Canvases
+are released after readback and their decode iframe is retired after any concurrent draws
+finish. This bounds working pixel buffers, not total memory: the frozen SVG and compressed
+PNG file remain resident, and browser allocation/reclamation is implementation-dependent.
+WebKit shadow windows render at natural scale before canvas resampling, preserving the
+existing shadow workaround.
+
+PNG encoding is lossless relative to the supplied RGBA pixels. Separate SVG raster windows
+can differ slightly from a single native draw in gradient quantization; the cross-engine
+tests check exact geometry, opaque seam markers and alpha, plus bounded RGB differences.
+`toPng()` still returns a canvas-sized image: loading and decoding a larger PNG is a separate
+browser limit. `toCanvas()`, JPEG/WebP, native-canvas captures and browsers without
+`CompressionStream` retain their existing paths and clamp diagnostics.
+
 ## The invalidation matrix (burst/diff correctness)
 
 Reusing a capture depends on tracking changes to the rendered frame. The mechanisms and
@@ -68,6 +96,7 @@ exceptions below are implemented in `src/core/burst.js` and the related modules:
 | CSS transitions/animations and WAAPI | `getAnimations()` across light/open-shadow scopes; running targetable light-DOM effects rebuild per frame through diff, ambiguous effects force full capture | burst.js + styles.js `invalidateSnapshotsUnder` |
 | Selection capture | bypasses memoization because selection/range state is not a DOM mutation | snapdom.js `main` |
 | Canvas pixel draws | bypass memoization because pixels are invisible to DOM observers | snapdom.js `main` → burst.js `isAutoBurstSafe` |
+| Changes while a `fast: false` capture pauses | the torn-frame judgement runs again when the clone stage ends, and a torn clone is redone in one task; captures without burst watchers (frame-driven trees, function-valued policies, selection, impure plugins) keep what they read | capture.js `captureDOM` + burst.js `__tornSinceStart` |
 | CSSOM rule edits (`sheet.insertRule`, `rule.style.x = …`) | not automatically observed; use `invalidate: true` to clear style caches as well as the result memo. This also refreshes the set of captured properties when a rule introduces one that was not previously used | snapdom.js `main` → styles.js `invalidateStyleCaches` |
 | Plugins with render hooks | impure hooks suspend automatic memoization; pure hooks may memoize, while diff bails whenever it would skip a required lifecycle hook | plugins.js `hasImpureRenderPlugins` + diff.js |
 | Function-valued capture policies | `filter`, `exclude`, `excludeStyleProps` and `fallbackURL` bypass memoization even when their function identity is unchanged; applicable style/fallback decisions are reevaluated on each new capture | snapdom.js `main` + styles.js |
@@ -87,6 +116,8 @@ styles. Those measurements describe the tested workloads, not every page or brow
 Other constraints to preserve when changing the pipeline:
 
 - SVG-as-image decoding runs on the main thread; compression downsampling can use a worker.
+- `fast: false` pauses with a `MessageChannel` task. `scheduler.yield()` resumes ahead of rendering: on a large shadow-DOM table the page went 83-117 ms between frames with it, against 17-33 ms with a message.
+- Shadow-root content prunes its style reads with the sheets of the roots that can style it. `document.getAnimations()` misses animations inside shadow roots in all three engines, so each root's own list is added.
 - Large foreignObject SVGs served through blob URLs can taint Chromium canvases and break raster exports.
 - System-font metrics can drift in SVG-as-image. Removing reconciliation warnings or relaxing
   inline-block/flex width guards previously reintroduced text wrapping regressions.

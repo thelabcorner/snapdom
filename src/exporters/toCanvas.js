@@ -8,14 +8,14 @@
  * engines. The size limits and the banded draw are per engine, see the notes on each.
  * @module exporters/toCanvas
  */
-import { isSafari } from '../utils/browser'
+import { isSafari, isFirefox } from '../utils/browser'
 import { sessionWarn } from '../utils/debug.js'
 import { isHTMLEl, isTag } from '../utils/helpers.js'
 import { markInternalNode } from '../utils/ownership.js'
 
 // #425: browsers cap how large an image they will decode and how large a canvas they
-// will back. Chrome/Firefox reject > 16384px on a side and a total decoded-image area
-// (~268M px). An oversized capture (large element × scale × dpr — and dpr silently
+// will back. The side and area guards below protect both allocations.
+// An oversized capture (large element × scale × dpr — and dpr silently
 // doubles on Retina) throws an opaque async "EncodingError: The source image cannot be
 // decoded" deep in img.decode(). We clamp instead so the capture still succeeds (slightly
 // downscaled) and warn, naming the knobs to adjust.
@@ -29,8 +29,8 @@ import { markInternalNode } from '../utils/ownership.js'
 // 32767, so it shares the higher bound; the AREA cap is unchanged and still catches the cases
 // that actually exceed what a browser will allocate.
 // Pinned by __tests__/exporters.rasterLimit.test.js (skipped on webkit, which does cap at 16384).
-const MAX_RASTER_SIDE = isSafari() ? 16384 : 32767
-const MAX_RASTER_AREA = 16384 * 16384
+export const MAX_RASTER_SIDE = isSafari() ? 16384 : 32767
+export const MAX_RASTER_AREA = 16384 * 16384
 
 /**
  * Downscale SVG text whose intrinsic width/height exceed the decode limits.
@@ -54,9 +54,7 @@ function clampSvgTextRasterSize(svg, session) {
     const nh = Math.max(1, Math.floor(h * f))
     sessionWarn(session, 'raster-clamp', `capture ${Math.round(w)}x${Math.round(h)}px exceeds decode limits; downscaled to ${nw}x${nh}px`)
     console.warn(
-      `[snapDOM] Capture ${Math.round(w)}×${Math.round(h)}px exceeds the browser image-decode ` +
-      `limit (${MAX_RASTER_SIDE}px/side); downscaling to ${nw}×${nh}px. Lower \`scale\` or set ` +
-      '`width`/`height` to control output size.'
+      `[SnapDOM] ${Math.round(w)}×${Math.round(h)}px is too large for the browser to draw; scaled down to ${nw}×${nh}px. For full size, export ${typeof CompressionStream === 'function' ? 'a PNG blob, ' : ''}an SVG, or crop.`
     )
     return svg.replace(tag, tag
       .replace(/(\bwidth=")[\d.]+/i, `$1${nw}`)
@@ -74,18 +72,18 @@ function clampSvgTextRasterSize(svg, session) {
  * @param {{x:number,y:number,width:number,height:number}} crop - in viewBox units
  * @returns {string}
  */
-function cropSvgText(svg, crop) {
+export function cropSvgText(svg, crop) {
   const nums = ['x', 'y', 'width', 'height'].map(k => Number(crop?.[k]))
   if (!nums.every(Number.isFinite) || nums[2] <= 0 || nums[3] <= 0) {
-    throw new RangeError('[snapdom] canvas crop requires finite x/y and positive width/height')
+    throw new RangeError('[SnapDOM] crop needs finite x/y and a positive width/height.')
   }
   const head = svg.match(/<svg\b[^>]*>/i)
-  if (!head) throw new Error('[snapdom] cannot crop a non-SVG capture')
+  if (!head) throw new Error('[SnapDOM] Only SVG captures can be cropped.')
   const tag = head[0]
   const vb = (tag.match(/\bviewBox="([^"]+)"/i) || [])[1]
   const parts = String(vb || '').trim().split(/[\s,]+/).map(Number)
   if (parts.length !== 4 || !parts.every(Number.isFinite) || parts[2] <= 0 || parts[3] <= 0) {
-    throw new Error('[snapdom] cannot crop an SVG without a finite viewBox')
+    throw new Error('[SnapDOM] Can\'t crop: the SVG has no valid viewBox.')
   }
   const [vx, vy, vw, vh] = parts
   const left = Math.max(vx, nums[0])
@@ -93,7 +91,7 @@ function cropSvgText(svg, crop) {
   const right = Math.min(vx + vw, nums[0] + nums[2])
   const bottom = Math.min(vy + vh, nums[1] + nums[3])
   if (!(right > left) || !(bottom > top)) {
-    throw new RangeError('[snapdom] canvas crop does not intersect the SVG viewBox')
+    throw new RangeError('[SnapDOM] The crop area does not intersect the capture.')
   }
   // The header's width/height may already be a scaled output size: keep that density so a
   // page slice rasterizes at the same resolution as the whole capture would.
@@ -126,7 +124,7 @@ export function decodeSvgFromDataURL(u) {
 }
 /** Decode only the leading chunk of an SVG data URL — enough to read the <svg ...> header
  *  without paying a full decodeURIComponent on a multi-MB payload. */
-function peekSvgHeader(u) {
+export function peekSvgHeader(u) {
   const i = u.indexOf(',')
   if (i < 0) return ''
   // Trim a trailing incomplete %-escape so decodeURIComponent can't throw on the cut.
@@ -425,6 +423,7 @@ const DECODE_FRAME_BUDGET_BYTES = 24 * 1024 * 1024
 let _decodeFrame = null
 let _decodeFrameBytes = 0
 let _decodeInFlight = 0
+let _retireDecodeFrame = false
 
 /** An <img> to decode `src` with, owned by the throwaway frame when there is one. */
 function acquireDecodeImage(src) {
@@ -466,11 +465,19 @@ function acquireDecodeImage(src) {
   return img
 }
 
-/** Release the in-flight guard taken by acquireDecodeImage. */
-function releaseDecodeImage(img) {
+/** Release the guard; tiled file exports retire their decoded resources after drawing.
+ *  A concurrent draw keeps the shared document alive until its own release. */
+function releaseDecodeImage(img, retire = false) {
   if (!img || !img.__snapdomDecodeFrame) return
   img.__snapdomDecodeFrame = false
   _decodeInFlight = Math.max(0, _decodeInFlight - 1)
+  if (retire) _retireDecodeFrame = true
+  if (_retireDecodeFrame && _decodeInFlight === 0) {
+    _decodeFrame?.remove()
+    _decodeFrame = null
+    _decodeFrameBytes = 0
+    _retireDecodeFrame = false
+  }
 }
 
 /** Start the decode of `src` on `image`. */
@@ -611,7 +618,7 @@ export async function toCanvas(url, options) {
   // other source would rasterize whole, handing a document exporter a full bitmap where it
   // asked for one page: fail as loudly as a malformed window instead of degrading silently.
   if (crop && !isSvgDataURL(url)) {
-    throw new RangeError('[snapdom] canvas crop requires an SVG capture payload')
+    throw new RangeError('[SnapDOM] Only SVG captures can be cropped.')
   }
   if (isSvgDataURL(url)) {
     const head = (peekSvgHeader(url).match(/<svg\b[^>]*>/i) || [])[0] || ''
@@ -653,9 +660,12 @@ export async function toCanvas(url, options) {
     if (!img.__snapdomDecodeFrame) throw e
     // Gecko replaces a freshly inserted iframe's initial about:blank document asynchronously,
     // aborting loads started against it. By the time the abort surfaces the settled document
-    // is in place, so one retry lands.
-    releaseDecodeImage(img)
+    // is in place, so one retry lands. Acquire before releasing: a release that reached zero
+    // in flight after a concurrent tiled export asked to retire removed that settled frame,
+    // and the retry landed in a fresh one whose about:blank swap aborted it again.
+    const failed = img
     img = acquireDecodeImage(src)
+    releaseDecodeImage(failed)
     // This second acquire is OUTSIDE the try/finally below, so a retry that also rejects
     // used to propagate with the guard still held. _decodeInFlight then never returned to
     // zero, the `_decodeInFlight === 0` condition that recycles the shared decode frame
@@ -663,12 +673,27 @@ export async function toCanvas(url, options) {
     try {
       await startDecode(img, src)
     } catch (retryErr) {
-      releaseDecodeImage(img)
+      releaseDecodeImage(img, options.__releaseDecodeFrame)
       throw retryErr
     }
   }
 
   try {
+    // #506: Chromium resolves SVG decode before embedded fonts finish loading. Give its
+    // font-loading task a turn before drawing; a microtask still paints missing glyphs.
+    // A message avoids nested/background timer clamps. Font-free and canvas exports stay
+    // on the immediate path, and WebKit keeps its own verified-paint ladder below.
+    if (!srcCanvas && !isSafari() && !isFirefox() && isSvgDataURL(src) && /(?:%40|@)font-face/i.test(src)) {
+      await new Promise(resolve => {
+        const channel = new MessageChannel()
+        channel.port1.onmessage = () => {
+          channel.port1.close()
+          channel.port2.close()
+          resolve()
+        }
+        channel.port2.postMessage(0)
+      })
+    }
     const probe = isSafari() && !srcCanvas ? inkProbe() : null
     let inkBefore = false
     if (probe) {
@@ -732,8 +757,7 @@ export async function toCanvas(url, options) {
     if (over > 1) {
       sessionWarn(options.__session, 'canvas-clamp', `output ${Math.round(devW)}x${Math.round(devH)}px exceeds canvas limits; downscaled`)
       console.warn(
-        `[snapDOM] Output ${Math.round(devW)}×${Math.round(devH)}px exceeds the browser canvas ` +
-        `limit (${MAX_RASTER_SIDE}px/side); downscaling. Lower \`scale\`/\`dpr\` or set \`width\`/\`height\`.`
+        `[SnapDOM] ${Math.round(devW)}×${Math.round(devH)}px is larger than a canvas allows; scaled down. For full size, export ${typeof CompressionStream === 'function' ? 'a PNG blob, ' : ''}an SVG, or crop.`
       )
       outW /= over
       outH /= over
@@ -755,7 +779,22 @@ export async function toCanvas(url, options) {
     canvas.style.height = `${outH}px`
 
     const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('[snapdom] toCanvas: the target canvas has no 2d context')
+    if (!ctx) throw new Error('[SnapDOM] The canvas you passed has no 2D context (is it already used for WebGL?).')
+
+    // #516: an export smaller than the device-pixel grid the svg engine laid out on (a
+    // download is always dpr 1, the grid is the live devicePixelRatio) puts every border
+    // snapped to whole device pixels below one output pixel. Firefox snaps each edge of such
+    // a border on its own and drops some: at devicePixelRatio 2.727 the 1px boxes of the
+    // issue's demo lost their left and right sides at 1x. Rasterizing at the grid and
+    // resampling keeps every edge, the way a screenshot of the page scaled down would.
+    // Chromium antialiases those borders and needs nothing.
+    let fine = null
+    const grid = options.__layoutZoom || 1
+    if (!srcCanvas && grid > 1 && isFirefox()) {
+      const f = grid * refW / (outW * dpr)
+      const fw = Math.round(outW * dpr * f), fh = Math.round(outH * dpr * f)
+      if (f > 1.01 && fw <= MAX_RASTER_SIDE && fh <= MAX_RASTER_SIDE && fw * fh <= MAX_RASTER_AREA) fine = { w: fw, h: fh }
+    }
 
     const paint = () => {
       if (dpr !== 1) ctx.scale(dpr, dpr)
@@ -781,7 +820,30 @@ export async function toCanvas(url, options) {
         // dpr scale is folded into the destination size instead of the transform.
         ctx.save()
         ctx.setTransform(1, 0, 0, 1, 0, 0)
-        drawBanded(ctx, img, outW * dpr, outH * dpr, src)
+        if (fine) {
+          let tmp = document.createElement('canvas')
+          tmp.width = fine.w
+          tmp.height = fine.h
+          drawBanded(tmp.getContext('2d'), img, fine.w, fine.h, src)
+          // #516: a canvas that resamples bilinearly without mipmaps reads 2x2 source pixels
+          // per output pixel, so past 2x it skips whole rows and columns of the grid raster
+          // and the 1-2px borders on them vanish, the same edges on every export. The issue's
+          // second demo (100 bordered boxes, DPR 2.727), drawn in Chromium with smoothing 'low',
+          // lost 15404 of 98341 edge samples in one draw and 81 halved first; the issue's mobile
+          // Firefox screenshot drops sides in that pattern. Halving until the last draw is under
+          // 2x reads every pixel.
+          while (tmp.width > outW * dpr * 2) {
+            const half = document.createElement('canvas')
+            half.width = Math.ceil(tmp.width / 2)
+            half.height = Math.ceil(tmp.height / 2)
+            half.getContext('2d').drawImage(tmp, 0, 0, half.width, half.height)
+            tmp = half
+          }
+          ctx.imageSmoothingQuality = 'high'
+          ctx.drawImage(tmp, 0, 0, outW * dpr, outH * dpr)
+        } else {
+          drawBanded(ctx, img, outW * dpr, outH * dpr, src)
+        }
         ctx.restore()
       }
     }
@@ -815,6 +877,6 @@ export async function toCanvas(url, options) {
     }
     return canvas
   } finally {
-    releaseDecodeImage(img)
+    releaseDecodeImage(img, options.__releaseDecodeFrame)
   }
 }
