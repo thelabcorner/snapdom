@@ -1,0 +1,45 @@
+name: Review — oversized raster export paired control
+on:
+  push:
+    branches: ['review/v3-raster-clamp-header']
+  pull_request:
+    paths:
+      - '.github/workflows/review-raster-clamp.yml'
+      - 'src/exporters/svgHeaderFast.js'
+      - 'src/exporters/toCanvas.js'
+      - 'scripts/review-raster-clamp-browser.mjs'
+      - 'scripts/r13-svg-clamp.node.test.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired-browser-exports:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run compile
+      - name: Prepare exact PR base (R12) as independent build
+        shell: bash
+        run: |
+          git fetch --no-tags origin review/v3-svg-header-fastpath
+          git worktree add --detach __r13_baseline FETCH_HEAD
+          echo "BASE=$(git -C __r13_baseline rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "CANDIDATE=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          npm ci --prefix __r13_baseline --no-audit --no-fund
+          npm --prefix __r13_baseline run compile
+      - run: node --test scripts/r13-svg-clamp.node.test.mjs
+      - name: Paired public capture and raster export: exact raw and RGBA
+        run: node scripts/review-raster-clamp-browser.mjs --engine=${{ matrix.engine }}
