@@ -16,10 +16,10 @@
  * @module styles
  */
 
-import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS, isHTMLEl, snapshotComputedStyle } from '../utils/index.js'
+import { getStyleKey, softensWidth, softenNeedsAutoWidth, shouldIgnoreProp, getStyle, NO_DEFAULTS_TAGS, isHTMLEl, isShadowRoot, shadowHost, snapshotComputedStyle } from '../utils/index.js'
 import { isFirefox } from '../utils/browser.js'
 import { cache } from '../core/cache.js'
-import { scanAuthorStyles } from './styleScan.js'
+import { scanAuthorStyles, scanSheetProps, addAnimationProps } from './styleScan.js'
 import { isInternalNode } from '../utils/ownership.js'
 
 /** element -> { env, stamp, snapshot, embedFonts, excludeStyleProps }. Cross-capture; a hit
@@ -50,10 +50,7 @@ function isOwnedNode(node) {
   while (el) {
     if (isInternalNode(el)) return true
     if (el.parentElement) el = el.parentElement
-    else {
-      const root = el.getRootNode?.()
-      el = root && root.host ? root.host : null
-    }
+    else el = shadowHost(el)
   }
   return false
 }
@@ -93,7 +90,7 @@ function countMutationSources(records) {
     const doc = rec.target.ownerDocument || document
     mutationCounts.set(doc, (mutationCounts.get(doc) || 0) + 1)
     let el = rec.target.nodeType === 1 ? rec.target : rec.target.parentElement || rec.target.host
-    for (; el; el = el.parentElement || el.getRootNode?.()?.host) {
+    for (; el; el = el.parentElement || shadowHost(el)) {
       mutationCounts.set(el, (mutationCounts.get(el) || 0) + 1)
     }
   }
@@ -599,7 +596,17 @@ const universeCache = new WeakMap()
 function scanFor(doc) {
   let rec = universeCache.get(doc)
   if (!rec || rec.epoch !== __epoch) {
+    const prev = rec && rec.universe
     rec = { epoch: __epoch, ...scanAuthorStyles(doc) }
+    // A re-scan that finds the same props keeps the previous Set: its identity keys the base
+    // reset memo (assembleCaptureCSS) and any DOM mutation bumps the epoch, so a new Set per
+    // scan would rebuild the reset (0.12-0.65 ms) on every capture of a live page.
+    const next = rec.universe
+    if (prev && next && prev.size === next.size) {
+      let same = true
+      for (const p of next) if (!prev.has(p)) { same = false; break }
+      if (same) rec.universe = prev
+    }
     universeCache.set(doc, rec)
   }
   return rec
@@ -658,17 +665,70 @@ export function importantPropsFor(el) {
 }
 
 /**
- * The properties the page's CSS can move off their UA default (styleScan.js), or null for
- * shadow-root content and an unreadable scan, which both mean full reads. The base reset and
- * diff.js read it too, so everything prunes with the same set the snapshots use.
+ * The properties the page's CSS can move off their UA default (styleScan.js), or null for an
+ * unreadable scan, which means full reads. The base reset and diff.js read it too, so
+ * everything prunes with the same set the snapshots use. Shadow-root content gets the
+ * capture's own union (shadowUniverseOf) when the caller passes its session, and full reads
+ * without one.
  * @param {Element} el
+ * @param {object} [session] - the capture's sessionCache
  * @returns {Set<string>|null}
  */
-export function universeFor(el) {
+export function universeFor(el, session) {
   const doc = el.ownerDocument || document
-  // Shadow-root content: its own sheets aren't scanned — keep full reads there.
-  if (el.getRootNode && el.getRootNode() !== doc) return null
-  return scanFor(doc).universe
+  const root = el.getRootNode ? el.getRootNode() : doc
+  if (root === doc) return scanFor(doc).universe
+  return session && isShadowRoot(root) ? shadowUniverseOf(el, root, doc, session) : null
+}
+
+/** Per sheet and style epoch: what one shadow-root sheet can set, null when unreadable.
+ *  Component libraries adopt one sheet per component type: the #503 table's 281 roots share
+ *  34 sheets. */
+const sheetPropsCache = new WeakMap()
+
+/**
+ * The universe for shadow-root content: the document's, plus the sheets and WAAPI keyframes
+ * of every root a node's style can come from. That is its own root, the roots above it
+ * (::part rules and inheritance), its shadow root when it is a host (:host) and the root of
+ * each slot it is assigned through (::slotted). A root joins together with every root above
+ * it, so the order the clone walk reads nodes in does not matter; the set only grows, and a
+ * larger set only costs reads. It lives on the session, one capture. An unreadable sheet
+ * sends the rest of the capture's shadow content back to full reads.
+ * Measured on the #503 ArcGIS table (2178 nodes, 281 roots): first capture 590-614 to 472 ms,
+ * second 488 to 345 ms, raster identical; 150 nested roots of shadowTreeScenario, cold, 100-120
+ * to 57 ms. Captures served from the snapshot cache do not change.
+ * Pinned by __tests__/module.styles.shadowUniverse.test.js.
+ * @param {Element} el
+ * @param {ShadowRoot} root - el's own root
+ * @param {Document} doc
+ * @param {object} session
+ * @returns {Set<string>|null}
+ */
+function shadowUniverseOf(el, root, doc, session) {
+  let st = session.__shadowUniverse
+  if (st === null) return null
+  if (!st) {
+    const base = scanFor(doc).universe
+    if (!base) return (session.__shadowUniverse = null)
+    st = session.__shadowUniverse = { universe: new Set(base), roots: new Set() }
+  }
+  const join = (r) => {
+    for (; isShadowRoot(r) && !st.roots.has(r); r = r.host.getRootNode()) {
+      st.roots.add(r)
+      for (const sheet of [...r.styleSheets, ...(r.adoptedStyleSheets || [])]) {
+        let rec = sheetPropsCache.get(sheet)
+        if (!rec || rec.epoch !== __epoch) sheetPropsCache.set(sheet, rec = { epoch: __epoch, props: scanSheetProps(sheet) })
+        if (!rec.props) return false
+        for (const p of rec.props) st.universe.add(p)
+      }
+      addAnimationProps(r.getAnimations(), st.universe)
+    }
+    return true
+  }
+  let ok = join(root) && (!el.shadowRoot || join(el.shadowRoot))
+  for (let slot = el.assignedSlot; ok && slot; slot = slot.assignedSlot) ok = join(slot.getRootNode())
+  if (!ok) return (session.__shadowUniverse = null)
+  return st.universe
 }
 
 /** The property set a pseudo-element's snapshot reads (styleScan's pseudoUniverse); null
@@ -1023,7 +1083,7 @@ function usedWidthDiffersFromAvailable(el, cs) {
 
 const __snapshotSig = new WeakMap()
 /** The snapshot's key into snapshotKeyCache, memoized per snapshot object. */
-function styleSignature(snap) {
+function styleSignature(snap, tag) {
   let sig = __snapshotSig.get(snap)
   if (sig) return sig
   // Built in INSERTION order, not sorted. This string is only ever a key into
@@ -1048,7 +1108,8 @@ function styleSignature(snap) {
   // were authored in a different order now miss each other in the key cache — one extra
   // getStyleKey call, never a wrong key. `__needsBgInline` is non-enumerable, so for...in
   // sees exactly what Object.entries saw.
-  const parts = []
+  // The diff depends on the tag's defaults even when snapshots are equal (#505).
+  const parts = [tag]
   for (const k in snap) parts.push(k, snap[k])
   sig = parts.join('\u0001')
   __snapshotSig.set(snap, sig)
@@ -1083,9 +1144,9 @@ function snapshotIsCurrent(rec, el) {
  *    once per capture in captureDOM → options.__styleShare.
  *  - element: never for form controls (UA styles their state without author CSS), never for
  *    the focused element (UA :focus-visible ring), never for shadow-root content (its sheets
- *    are outside the scan — universeFor already forces full reads there), and never for a
- *    shadow host or a slotted node, which that unscanned sheet styles through :host() and
- *    ::slotted(). Pinned by __tests__/regression.shadowHostStructural.test.js.
+ *    are outside the document scan the share gate comes from), and never for a shadow host
+ *    or a slotted node, which that unscanned sheet styles through :host() and ::slotted().
+ *    Pinned by __tests__/regression.shadowHostStructural.test.js.
  *
  * The share map lives on the SESSION — one capture — so no cross-capture staleness is
  * possible; the per-element snapshotCache (cross-capture, stamp-guarded) sits in front
@@ -1218,7 +1279,7 @@ function shareLists(rec, el) {
   if (rec.h && !('height' in stored)) rrList.push('height')
   if (rec.b && !('block-size' in stored)) rrList.push('block-size')
   const rrSet = new Set(rrList)
-  const staticParts = []
+  const staticParts = [el.tagName.toLowerCase()]
   for (const k in stored) { if (!rrSet.has(k)) staticParts.push(k, stored[k]) }
   rec.rr = rrList
   rec.sig = staticParts.join('\u0001') + '\u0002' + rrList.join('\u0001')
@@ -1277,9 +1338,10 @@ export function pseudoSnapshotFor(source, pseudo, style, session, options) {
  * @param {CSSStyleDeclaration|null} [preStyle] - getComputedStyle(el), when the caller has it
  * @param {object} [options]
  * @param {{st: object, id: number}|null} [shareInfo] - the identity to share under, or null
+ * @param {object|null} [session] - the capture's sessionCache, for shadow content's universe
  * @returns {Record<string, string>}
  */
-function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
+function getSnapshot(el, preStyle = null, options = {}, shareInfo = null, session = null) {
   const rec = snapshotCache.get(el)
   // The snapshot content depends on embedFonts (extra font props) and excludeStyleProps
   // (skipped props), which no invalidation signal tracks. Capturing the same element twice
@@ -1321,7 +1383,7 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
       Object.defineProperty(snap, '__bgClipTextFix', { value: shared.snap.__bgClipTextFix, enumerable: false })
     }
   } else {
-    snap = snapshotComputedStyleFull(style, options, el, universeFor(el))
+    snap = snapshotComputedStyleFull(style, options, el, universeFor(el, session))
     if (shareInfo) {
       // Stored by REFERENCE, with the riders it already carries: the copy that used to be
       // made here, plus a re-read list and a base signature per identity, cost 27 ms of a
@@ -1354,8 +1416,11 @@ function getSnapshot(el, preStyle = null, options = {}, shareInfo = null) {
     }
   }
   stripHeightForWrappers(el, style, snap)
+  // Before the twin signature below: it keys this node's final values.
+  const clipped = freezeBorderBox(el, style, snap)
   if (dyn !== null) {
     if (restoredAutoMargin) dyn.push('\u0005', ...MARGIN_PROPS.map(prop => snap[prop]))
+    if (clipped) dyn.push('\u0006' + clipped)
     // Seed the signature memo AFTER the strip: it deletes at most height/block-size, and two
     // twins with different strip outcomes must not collide onto one key.
     __snapshotSig.set(snap, shared.sig + '\u0002' + dyn.join('\u0001') +
@@ -1549,7 +1614,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
       !source.shadowRoot && !source.assignedSlot
     if (eligible) shareInfo = { st, id }
   }
-  const snap = getSnapshot(source, pre, ctx.options, shareInfo)
+  const snap = getSnapshot(source, pre, ctx.options, shareInfo, session)
   // Inline author declarations were normalized above from getComputedStyle too.
   // Override their zero margin (including logical shorthands) with the retained auto.
   if (source.getAttribute?.('style')) {
@@ -1571,8 +1636,11 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   }
 
   addScrollbarGutter(source, pre, snap)
+  if (clone.style?.length && snap['box-sizing'] === 'border-box' &&
+      pre.getPropertyValue('box-sizing') !== 'border-box') syncInlineBorderBox(source, clone, snap)
 
   const flexItem = isFlexOrGridItem(source)
+  freezeOneLine(source, clone, snap, flexItem, session)
 
   // #406: foreignObject may resolve min-width:auto differently than normal DOM
   // for flex/grid items. Explicitly set min-width:0 on flex/grid items that have
@@ -1588,7 +1656,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
   // getStyleKey only softens width for inline-sized / table / inline boxes, and only there does
   // its output depend on content/flex-item-ness. For every other node (the vast majority — divs,
   // headings, paragraphs…) skip that bookkeeping entirely so the hot path stays untouched.
-  let sig = styleSignature(snap)
+  let sig = styleSignature(snap, tag)
   let sizedByContent = true
   if (softensWidth(tag, (snap.display || '').toLowerCase())) {
     sizedByContent = hasRenderedContent(source)
@@ -1600,9 +1668,9 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
         hasSpecifiedWidth(source, pre, flexItem)) {
       sizedByContent = false
     }
-    // Fold tag/content/flex into the cache key so soften-eligible elements with identical styles
+    // Fold content/flex into the cache key so soften-eligible elements with identical styles
     // but different shape don't collide on the shared snapshotKeyCache.
-    sig = `${sig}|${tag}${sizedByContent ? '|c' : ''}${flexItem ? '|f' : ''}`
+    sig = `${sig}${sizedByContent ? '|c' : ''}${flexItem ? '|f' : ''}`
     // This is the exact condition getStyleKey uses to actually drop the width (the #429/#433/
     // #434 family): tally it so capture.js can suggest `reconcile: true` when it's never used —
     // cheap, since softensWidth/sizedByContent are already computed for this node regardless.
@@ -1632,6 +1700,7 @@ export function inlineAllStyles(source, clone, sessionOrCtx, opts) {
  * turn steals width from the rows). Add the measured gutters back so the frozen box matches
  * the live one. Border-box values already include the scrollbars; overlay scrollbars
  * (macOS default) measure 0 and change nothing.
+ * Pinned by __tests__/snapdom.issue498.test.js and __tests__/snapdom.issue508.test.js.
  * @param {Element} source
  * @param {CSSStyleDeclaration} pre
  * @param {Record<string,string>} snap
@@ -1653,8 +1722,110 @@ export function addScrollbarGutter(source, pre, snap) {
     const n = parseFloat(v)
     if (Number.isFinite(n)) snap[prop] = `${Math.round((n + gutter) * 1000) / 1000}px`
   }
-  if (vGutter > 0.5) { bump('width', vGutter); bump('inline-size', vGutter) }
-  if (hGutter > 0.5) { bump('height', hGutter); bump('block-size', hGutter) }
+  // offset* and client* are integers, each rounded by under a pixel, so with no scrollbar the
+  // difference still reaches 1.5: at devicePixelRatio 2.75 (borders 0.727px) a 47.636px row
+  // measured 48 - 46 - 1.4545 = 0.545 and every #508 row grew by it. No classic scrollbar is
+  // narrower than 2px.
+  if (vGutter >= 2) { bump('width', vGutter); bump('inline-size', vGutter) }
+  if (hGutter >= 2) { bump('height', hGutter); bump('block-size', hGutter) }
+}
+
+const BORDER_WIDTHS = ['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width']
+const BOX_SIZES = ['width', 'inline-size', 'height', 'block-size']
+
+/**
+ * Freeze the BORDER box of a content-box element whose borders the live page snapped to a
+ * fractional CSS width.
+ *
+ * Browsers snap border widths to whole device pixels, and getComputedStyle reports the
+ * snapped width: at devicePixelRatio 2.625 a `1px` border reads `0.761905px` and `3px` reads
+ * `2.666667px` (Chrome and WebKit, measured). The svg image lays out at 1x and snaps those
+ * again, to 1px and 2px, so a frozen content-box size moved every outer edge by the
+ * difference. In #508, fifty stacked `border: 1px` rows grew 24px on a phone and the last one
+ * fell out of its container. With box-sizing: border-box the outer edges stay where the live
+ * page has them; only the content box absorbs the sub-pixel difference. Integer borders, the
+ * whole of a 1x or 2x page with ordinary CSS, never enter. On Chromium and Firefox the svg
+ * engine also lays out at the live devicePixelRatio (`layoutZoom`, engines/svg.js), which
+ * snaps these exactly as the page did; this pass is what keeps WebKit right.
+ *
+ * An identity twin copies an already converted snapshot and re-reads its own width/height
+ * (LAYOUT_ALWAYS_RE), so it converts exactly once. Min and max sizes are not re-read for
+ * twins and change meaning under border-box, so any value other than the neutral one leaves
+ * the element as it was.
+ *
+ * The content box ends up to a pixel smaller than the content it held live, and an `auto`
+ * scroller shows a scrollbar for that sliver (Chrome painted one under every #508 row). An
+ * axis the live box had nothing to scroll on is clipped as `hidden` instead, which paints
+ * the same without the bar. That depends on the node's content, not its identity, so the
+ * decision is returned for the twin signature.
+ * Pinned by __tests__/snapdom.issue508.test.js.
+ * @param {Element} el
+ * @param {CSSStyleDeclaration} style - the live computed style
+ * @param {Record<string, string>} snap
+ * @returns {string} the axes switched from auto to hidden ('x', 'y', 'xy'), or ''
+ */
+function freezeBorderBox(el, style, snap) {
+  // Runs on every node, so the gate is a string test on the snapshot: a resolved fractional
+  // width always carries a '.', an integer one never does.
+  if (!BORDER_WIDTHS.some((p) => snap[p]?.includes('.'))) return ''
+  // box-sizing and overflow are the two values this writes, so a twin's copy may already
+  // hold the converted ones: those come from the live style. Everything else in `snap` is
+  // this node's own read (re-read, or identical between twins by construction).
+  if (style.getPropertyValue('box-sizing') === 'border-box') return ''
+  if (snap.display === 'inline') return ''
+  for (const axis of ['width', 'height']) {
+    const min = snap[`min-${axis}`]
+    const max = snap[`max-${axis}`]
+    if ((min && min !== '0px' && min !== 'auto') || (max && max !== 'none')) return ''
+  }
+  const px = (p) => parseFloat(snap[p]) || 0
+  const extraX = px('padding-left') + px('padding-right') + px('border-left-width') + px('border-right-width')
+  const extraY = px('padding-top') + px('padding-bottom') + px('border-top-width') + px('border-bottom-width')
+  const vertical = (snap['writing-mode'] || 'horizontal-tb') !== 'horizontal-tb'
+  for (const prop of BOX_SIZES) {
+    const v = snap[prop]
+    if (!v || !v.endsWith('px')) continue
+    const x = prop === 'width' || (prop === 'inline-size' && !vertical) || (prop === 'block-size' && vertical)
+    const extra = x ? extraX : extraY
+    snap[prop] = `${Math.round((parseFloat(v) + extra) * 1000) / 1000}px`
+  }
+  snap['box-sizing'] = 'border-box'
+  let clipped = ''
+  if (style.getPropertyValue('overflow-x') === 'auto') {
+    const idle = el.scrollWidth <= el.clientWidth
+    snap['overflow-x'] = idle ? 'hidden' : 'auto'
+    if (idle) clipped += 'x'
+  }
+  if (style.getPropertyValue('overflow-y') === 'auto') {
+    const idle = el.scrollHeight <= el.clientHeight
+    snap['overflow-y'] = idle ? 'hidden' : 'auto'
+    if (idle) clipped += 'y'
+  }
+  return clipped
+}
+
+const INLINE_BORDER_BOX = ['box-sizing', ...BOX_SIZES, 'overflow-x', 'overflow-y']
+const INLINE_BORDER_BOX_RE = /(?:box-sizing|width|height|inline-size|block-size|overflow(?:-[xy])?)\s*:/i
+
+/**
+ * Carry freezeBorderBox's values onto the clone's inline declarations of the same props.
+ * The clone keeps the source's style attribute, and an inline `height:10px` outranks the
+ * class: under the class's border-box it shrank each #508 row by its borders instead.
+ * @param {Element} source
+ * @param {Element} clone
+ * @param {Record<string, string>} snap
+ */
+function syncInlineBorderBox(source, clone, snap) {
+  // One test on the SOURCE's attribute text, which the clone's inline style started as.
+  // Seven CSSOM reads per node were 4 ms of a 107 ms capture of 6,000 bordered, inline-styled
+  // nodes that declared no size, and the clone's own attribute is worse (8 ms): its style was
+  // already written through CSSOM, so every read re-serializes it.
+  if (!INLINE_BORDER_BOX_RE.test(source.getAttribute('style'))) return
+  for (const p of INLINE_BORDER_BOX) {
+    if (clone.style.getPropertyValue(p) && snap[p]) {
+      clone.style.setProperty(p, snap[p], clone.style.getPropertyPriority(p))
+    }
+  }
 }
 
 /**
@@ -1672,6 +1843,120 @@ function hasBox(cs) {
   if ((parseFloat(cs.paddingBottom) || 0) > 0) return true
   const ob = cs.overflowBlock || cs.overflowY || 'visible'
   return ob !== 'visible'
+}
+
+/** The longhand that stops wrapping without touching white-space collapsing, where supported. */
+const ONE_LINE_PROP = typeof CSS !== 'undefined' && CSS.supports?.('text-wrap-mode', 'nowrap') ? 'text-wrap-mode' : 'white-space'
+
+/**
+ * Keep a shrink-to-fit box on one line in the clone when its text is on one line live.
+ *
+ * #516: such a box is frozen at the width of its own text, so a capture that lays the text out
+ * a hair wider wraps it. Firefox at devicePixelRatio 2.727 did, by under 1/60px: "aa bb" broke
+ * inside its inline-block, the box's baseline dropped a line and every box below it slid out of
+ * its frozen parent. Widening the frozen box instead accumulates across a row inside a
+ * shrink-to-fit parent (#491); a 1/60px nudge wrapped rows of two. With no soft wrap live,
+ * `nowrap` is faithful and the drift can only overflow sub-pixel, the #474 trade. Descendants
+ * inherit it, so a box under one already pinned is not measured again. Pinned by
+ * __tests__/snapdom.issue516.test.js.
+ * @param {Element} source
+ * @param {Element} clone
+ * @param {Record<string,string>} snap
+ * @param {boolean} flexItem
+ * @param {object} session - the capture's sessionCache
+ */
+function freezeOneLine(source, clone, snap, flexItem, session) {
+  const display = snap.display || ''
+  if (!flexItem && !display.startsWith('inline-') && (snap.float || 'none') === 'none' &&
+    snap.position !== 'absolute' && snap.position !== 'fixed') return
+  const mode = snap['text-wrap-mode'] || snap['white-space'] || ''
+  if (mode === 'nowrap' || mode === 'pre' || (ONE_LINE_PROP === 'white-space' && mode !== 'normal')) return
+  if ((snap['writing-mode'] || 'horizontal-tb') !== 'horizontal-tb' || !clone.style) return
+  const pinned = session.__oneLine ||= new WeakSet()
+  for (let a = source.parentElement; a; a = a.parentElement) if (pinned.has(a)) return
+  if (!textOnOneLine(source, snap, session)) return
+  pinned.add(source)
+  clone.style.setProperty(ONE_LINE_PROP, 'nowrap')
+}
+
+/**
+ * Whether every text run under `el` sits on one line box. False on whatever it cannot vouch
+ * for: a <br>, a textarea, a shadow root, more than 64 runs, no text, or a content box taller
+ * than two runs, which holds something the runs do not show (a second line of images, an
+ * authored height).
+ * @param {Element} el
+ * @param {Record<string,string>} snap
+ * @param {object} session - the capture's sessionCache
+ * @returns {boolean}
+ */
+function textOnOneLine(el, snap, session) {
+  const content = el.clientHeight - (parseFloat(snap['padding-top']) || 0) - (parseFloat(snap['padding-bottom']) || 0)
+  // Three lines' worth of its own font already rules out one line: skips the walk under a
+  // branch of a deep tree, which would read 64 runs to learn as much.
+  if (content > 3 * (parseFloat(snap['font-size']) || 16)) return false
+  // Letters, digits and plain punctuation hold no break opportunity: nothing to pin, nothing
+  // to read. Most single-word labels and every number end here.
+  if (snap['word-break'] === 'normal' && snap['overflow-wrap'] === 'normal' &&
+    /^[\w\u00C0-\u024F.,:;!?'"()%]*$/.test(el.textContent.trim())) return false
+  const doc = el.ownerDocument || document
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT)
+  const range = doc.createRange()
+  let first = null
+  let tall = 0
+  let runs = 0
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === 1) {
+      if (n.shadowRoot || n.localName === 'br' || n.localName === 'textarea') return false
+      continue
+    }
+    if (!/\S/.test(n.data)) continue
+    if (++runs > 64) return false
+    range.selectNodeContents(n)
+    for (const r of range.getClientRects()) {
+      if (!r.height) continue
+      first ||= r
+      // Runs on one line (mixed sizes, sub/sup) overlap by more than half; stacked lines do not.
+      if (Math.min(first.bottom, r.bottom) - Math.max(first.top, r.top) < Math.min(first.height, r.height) / 2) return false
+      tall = Math.max(tall, r.height)
+    }
+  }
+  if (!first) return false
+  const axes = axesOf(el, session.__axes ||= new WeakMap())
+  if (!axes) return false
+  // Runs are measured in page pixels, the content box in layout pixels.
+  const scale = axes === SCALED && el.offsetHeight ? el.getBoundingClientRect().height / el.offsetHeight : 1
+  return content * scale <= 2 * tall
+}
+
+/** axesOf results: rotated or skewed somewhere up the chain, untouched, scaled or zoomed. */
+const SKEWED = 0
+const PLAIN = 1
+const SCALED = 2
+
+/**
+ * How `el` and its ancestors transform it, memoized per capture since siblings share every
+ * ancestor (the uncached walk was 4.2 of 64 ms on the deep-tree scene). Under a rotation, lines
+ * stacked in layout can overlap on the page's vertical axis and pass for one.
+ * @param {Element} el
+ * @param {WeakMap<Element, number>} memo
+ * @returns {number} SKEWED, PLAIN or SCALED
+ */
+function axesOf(el, memo) {
+  let v = memo.get(el)
+  if (v !== undefined) return v
+  const cs = getStyle(el)
+  const t = cs.transform
+  const m = t && t !== 'none' ? t.slice(t.indexOf('(') + 1, -1).split(',').map(parseFloat) : null
+  // matrix(a, b, c, d, e, f) / matrix3d: b and c (m12, m21) are the rotation and skew terms.
+  if ((cs.rotate && cs.rotate !== 'none') || (m && (t.startsWith('matrix3d') ? m[1] || m[4] : m[1] || m[2]))) v = SKEWED
+  else {
+    const parent = el.parentElement || shadowHost(el)
+    v = parent ? axesOf(parent, memo) : PLAIN
+    if (v === PLAIN && ((cs.scale && cs.scale !== 'none') || (cs.zoom && cs.zoom !== '1') ||
+      (m && (t.startsWith('matrix3d') ? m[0] !== 1 || m[5] !== 1 : m[0] !== 1 || m[3] !== 1)))) v = SCALED
+  }
+  memo.set(el, v)
+  return v
 }
 
 /**

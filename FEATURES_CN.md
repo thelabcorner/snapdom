@@ -1,8 +1,8 @@
 # SnapDOM 功能特性
 
-SnapDOM 在浏览器内捕获渲染后的界面状态。核心引擎提供可复用的图片和 Canvas 导出；插件提供 HTML、结构化上下文、元素映射、PDF 和录制功能。
+SnapDOM 在浏览器内捕获渲染后的界面状态。核心引擎提供可复用的图片和 Canvas 导出；插件提供 HTML、结构化上下文、元素映射、PDF、可编辑矢量图和录制功能。
 
-本文是 v3 的技术功能参考。安装与示例见 [README](README.md) 和 [API 文档](https://snapdom.dev/docs/)。[English](FEATURES.md)。
+本文是 v3 的技术功能参考。安装与示例见 [README](README_CN.md) 和 [API 文档](https://snapdom.dev/docs/)。[English](FEATURES.md)。
 
 ## 捕获与克隆
 
@@ -34,7 +34,7 @@ SnapDOM 在浏览器内捕获渲染后的界面状态。核心引擎提供可复
 - 根元素变换包括独立的 `translate`、`rotate` 和 `scale`，计算边界时会考虑变换原点。根元素的位移会被规范化；`outerTransforms: false` 还会移除旋转，但保留 `scale` 和 `skew`。
 - `outerShadows: false` 移除根元素的阴影、轮廓和 `drop-shadow()`，但保留模糊。`true` 包含根元素效果；`'subtree'` 还包含后代元素的阴影。显式裁剪边界不会扩展。
 - 背景、蒙版、边框图片、裁剪路径和混合模式保留捕获时的样式。
-- 捕获路径支持时会包含自定义滚动条样式；已滚动的内容会被捕获，但不包含自定义滚动条。
+- 捕获路径支持时会包含自定义滚动条样式，以及 `<meter>`、`<progress>` 和滑块部件（`::-webkit-*` / `::-moz-*` 规则）的样式；已滚动的内容会被捕获，但不包含自定义滚动条。
 
 `reconcile: true` 对照源元素测量带样式的克隆，校正有偏差的盒模型。它可以修复文字换行或布局差异，但需要额外的测量流程。`excludeStyleProps` 根据 RegExp 或判断函数省略指定属性。
 
@@ -45,8 +45,6 @@ SnapDOM 在浏览器内捕获渲染后的界面状态。核心引擎提供可复
 响应式图片使用浏览器已选中的资源，而非备用 `src`，同时也会解析常见的懒加载属性。图片请求复用进行中的任务并缓存资源。`useProxy` 支持代理 URL 或模板；`fallbackURL` 为加载失败的图片提供回退资源。
 
 内联的位图会降采样到捕获所需的分辨率，并尽可能保留原编码格式。只有体积确实更小时才使用缩小后的图片。导出更大尺寸时，可恢复捕获时保存的原图，不会读取实时页面上后来更换的图片。
-
-Canvas 尺寸受浏览器安全限制约束。过大的输出可能被缩小，并发出警告。
 
 ## 字体与图标字体
 
@@ -81,6 +79,16 @@ Canvas 尺寸受浏览器安全限制约束。过大的输出可能被缩小，�
 
 SVG 捕获通过 `<foreignObject>` 包含 HTML，非浏览器 SVG 查看器可能无法渲染。`result.meta` 提供冻结的捕获几何信息，用于覆盖层和图片定位。`result.warnings` 提供捕获诊断信息。
 
+### 超大尺寸 PNG 文件
+
+使用默认 SVG 引擎时，如果捕获或输出尺寸超出浏览器的图像解码或 Canvas 安全尺寸限制，`toBlob({ format: 'png' })` 和 `download({ format: 'png' })` 会自动保留请求的分辨率。无需新增选项，返回类型也保持不变。
+
+SnapDOM 将冻结的 SVG 按尺寸受限的区域分块渲染，并编码为一个 PNG 文件，无需创建覆盖整张图片的 Canvas，也无需重新捕获实时 DOM。输出尺寸计算仍遵循显式 `width`/`height`、`scale` 和 DPR 设置，并保留阴影和内边距。下载仍使用 DPR 1。普通尺寸的导出使用原生编码器。
+
+此功能需要 `CompressionStream`；不支持它的浏览器仍会按原有方式缩小输出并发出警告。在像素数量相同时，增量 PNG 编码可能比原生编码耗时更长。压缩后的文件仍会保留在内存中，图片查看器也有各自的尺寸限制。
+
+`toCanvas()`、`toPng()`、JPEG/WebP 导出以及成功的 `html-in-canvas` 捕获仍使用原有的 Canvas 处理路径，并受其尺寸限制。如需分别生成多个 Canvas，请使用 `toCanvas({ crop })`。示例见[导出超长页面](README_CN.md#导出超长页面)。
+
 ## 选项
 
 所有公开选项见[选项参考](https://snapdom.dev/docs/options/)，单次导出的选项见 [API 参考](https://snapdom.dev/docs/api/)。
@@ -90,6 +98,7 @@ SVG 捕获通过 `<foreignObject>` 包含 HTML，非浏览器 SVG 查看器可�
 - 渲染：`backgroundColor`、`quality`、`outerTransforms`、`outerShadows` 和 `reconcile` 控制输出。
 - 资源：字体选项、`useProxy`、`fallbackURL` 和 `placeholders` 控制嵌入及回退方案。
 - 复用：`canvas` 接受现有渲染目标，`invalidate` 在无法自动观察的变化后刷新捕获。
+- 响应性：`fast: false` 让耗时较长的捕获约每帧暂停一次，页面在捕获期间仍可绘制并响应输入，总耗时基本不变。
 
 ## 插件系统
 
@@ -100,11 +109,14 @@ SVG 捕获通过 `<foreignObject>` 包含 HTML，非浏览器 SVG 查看器可�
 | `html-export` | 包含嵌入样式和字体的捕获 HTML |
 | `context-export` | 文本大纲或 JSON 页面上下文 |
 | `agent-map` | 图片与元素映射，包含角色、名称、状态和边界框 |
-| `pdf-image` | 包含 JPEG 捕获图像的可下载 PDF |
+| `pdf` | 可搜索、可分页的 PDF，支持可选择文本、链接、可选表单字段、页眉/页脚和加密 |
+| `vector` | 不含 `<foreignObject>` 的可编辑 SVG，以及 Figma 剪贴板导出 |
 | `gif-export` / `video-export` | 在一段时间内录制当前元素 |
 | `ascii-export` | 图像的文本表示 |
 | `filter` / `color-tint` / `timestamp-overlay` | 修改克隆的视觉效果 |
 | `replace-text` / `redact-inputs` | 替换文字和遮蔽表单值 |
+
+本仓库中的插件 4.x 要求核心 3.x。完整 PDF 和 Vector 导出器以 MIT 许可证开源，尚未发布到 npm。PDF 的 `toPdf()` 返回 `Blob`；Vector 的 `toVector()` 返回 SVG 字符串。`toFigma()` 需要 HTTPS 或 localhost 上的异步剪贴板 API，并由用户操作触发。Vector 要求源元素保持连接，受支持的形状和文本可编辑，但并非所有 CSS 绘制效果都能转换为原生矢量。PDF 的 tagged 输出不等同于通过 PDF/UA 合规认证。
 
 单次捕获插件可声明 `needs: 'clone'` 以跳过渲染。此时核心图片导出不可用，插件仍可返回自己的数据。捕获会运行到所有附加插件所请求的最深阶段。全局注册会拒绝只需 clone 的插件。
 

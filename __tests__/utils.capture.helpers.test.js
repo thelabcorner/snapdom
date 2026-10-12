@@ -129,6 +129,17 @@ describe('sanitizeCloneForXHTML: attributes', () => {
     sanitizeCloneForXHTML(root, { stripFrameworkDirectives: false })
     expect(child.getAttribute('x-show')).toBe('1')
   })
+
+  it('removes xmlns attributes set through setAttribute (#511)', () => {
+    const root = document.createElement('div')
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg ')
+    svg.setAttribute('viewBox', '0 0 16 16')
+    root.appendChild(svg)
+    sanitizeCloneForXHTML(root)
+    expect(svg.hasAttribute('xmlns')).toBe(false)
+    expect(svg.getAttribute('viewBox')).toBe('0 0 16 16')
+  })
 })
 
 describe('sanitizeCloneForXHTML', () => {
@@ -244,6 +255,31 @@ describe('collectScrollbarCSS (#334)', () => {
       expect(out).toContain('width: 10px')
     }
     expect(out).not.toContain('.other')
+  })
+
+  it('extracts meter, progress and slider part rules (#502)', () => {
+    // A document of its own: the memo is per document and keyed on rule COUNTS, and once an
+    // engine drops the other vendor's two rules this sheet has as many as the one above.
+    const frame = document.createElement('iframe')
+    document.body.appendChild(frame)
+    const doc = frame.contentDocument
+    const style = doc.createElement('style')
+    style.textContent = `
+      meter::-webkit-meter-optimum-value { color: red; }
+      progress::-webkit-progress-value { color: red; }
+      input::-webkit-slider-thumb { color: red; }
+      meter::-moz-meter-bar { color: red; }
+      progress::-moz-progress-bar { color: red; }
+    `
+    doc.head.appendChild(style)
+    const out = collectScrollbarCSS(doc)
+    frame.remove()
+
+    // Each engine keeps only the vendor prefixes it parses; the other rules never reach CSSOM.
+    const moz = navigator.userAgent.includes('Firefox')
+    for (const part of moz ? ['::-moz-meter-bar', '::-moz-progress-bar'] : ['::-webkit-meter-optimum-value', '::-webkit-progress-value', '::-webkit-slider-thumb']) {
+      expect(out).toContain(part)
+    }
   })
 
   it('returns empty string for null document', () => {

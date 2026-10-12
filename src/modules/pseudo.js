@@ -291,7 +291,7 @@ function lazyCounterContext(doc, sessionCache) {
   const ensure = () => {
     if (!built) {
       try { built = buildCounterContext(doc) } catch (e) {
-        debugWarn(sessionCache, 'buildCounterContext failed', e)
+        debugWarn(sessionCache, 'Couldn\'t compute CSS counters; list numbers may be off.', e)
         built = { get: () => 0, getStack: () => [] }
       }
     }
@@ -637,6 +637,8 @@ function canSkipPseudoWalk(source, sessionCache) {
  */
 export async function inlinePseudoElements(source, clone, sessionCache, options, isDescendant = false) {
   if ((source?.nodeType !== 1) || (clone?.nodeType !== 1)) return
+  // fast: false | 'auto' (#503): this walk probes every shadow-root node, 65 ms on that table.
+  if (sessionCache.slicer?.due()) await sessionCache.slicer.pause()
   // #447: a textarea's value is its *child text content*, so wrapping characters in a
   // <span> (as the ::first-letter path does) drops them from the rendered value.
   // Browsers don't render pseudo-elements on textarea anyway.
@@ -846,12 +848,16 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
       // text (e.g. ' Pro', ' (sale!)') can push the host past its wrap point
       // in the rasterized PNG even when the live DOM shows a single line.
       // Pin white-space:nowrap on the host AND on the pseudo span itself when
-      // live is one line — the span carries an explicit `white-space: normal`
-      // from its style snapshot, which would otherwise break inheritance.
-      // Gate: skip single-char (icon) and url()/image-set() pseudos — wrap impossible there.
+      // live is one line.
+      // Gate: skip single-char (icon) and url()/image-set() pseudos: wrap impossible there.
+      // #516: and any pseudo outside the host's line. Only an inline one in flow shares it; a
+      // positioned, floated or block one lays out its own lines, and pinning it put a 50px
+      // tooltip that wraps live onto a single line.
       const isImageContent = cleanContent.startsWith('url(') || /^-?(?:webkit-)?image-set\(/i.test(cleanContent)
+      const onHostLine = style.display === 'inline' && style.cssFloat === 'none' &&
+        style.position !== 'absolute' && style.position !== 'fixed'
       let pinNowrap = false
-      if (hasExplicitContent && !isIconFont2 && cleanContent.length > 1 && !isImageContent) {
+      if (hasExplicitContent && !isIconFont2 && cleanContent.length > 1 && !isImageContent && onHostLine) {
         const hostStyle = getStyle(source)
         const fs = parseFloat(hostStyle.fontSize) || 16
         let lh = parseFloat(hostStyle.lineHeight)
@@ -881,7 +887,16 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
         const mw = snapshot['min-width']
         if (!mw || mw === 'auto' || mw === '0px') snapshot['min-width'] = '0px'
       }
-      const key = getStyleKey(snapshot, 'span', hasExplicitContent, pseudoIsFlexItem)
+      // #516: a pseudo off the host's line whose text wraps live wraps inside its own width.
+      // Softening that width handed the box to shrink-to-fit and unwrapped it (a 50px tooltip
+      // came out on one line), and under a host freezeOneLine pinned it inherited nowrap too.
+      let sizedByContent = hasExplicitContent
+      if (sizedByContent && !onHostLine &&
+        parseFloat(style.height) >= 1.5 * (parseFloat(style.lineHeight) || (parseFloat(style.fontSize) || 16) * 1.2)) {
+        sizedByContent = false
+        pseudoEl.style.whiteSpace = style.whiteSpace
+      }
+      const key = getStyleKey(snapshot, 'span', sizedByContent, pseudoIsFlexItem)
       sessionCache.styleMap.set(pseudoEl, key)
 
       // ---- Content handling (icon-font glyphs / url() / text) ----
@@ -909,7 +924,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
               pseudoEl.appendChild(imgEl)
             }
           } catch (e) {
-            console.error(`[snapdom] Error in pseudo ${pseudo} for`, source, e)
+            console.warn(`[SnapDOM] Couldn't draw the ${pseudo} icon of`, source, e)
           }
         }
       } else if (!isIconFont2 && hasExplicitContent) {
@@ -945,7 +960,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
           const newBgParts = await Promise.all(bgSplits.map((entry) => inlineSingleBackgroundEntry(entry, options)))
           pseudoEl.style.backgroundImage = newBgParts.join(', ')
         } catch (e) {
-          console.warn(`[snapdom] Failed to inline background-image for ${pseudo}`, e)
+          console.warn(`[SnapDOM] Couldn't load the ${pseudo} background image.`, e)
         }
       }
       if (hasBgColor) pseudoEl.style.backgroundColor = bgColor
@@ -967,7 +982,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
             if (style[prop]) pseudoEl.style[prop] = style[prop]
           }
         } catch (e) {
-          console.warn(`[snapdom] Failed to inline mask-image for ${pseudo}`, e)
+          console.warn(`[SnapDOM] Couldn't load the ${pseudo} mask image.`, e)
         }
       }
 
@@ -1001,7 +1016,7 @@ const hasExplicitContent = !isNoExplicitContent && cleanContent !== ''
         clone.appendChild(pseudoEl)
       }
     } catch (e) {
-      console.warn(`[snapdom] Failed to capture ${pseudo} for`, source, e)
+      console.warn(`[SnapDOM] Couldn't copy the ${pseudo} of`, source, e)
     }
   }
 

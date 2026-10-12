@@ -38,11 +38,11 @@
 
 SnapDOM 是面向 Web 界面的浏览器捕获引擎。它将渲染后的 DOM 状态连同样式、字体和图片保存为可复用的结果。
 
-核心引擎可导出图片和 Canvas；插件可导出自包含的 HTML、页面上下文、供视觉智能体使用的元素映射、PDF 和录制内容。捕获结果也可用于 WebGL 纹理、视觉回归测试和界面过渡。整个过程在页面内运行，使用标准 Web API，核心引擎零依赖。
+核心引擎可导出图片和 Canvas；插件可导出自包含的 HTML、页面上下文、供视觉智能体使用的元素映射、PDF、可编辑矢量图和录制内容。捕获结果也可用于 WebGL 纹理、视觉回归测试和界面过渡。整个过程在页面内运行，使用标准 Web API，核心引擎零依赖。
 
-[文档与演示](https://snapdom.dev/) · [技术功能](FEATURES.md) · [官方插件](packages/plugins/README.md) · [English](README.md)
+[文档与演示](https://snapdom.dev/) · [技术功能](FEATURES_CN.md) · [官方插件](packages/plugins/README.md) · [English](README.md)
 
-本仓库介绍的是 **v3.x.x**。下方迁移指南以 **v2.x.x** 为比较基准。[v2 源码](https://github.com/zumerlab/snapdom/tree/v2)和 [v2 文档](https://snapdom.dev/v2/)仍可访问。
+本仓库介绍的是 **v3.x.x**。下方迁移指南以 **v2.x.x** 为比较基准。[v2 源码](https://github.com/zumerlab/snapdom/tree/v2)仍可访问。
 
 ## 可以用它做什么
 
@@ -52,7 +52,8 @@ SnapDOM 是面向 Web 界面的浏览器捕获引擎。它将渲染后的 DOM �
 | 将捕获结果用于纹理、覆盖层或过渡效果 | Canvas 与捕获几何信息 | 核心引擎 |
 | 保存页面片段，供以后展示 | 包含捕获样式和字体的 HTML | `html-export` 插件 |
 | 为智能体或日志提供页面内容 | 文本/JSON 上下文，或附带元素映射的图片 | `context-export` / `agent-map` 插件 |
-| 下载文档或录制变化中的内容 | 基于图片的 PDF、动画 GIF 或浏览器编码的视频 | `pdf-image` / `gif-export` / `video-export` 插件 |
+| 下载文档或录制变化中的内容 | 可搜索、可分页的 PDF、动画 GIF 或浏览器编码的视频 | `pdf` / `gif-export` / `video-export` 插件 |
+| 导出可编辑图形或复制到 Figma | 原生 SVG 形状与文本，或 Figma 剪贴板数据 | `vector` 插件 |
 
 图片、HTML 和上下文导出使用捕获时保存的状态。GIF 和视频插件则在一段时间内持续捕获当前元素。
 
@@ -81,11 +82,13 @@ await result.download({ format: 'jpg', filename: 'card' });
 
 ## 安装
 
-安装核心，并按需安装官方插件；两者的主版本号必须一致：
+安装核心，并按需安装官方插件；请根据插件的 peer 依赖选择兼容的核心版本：
 
 ```sh
 npm i @zumer/snapdom@latest @zumer/snapdom-plugins@latest
 ```
+
+本仓库的插件 4.x 要求核心 3.x。完整 PDF 和 Vector 导出器已在本仓库中以 MIT 许可证开源，但尚未发布到 npm；上面的 `@latest` 命令不会安装这两个新导出器。可运行 `npm run compile` 和 `npm run site`，使用本地构建体验演示。
 
 也可以在浏览器中加载：
 
@@ -171,12 +174,49 @@ const result = await snapdom(card, {
 | `captureSelection` | `false` | 包含用户的文字选区 |
 | `canvas` | 未设置 | 复用现有 Canvas |
 | `invalidate` | `false` | 在编程修改 CSSOM 等变化后刷新捕获 |
+| `fast` | `true` | 设为 `false` 时，长时间捕获期间页面仍可响应 |
 
 [完整选项](https://snapdom.dev/docs/options/)还包括阴影、变换、字体、CORS、回退方案和布局校正。
 
+### 导出超长页面
+
+使用默认的 SVG 引擎时，PNG 文件导出会自动处理超出浏览器 Canvas 限制的捕获。捕获一次，即可下载一个完整分辨率的文件，或获取它的 Blob：
+
+```js
+const capture = await snapdom(article);
+await capture.download({ format: 'png', scale: 2 });
+// 或自行上传、保存文件：
+const blob = await capture.toBlob({ format: 'png', scale: 2, dpr: 1 });
+```
+
+SnapDOM 将保存的捕获结果分块渲染，再编码为一个 PNG 文件。它保留请求的尺寸，包括阴影和留白，无需为整张图片分配一个 Canvas。`download()` 始终使用 DPR 1；`toBlob()` 使用捕获时的 DPR，除非导出时另行指定。未超出限制的导出仍使用浏览器原生编码器。
+
+此功能需要 `CompressionStream`；不支持它的旧浏览器仍会缩小输出并发出警告。超大文件的编码仍需要时间和内存，打开这些文件的应用也有自己的图片限制。
+
+### 分段导出超长页面
+
+`toCanvas()`、`toPng()` 和 JPEG/WebP 导出仍使用单个 Canvas，超出 SnapDOM 的尺寸保护阈值时会整体缩小（Safari 每边 16,384px，Chrome/Firefox 每边 32,767px，另有总像素面积限制）。需要分别获取多个 Canvas 时，可以使用 `crop`：
+
+```js
+const capture = await snapdom(article);
+const { contentX, contentY, w0, h0 } = capture.meta;
+const pieceHeight = 4000; // CSS px
+
+for (let y = 0; y < h0; y += pieceHeight) {
+  const canvas = await capture.toCanvas({
+    scale: 2,
+    dpr: 1,
+    crop: { x: contentX, y: contentY + y, width: w0, height: Math.min(pieceHeight, h0 - y) }
+  });
+  // 保存或上传这一段，然后继续
+}
+```
+
+`crop` 是一个矩形，不是开关。它使用 `capture.meta` 的坐标，每次调用返回一个 canvas。捕获只执行一次，重复的只是栅格化。请让 `pieceHeight × scale × dpr` 保持在上限以内，并显式设置 `dpr`，因为它默认等于设备像素比。[分块原理](https://snapdom.dev/blog/huge-page-mosaic/)。
+
 ### 导出 HTML 或结构化上下文
 
-官方插件单独发布为 `@zumer/snapdom-plugins`，主版本号必须与核心一致；插件声明了对 v3 核心的 peer 依赖。插件源码位于本仓库的 `packages/plugins/`。
+官方插件单独发布为 `@zumer/snapdom-plugins`。本仓库的插件 4.x 要求核心 3.x，并将完整的 PDF 和 Vector 导出器以 MIT 许可证开源；源码位于 `packages/plugins/`。
 
 ```js
 import { htmlExport, contextExport } from '@zumer/snapdom-plugins';
@@ -190,6 +230,25 @@ const context = await result.toContext();
 ```
 
 同一套插件系统也支持覆盖层、内容遮蔽和自定义导出器。同名的局部插件优先于全局插件。参见[官方插件参考](packages/plugins/README.md)和[插件规范](PLUGIN_SPEC.md)。
+
+### 导出 PDF 和可编辑矢量图
+
+这些示例使用本仓库的插件 4.x。PDF 返回 `Blob`，支持可搜索、可选择的文本、链接、分页和可选的表单字段。Vector 返回不含 `<foreignObject>` 的 SVG 字符串，并保留受支持的形状和可编辑文本。
+
+```js
+import { snapdom } from '@zumer/snapdom';
+import { pdf } from '@zumer/snapdom-plugins/pdf';
+import { vector } from '@zumer/snapdom-plugins/vector';
+
+const documentCapture = await snapdom(element, { plugins: [pdf()] });
+const blob = await documentCapture.toPdf({ page: 'a4', margin: 36 });
+
+const artwork = await snapdom(element, { plugins: [vector()] });
+const svg = await artwork.toVector();
+copyButton.addEventListener('click', () => artwork.toFigma());
+```
+
+PDF 的捕获设置传给 `pdf()`，纸张、边距和下载设置传给 `toPdf()`。`toFigma()` 返回 `Promise<void>`，必须在 HTTPS 或 localhost 页面中由用户操作触发，并需要异步剪贴板 API。Vector 需要源元素保持连接；不支持的绘制效果会由引擎诊断。详见 [PDF 参考](packages/plugins/pdf/REFERENCE.md)和 [Vector 契约](packages/plugins/vector/CONTRACT.md)。
 
 ### 捕获 HTML 字符串
 
@@ -244,7 +303,7 @@ SnapDOM 有两个渲染引擎：默认的 **SVG**，以及通过浏览器原生 
 | 位图的 width/height 可能再乘以 `scale` | width/height 优先于 scale | 直接传最终尺寸，如用 `width: 400` 替代 `width: 200, scale: 2` |
 | 使用 `burst` 手动开启重复捕获记忆化 | 符合条件的捕获自动记忆化；`burst` 不再记录在文档中，也不再受支持 | 删除 `burst`（引擎仍会读取它供内部使用，请勿依赖），并在 `sheet.insertRule()` 等无法自动观察的变化后，用 `invalidate: true` 重新捕获一次 |
 | `preCache` 用于准备资源 | 已移除；`preCapture()` 学习捕获意图 | 删除 `preCache`；`preCapture()` 不是直接改名后的替代方法 |
-| `fast` 选择优化路径 | 已移除 | 删除该选项 |
+| `fast: false` 通过空闲回调进行克隆 | `fast: false` 约每帧让出一次主线程，总耗时基本不变 | 保留 `fast: false` |
 | `filter` / `filterMode` 可与 `exclude` / `excludeMode` 同时使用 | 两种控制及其独立模式仍受支持；`exclude` 还支持判断函数 | 保留原有规则和模式；需要时再使用新增判断函数形式 |
 | `cache: 'auto'` 或 `'full'` | 两者均映射为 `'soft'` | 通常可以省略；`'disabled'` / `false` 用于调试 |
 | `compress` 控制内嵌图片降采样 | 图片优化自动进行；`compress` 不再记录在文档中，也不再受支持 | 删除 `compress`；引擎仍会读取它供内部使用，请勿依赖 |
@@ -296,11 +355,11 @@ const after = await snapdom(card, options); // 使用当前策略
 - SnapDOM 需要浏览器 DOM。服务端 Node.js 进程需要浏览器环境才能运行它。
 - 跨源图片、字体和样式表必须可读取，或通过适当的代理访问。仅设置 `crossorigin` 不会获得权限，服务器也必须允许访问。跨源 iframe 使用占位框。
 - SVG 输出通过 `<foreignObject>` 包含 HTML，适合在浏览器中展示；其他 SVG 查看器和文档工具的支持程度各不相同。
-- 输出受浏览器渲染和 Canvas 尺寸限制影响。Safari 无法编码 WebP 时可能回退为 PNG。
+- 输出受浏览器渲染和图片尺寸限制影响；超长 PNG 文件的导出方式见[导出超长页面](#导出超长页面)。Safari 无法编码 WebP 时可能回退为 PNG。
 - Canvas、视频和其他持续变化的内容会重新捕获。JavaScript 对 CSSOM 的修改无法被自动观察，修改后请使用 `invalidate: true`。
 - 核心会捕获可见输入值。语义插件会在文本/映射输出中遮蔽敏感字段值，但如需同时隐藏附带图片中的这些像素，仍需使用 `redactInputs` 或 `exclude`。
 
-详细行为见[技术功能与浏览器处理](FEATURES.md)。
+详细行为见[技术功能与浏览器处理](FEATURES_CN.md)。
 
 ## 性能基准测试
 
@@ -310,11 +369,12 @@ const after = await snapdom(card, options); // 使用当前策略
 
 ## 文档
 
-- [v2 文档归档](https://snapdom.dev/v2/)与 [v2 源码](https://github.com/zumerlab/snapdom/tree/v2)
+- [交互式 Playground](https://snapdom.dev/playground/)、[PDF 演示](https://snapdom.dev/pro/pdf/)与 [Vector 演示](https://snapdom.dev/pro/vector/)
+- [v2 源码](https://github.com/zumerlab/snapdom/tree/v2)
 - [API](https://snapdom.dev/docs/api/)与[选项](https://snapdom.dev/docs/options/)
 - [框架指南](https://snapdom.dev/guides/)与[使用示例](https://snapdom.dev/how-to/)
 - [官方插件](packages/plugins/README.md)、[插件规范](PLUGIN_SPEC.md)与[插件贡献指南](CONTRIBUTING_PLUGINS.md)
-- [架构](ARCHITECTURE.md)与[技术功能](FEATURES.md)
+- [架构](ARCHITECTURE.md)与[技术功能](FEATURES_CN.md)
 
 ## 开发
 
@@ -350,12 +410,14 @@ npm run test:pack
 <a href="https://github.com/K1ender" title="K1ender"><img src="https://avatars.githubusercontent.com/u/146767945?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="K1ender"/></a>
 <a href="https://github.com/mosuzi" title="mosuzi"><img src="https://avatars.githubusercontent.com/u/43341701?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="mosuzi"/></a>
 <a href="https://github.com/ninecc" title="ninecc"><img src="https://avatars.githubusercontent.com/u/18310590?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="ninecc"/></a>
+<a href="https://github.com/00200200" title="00200200"><img src="https://avatars.githubusercontent.com/u/83299832?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="00200200"/></a>
 <a href="https://github.com/17biubiu" title="17biubiu"><img src="https://avatars.githubusercontent.com/u/13295895?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="17biubiu"/></a>
 <a href="https://github.com/av01d" title="av01d"><img src="https://avatars.githubusercontent.com/u/6247646?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="av01d"/></a>
 <a href="https://github.com/CHOYSEN" title="CHOYSEN"><img src="https://avatars.githubusercontent.com/u/25995358?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="CHOYSEN"/></a>
 <a href="https://github.com/pedrocateexte" title="pedrocateexte"><img src="https://avatars.githubusercontent.com/u/207524750?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="pedrocateexte"/></a>
 <a href="https://github.com/domialex" title="domialex"><img src="https://avatars.githubusercontent.com/u/4694217?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="domialex"/></a>
 <a href="https://github.com/stypr" title="stypr"><img src="https://avatars.githubusercontent.com/u/6625978?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="stypr"/></a>
+<a href="https://github.com/jamalkamaladdin" title="jamalkamaladdin"><img src="https://avatars.githubusercontent.com/u/256541632?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="jamalkamaladdin"/></a>
 <a href="https://github.com/mon-jai" title="mon-jai"><img src="https://avatars.githubusercontent.com/u/91261297?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="mon-jai"/></a>
 <a href="https://github.com/puneetdixit200" title="puneetdixit200"><img src="https://avatars.githubusercontent.com/u/236133619?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="puneetdixit200"/></a>
 <a href="https://github.com/RexSkz" title="RexSkz"><img src="https://avatars.githubusercontent.com/u/27483702?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="RexSkz"/></a>
@@ -363,8 +425,6 @@ npm run test:pack
 <a href="https://github.com/sharuzzaman" title="sharuzzaman"><img src="https://avatars.githubusercontent.com/u/7421941?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="sharuzzaman"/></a>
 <a href="https://github.com/simon1uo" title="simon1uo"><img src="https://avatars.githubusercontent.com/u/60037549?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="simon1uo"/></a>
 <a href="https://github.com/titoBouzout" title="titoBouzout"><img src="https://avatars.githubusercontent.com/u/64156?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="titoBouzout"/></a>
-<a href="https://github.com/ZiuChen" title="ZiuChen"><img src="https://avatars.githubusercontent.com/u/64892985?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="ZiuChen"/></a>
-<a href="https://github.com/adajoy" title="adajoy"><img src="https://avatars.githubusercontent.com/u/26210079?v=4&s=100" style="border-radius:10px; width:60px; height:60px; object-fit:cover; margin:5px;" alt="adajoy"/></a>
 </p>
 <!-- CONTRIBUTORS:END -->
 

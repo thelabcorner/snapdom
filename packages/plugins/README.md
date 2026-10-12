@@ -2,20 +2,34 @@
 
 Official plugins for [SnapDOM](https://github.com/zumerlab/snapdom), a capture engine for
 web apps. Core exports images and canvases; this package adds HTML, structured context,
-element maps, PDF, ASCII, visual transforms and live GIF/video recording.
+element maps, PDF, editable vectors, ASCII, visual transforms and live GIF/video recording.
 
 Image, HTML and structured exports use captured state; GIF and video start a sequence of
 live captures when their export method is called.
 
 ## Install
 
-Install the plugins next to a matching core:
+Install the plugins next to a core supported by their peer dependency:
 
 ```bash
 npm install @zumer/snapdom@latest @zumer/snapdom-plugins@latest
 ```
 
-Plugins 3.x require a 3.x core. See the [migration guide](https://github.com/zumerlab/snapdom#migrating-from-v2) when upgrading from v2.
+Plugins 4.x in this checkout require SnapDOM 3.3.0 or newer within 3.x. The 4.x release replaces pdf-image with the full PDF exporter and adds Vector. Both are MIT-licensed and available on npm in `@zumer/snapdom-plugins` 4.x. The `@latest` command above installs the published release. See the [migration guide](https://github.com/zumerlab/snapdom#migrating-from-v2) when upgrading from v2.
+
+## Releasing from the repository root
+
+```sh
+npm run bump:plugins:dry
+npm run bump:plugins
+npm run release:plugins
+npm run publish:plugins -- --dry-run
+npm run publish:plugins
+```
+
+`bump:plugins` runs `@zumerbox/bump` followed by `@zumerbox/changelog` inside the plugin workspace, matching the core's tools. The bump command requires a clean Git working tree and prompts for the next version. It updates the plugin version and root lockfile; the changelog command writes `packages/plugins/CHANGELOG.md`. `bump:plugins:dry` previews the bump without updating the version or changelog. Skip the bump if the version has already been prepared.
+
+`release:plugins` runs the full cross-browser suite with required visual baselines, the PDF and Vector checks, and consumer packaging checks, then creates the plugin tarball. It does not publish. `publish:plugins` publishes only `@zumer/snapdom-plugins` under the `latest` tag.
 
 ## Usage
 
@@ -169,7 +183,7 @@ Use `blocks` to hide the subtree that paints visible content. A `value` attribut
 an input or textarea clears its displayed value and omits its structured `state.value`.
 Existing default field masks still apply when you add block or attribute rules.
 
-HTML exports use the sanitized clone. `agent-map` and `context-export` apply the same
+HTML exports use the prepared clone with the selected redaction rules. `agent-map` and `context-export` apply the same
 block, attribute and field rules to their source-derived data, regardless of official
 plugin order. The rules do not search arbitrary text or images for sensitive content.
 
@@ -206,7 +220,7 @@ snapdom(el, { plugins: [colorTint({ color: 'royalblue', opacity: 0.4 })] });
 
 ### `ascii-export`
 
-Adds a `toAscii()` export method that converts captures to ASCII art.
+Adds a `toAscii()` export method that converts captures to ASCII art. Plain text remains the default. Use `toAscii({ format: 'html', contrast: 0.8 })` for a colored, compact HTML preview; contrast defaults to zero and does not change existing text exports.
 
 ```js
 import { asciiExport } from '@zumer/snapdom-plugins/ascii-export';
@@ -226,23 +240,33 @@ console.log(art);
 
 ---
 
-### `pdf-image`
+### `pdf`
 
-Adds `toPdfImage()`, which downloads a single-page A4 PDF containing a JPEG of the capture.
-Text is part of the image. The method returns a temporary object URL, revoked after five seconds.
+Adds `toPdf()`, returning a PDF Blob with the capture's appearance, selectable text,
+links and pagination. This is the MIT-licensed full exporter formerly distributed as PDF Pro.
+It replaces `pdf-image`; there is no second image-only PDF implementation.
 
 ```js
-import { pdfImage } from '@zumer/snapdom-plugins/pdf-image';
+import { pdf } from '@zumer/snapdom-plugins/pdf';
 
-const result = await snapdom(el, { plugins: [pdfImage({ orientation: 'landscape' })] });
-await result.toPdfImage(); // triggers download
+const result = await snapdom(el, { plugins: [pdf()] });
+const blob = await result.toPdf({ page: 'a4', margin: 36 });
+await result.toPdf({ page: 'letter', download: 'report.pdf' });
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `orientation` | `string` | `'portrait'` | `'portrait'` \| `'landscape'` |
-| `quality` | `number` | `0.92` | JPEG quality (0–1) |
-| `filename` | `string` | `'capture.pdf'` | Download filename |
+Configure capture-time measurement on `pdf({ forms, outline, breakAvoid, shadow,
+formValues })`. Configure paper size, orientation, margins, tagging, metadata,
+headers, footers, compression or encryption on `toPdf()`. Downloads are opt-in;
+ordinary exports return a Blob. See [the PDF overview](pdf/README.md) and [full reference](pdf/REFERENCE.md).
+
+**Migration:** import `pdf` from `/pdf`, replace `pdfImage()` with `pdf()`, and
+replace `toPdfImage()` with `toPdf({ download: 'capture.pdf' })`. Put orientation
+on the export. The old temporary object-URL return becomes a persistent Blob.
+The default page sizing and pagination differ: choose `page: 'a4'` explicitly.
+
+Tagged output alone is not a PDF/UA conformance guarantee. The exporter reports
+eligibility and blockers. Redact source text structurally; covering pixels does
+not remove text from a searchable document.
 
 ---
 
@@ -385,11 +409,31 @@ await result.toHtml({ download: 'snapshot.html' });
 |--------|------|---------|-------------|
 | `fullDocument` | `boolean` | `true` | Wrap output in `<!DOCTYPE html>…`; if `false`, return just `<style>` + the fragment |
 | `filename` | `string` | `'capture.html'` | Download filename when `opts.download` is `true` |
+| `title` | `string` | `'Captured interface'` | Escaped document title |
+| `lang` | `string` | `'en'` | Escaped document language |
 
 Per-call `opts` accepts `fullDocument`, `filename` and `download`. Set `download: true` to
 download, or pass a filename string. The method returns the HTML string either way.
 
 The document retains source markup, including event-handler attributes; it is not sanitized.
+
+---
+
+### `vector`
+
+Adds `toVector()` for standalone SVG with editable text and supported shapes, and
+`toFigma()` for Figma clipboard export. Its source and internal SVD format live in
+`vector/` under the MIT license. Both exporters are available on npm in `@zumer/snapdom-plugins` 4.x.
+
+```js
+import { vector } from '@zumer/snapdom-plugins/vector';
+const result = await snapdom(el, { plugins: [vector()] });
+const svg = await result.toVector({ exclude: '.private' });
+await result.toFigma(); // HTTPS or localhost, from a user action
+```
+
+Register per capture. Unsupported paint is diagnosed; the connected source and
+its styles must remain available during export. See [Vector](./vector/README.md).
 
 ---
 
@@ -500,3 +544,7 @@ See [PLUGIN_SPEC.md](../../PLUGIN_SPEC.md) for the full hook specification and [
 ## License
 
 MIT
+
+## Live demos
+
+Run `npm run compile` and `npm run site` from the monorepo root, then open `/playground/`, `/pro/pdf/` or `/pro/vector/`. The demos generate actual files from editable DOM samples; the `/pro/` paths are retained for existing links and do not denote paid plugins.

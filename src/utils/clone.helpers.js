@@ -15,8 +15,10 @@ import { debugWarn, getStyle } from './index.js'
 import { cache, EvictingMap } from '../core/cache.js'
 import { snapFetch } from '../modules/snapFetch.js'
 import { inlineAllStyles, invalidateSnapshotsUnder } from '../modules/styles.js'
+import { splitTopLevel } from '../modules/styleScan.js'
 import { findRealUrlForPicture, pickSrcsetCandidate, findLazySrcAttr, isPlaceholderSrc } from '../modules/pictureResolver.js'
 import { markInternalNode } from './ownership.js'
+import { isFirefox } from './browser.js'
 
 /** Add the current scope's slotted exclusion at the rightmost compound. */
 function addNotSlottedRightmost(sel, scopeId) {
@@ -45,8 +47,10 @@ const SPAN_PSEUDO_RE = /^::?(?:before|after|first-letter)$/
  * replaced by a never-matching selector.
  */
 function wrapWithScope(selectorList, scopeSelector, excludeSlotted = true, scopeId) {
-  return selectorList
-    .split(',')
+  // #503: commas inside :is/:not (or attribute strings) belong to one selector.
+  // Splitting them can drop a closing ')' with an inlined pseudo-element and make
+  // the browser consume every following rule, including all generated style classes.
+  return splitTopLevel(selectorList, ',')
     .map(s => s.trim())
     .filter(Boolean)
     .map(s => {
@@ -524,7 +528,7 @@ export function pinIframeViewport(doc, w, h) {
  */
 export async function rasterizeIframe(iframe, sessionCache, options) {
   const doc = await getAccessibleIframeDocument(iframe, 3)
-  if (!doc) throw new Error('iframe document not accessible/ready')
+  if (!doc) throw new Error('The iframe document isn\'t ready.')
 
   const { contentWidth, contentHeight, rect } = measureContentBox(iframe)
 
@@ -532,7 +536,7 @@ export async function rasterizeIframe(iframe, sessionCache, options) {
   // window.snapdom dependency anymore. Direct captureDOM/deepClone callers must pass it.
   const snap = options?.snap
   if (!snap || typeof snap.toPng !== 'function') {
-    throw new Error('[snapdom] iframe capture requires the snapdom entrypoints on options.snap — capture through snapdom(el) (set automatically) or pass options.snap.')
+    throw new Error('Iframes are only captured through snapdom(el).')
   }
 
   // Avoid double scaling; parent capture decides final scale. Drop clip: a visible iframe
@@ -639,7 +643,7 @@ export function createRangeReplacement(node) {
   // The thumb is thumb-sized however small the author made the control's box
   // (a styled slider is often a 4px-tall input), overflowing it the way the
   // native one does.
-  svg.style.overflow = 'visible'
+  svg.style.cssText = `width:${w}px;height:${h}px;overflow:visible` // #516, as in the checkbox below
   box.appendChild(svg)
 
   function applyVisual() {
@@ -711,6 +715,12 @@ export function createCheckboxRadioReplacement(node) {
 
   const size = Math.max(Math.min(w, h), 12)
   const s = size
+  // #516: a flex column or a grid stretches the control across its track, and the engine
+  // paints the glyph centered in that box; shrunk to the glyph, the box sat at the start
+  // edge (93px left of the live control in a 200px column). The svg fills the box, and the
+  // viewBox's default xMidYMid meet centers the glyph in it at scale 1.
+  const bw = Math.max(w, s)
+  const bh = Math.max(h, s)
 
   // #311: preserve original vertical-align so the replacement doesn't shift inline layout
   let vAlign = 'middle'
@@ -718,11 +728,14 @@ export function createCheckboxRadioReplacement(node) {
 
   const box = document.createElement('div')
   box.setAttribute('data-snapdom-input-replacement', node.type || 'checkbox')
-  box.style.cssText = `display:inline-block;width:${s}px;height:${s}px;vertical-align:${vAlign};flex-shrink:0;line-height:0;`
+  box.style.cssText = `display:inline-block;width:${bw}px;height:${bh}px;vertical-align:${vAlign};flex-shrink:0;line-height:0;`
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('width', String(s))
-  svg.setAttribute('height', String(s))
+  svg.setAttribute('width', String(bw))
+  svg.setAttribute('height', String(bh))
   svg.setAttribute('viewBox', `0 0 ${s} ${s}`)
+  // #516: sized by its attributes alone, Firefox painted it at twice the box under the
+  // engine's layoutZoom (DPR 2: a 14px checkbox drew 28px over its label); CSS lengths zoom once.
+  svg.style.cssText = `width:${bw}px;height:${bh}px`
   box.appendChild(svg)
 
   function applyVisual() {
@@ -783,10 +796,10 @@ export function createCheckboxRadioReplacement(node) {
       }
     }
     // Force dimensions (inlineAllStyles may copy width:0 from native input)
-    box.style.setProperty('width', `${s}px`, 'important')
-    box.style.setProperty('height', `${s}px`, 'important')
-    box.style.setProperty('min-width', `${s}px`, 'important')
-    box.style.setProperty('min-height', `${s}px`, 'important')
+    box.style.setProperty('width', `${bw}px`, 'important')
+    box.style.setProperty('height', `${bh}px`, 'important')
+    box.style.setProperty('min-width', `${bw}px`, 'important')
+    box.style.setProperty('min-height', `${bh}px`, 'important')
   }
   applyVisual()
   return { el: box, applyVisual }
@@ -816,7 +829,7 @@ export async function blobUrlToDataUrl(blobUrl) {
   const p = (async () => {
     const r = await snapFetch(blobUrl, { as: 'dataURL', silent: true })
     if (!r.ok || typeof r.data !== 'string') {
-      throw new Error(`[snapDOM] Failed to read blob URL: ${blobUrl}`)
+      throw new Error(`Couldn't read ${blobUrl}`)
     }
     cache.resource?.set(blobUrl, r.data)   // shared cache
     return r.data
@@ -940,7 +953,7 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
         })
       }
     } catch (e) {
-      debugWarn(ctx, 'resolveBlobUrls for img failed', e)
+      debugWarn(ctx, 'Couldn\'t inline a blob: image.', e)
     }
   }
 
@@ -953,7 +966,7 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
         queueAttribute(node, 'href', href, () => node.removeAttributeNS?.(XLINK_NS, 'href'))
       }
     } catch (e) {
-      debugWarn(ctx, 'resolveBlobUrls for SVG image href failed', e)
+      debugWarn(ctx, 'Couldn\'t inline a blob: SVG image.', e)
     }
   }
 
@@ -963,7 +976,7 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
       const styleText = el.getAttribute('style')
       queueCSS(styleText, replaced => el.setAttribute('style', replaced))
     } catch (e) {
-      debugWarn(ctx, 'replaceBlobUrls in inline style failed', e)
+      debugWarn(ctx, 'Couldn\'t inline blob: URLs in a style attribute.', e)
     }
   }
 
@@ -973,7 +986,7 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
       const css = s.textContent || ''
       queueCSS(css, replaced => { s.textContent = replaced })
     } catch (e) {
-      debugWarn(ctx, 'replaceBlobUrls in style tag failed', e)
+      debugWarn(ctx, 'Couldn\'t inline blob: URLs in a <style>.', e)
     }
   }
 
@@ -987,7 +1000,7 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
           queueAttribute(n, attr, u)
         }
       } catch (e) {
-        debugWarn(ctx, `resolveBlobUrls for ${attr} failed`, e)
+        debugWarn(ctx, `Couldn't inline the blob: URL in ${attr}.`, e)
       }
     }
   }
@@ -998,11 +1011,151 @@ export async function resolveBlobUrlsInTree(root, sessionCache = null) {
     while (next < pending.length) {
       const url = pending[next++]
       try { resolved.set(url, await blobUrlToDataUrl(url)) } catch (e) {
-        debugWarn(ctx, 'blobUrlToDataUrl failed; keeping original URL', e)
+        debugWarn(ctx, 'Couldn\'t read a blob: URL; kept it as is.', e)
       }
     }
   }))
   for (const write of writes) {
-    try { write() } catch (e) { debugWarn(ctx, 'resolved blob URL write failed', e) }
+    try { write() } catch (e) { debugWarn(ctx, 'Couldn\'t write an inlined blob: URL.', e) }
   }
+}
+
+// ========== Font inflation (Firefox for Android) ==========
+
+/** The computed properties that decide a word's advance, copied onto the probe. */
+const INFLATION_FONT_PROPS = ['font-family', 'font-size', 'font-style', 'font-weight', 'font-stretch', 'font-variant', 'font-feature-settings', 'font-variation-settings', 'font-kerning', 'letter-spacing', 'text-transform']
+/** Inputs that paint their value as text. A password paints bullets instead. */
+const VALUE_FIELDS = new Set(['text', 'search', 'email', 'url', 'tel', 'number', 'submit', 'reset', 'button'])
+/** A field word to measure between character centers: two or more characters, none of them
+ *  half a surrogate pair. */
+const FIELD_WORD = /[^\s\uD800-\uDFFF]{2,}/
+
+/**
+ * Write the font size and line height Firefox's font inflation paints onto the clone of every
+ * element with text of its own, and of every text field with a value.
+ *
+ * #516: Firefox for Android inflates text on a page laid out wider than the screen (no meta
+ * viewport), and getComputedStyle still reports the authored font-size and line-height. The
+ * clone froze the boxes at their inflated size and the text at the authored one: on the
+ * issue's form demo the labels came out at 16px beside checkboxes sized for 30px text, and a
+ * paragraph with `line-height: 1.5` would stack 29px glyphs 24px apart. The foreignObject
+ * never inflates, so the painted size is measured: a word's width live (for a field, the
+ * distance between the centers of its first and last characters), against the same word in a
+ * probe under a zero-width box, which turns inflation off for everything inside it. Inert unless the layout viewport is
+ * wider than the screen, the only state where Firefox inflates. A field without a value, a
+ * <select> and a field off screen keep the authored size: nothing reads their text without
+ * changing it. Pinned by __tests__/snapdom.issue516.test.js.
+ * @param {Map<Node, Node>} nodeMap - clone -> source, from deepClone
+ * @param {Document} [doc]
+ */
+export function freezeInflatedFontSizes(nodeMap, doc = document) {
+  const view = doc.defaultView || window
+  if (!isFirefox() || !doc.body ||
+    !(view.visualViewport?.scale < 1 || view.screen.width < doc.documentElement.clientWidth)) return
+  // Owned, so mounting it does not bump the style epoch the snapshot memo is keyed on.
+  const probe = markInternalNode(doc.createElement('div'))
+  probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;visibility:hidden'
+  const jobs = []
+  for (const [clone, src] of nodeMap) {
+    if (clone.nodeType !== 1 || src.nodeType !== 1) continue
+    const cs = view.getComputedStyle(src)
+    const found = src.localName === 'textarea' || (src.localName === 'input' && VALUE_FIELDS.has(src.type))
+      ? fieldWord(src, cs, doc)
+      : textWord(src)
+    if (!found) continue
+    // An ancestor transform scales the live distance and not the probe's.
+    const box = src.getBoundingClientRect()
+    const scale = src.offsetWidth && box.width ? box.width / src.offsetWidth : 1
+    const span = doc.createElement('span')
+    span.style.whiteSpace = 'pre'
+    for (const p of INFLATION_FONT_PROPS) span.style.setProperty(p, cs.getPropertyValue(p))
+    span.textContent = found.word
+    probe.appendChild(span)
+    jobs.push({ clone, cs, span, live: found.distance / scale, centers: found.centers })
+  }
+  if (!jobs.length) return
+  doc.body.appendChild(probe)
+  try {
+    for (const { clone, cs, span, live, centers } of jobs) {
+      const text = span.firstChild
+      // letter-spacing is not inflated: it follows every character, the last one included.
+      const spacing = (parseFloat(cs.letterSpacing) || 0) * (centers ? text.length - 1 : text.length)
+      const ref = centers
+        ? Math.abs(centerOf(text, text.length - 1) - centerOf(text, 0))
+        : span.getBoundingClientRect().width
+      const ratio = (live - spacing) / (ref - spacing)
+      if (!(ratio > 1.005 && Number.isFinite(ratio))) continue
+      clone.style.setProperty('font-size', `${parseFloat(cs.fontSize) * ratio}px`)
+      if (cs.lineHeight !== 'normal') clone.style.setProperty('line-height', `${parseFloat(cs.lineHeight) * ratio}px`)
+    }
+  } finally {
+    probe.remove()
+  }
+}
+
+/** Horizontal center of character `i` of a text node, in page pixels. */
+function centerOf(text, i) {
+  const range = text.ownerDocument.createRange()
+  range.setStart(text, i)
+  range.setEnd(text, i + 1)
+  const r = range.getBoundingClientRect()
+  return r.left + r.width / 2
+}
+
+/**
+ * The first word of `el`'s own text and its live width.
+ * @param {Element} el
+ * @returns {{word: string, distance: number, centers: boolean}|null}
+ */
+function textWord(el) {
+  for (let n = el.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType !== 3) continue
+    const m = /\S+/.exec(n.data)
+    if (!m) continue
+    const range = el.ownerDocument.createRange()
+    range.setStart(n, m.index)
+    range.setEnd(n, m.index + m[0].length)
+    const rects = range.getClientRects()
+    // A word broken across lines (overflow-wrap) has no single width to compare.
+    return rects.length === 1 ? { word: m[0], distance: rects[0].width, centers: false } : null
+  }
+  return null
+}
+
+/**
+ * The same for the first line of a field's value, read through caret hit-testing: Firefox
+ * paints the value in content no Range reaches. The caret passes offset i + 1 at the center of
+ * character i. Null when the field is scrolled or not hit-testable where it sits.
+ * @param {HTMLInputElement|HTMLTextAreaElement} el
+ * @param {CSSStyleDeclaration} cs
+ * @param {Document} doc
+ * @returns {{word: string, distance: number, centers: boolean}|null}
+ */
+function fieldWord(el, cs, doc) {
+  const m = FIELD_WORD.exec(el.value.split('\n')[0])
+  if (!m || el.scrollLeft || el.scrollTop || !doc.caretPositionFromPoint) return null
+  const r = el.getBoundingClientRect()
+  const y = el.localName === 'textarea'
+    ? r.top + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.paddingTop) || 0) + 3
+    : r.top + r.height / 2
+  const at = (x) => {
+    const p = doc.caretPositionFromPoint(x, y)
+    return p && p.offsetNode === el ? p.offset : -1
+  }
+  // Coarse steps find a bracket (the offset only grows along the line), halving narrows it.
+  const step = r.width / 16
+  const edge = (k) => {
+    let hi = r.left
+    while (hi <= r.right && at(hi) < k) hi += step
+    if (hi > r.right) return NaN
+    let lo = hi - step
+    for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2
+      if (at(mid) >= k) hi = mid
+      else lo = mid
+    }
+    return hi
+  }
+  const distance = Math.abs(edge(m.index + m[0].length) - edge(m.index + 1))
+  return Number.isFinite(distance) ? { word: m[0], distance, centers: true } : null
 }

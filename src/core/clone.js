@@ -113,6 +113,9 @@ function makeHideSpacer(node) {
   return spacer
 }
 
+/** display:none elements deepClone still clones whole (#507): see the skip in deepClone. */
+const HIDDEN_CLONED_TAGS = new Set(['style', 'option', 'optgroup'])
+
 /** Extra px around the clip rect kept alive so partially-bleeding effects (shadows, blur,
  *  overhanging glyphs) of near-edge elements still paint into the window. */
 const CLIP_CULL_MARGIN = 200
@@ -257,7 +260,9 @@ function makeClipHusk(node, sessionCache, options) {
  * @returns {Promise<Node|null>}
  */
 export async function deepClone(node, sessionCache, options) {
-  if (!node) throw new Error('Invalid node')
+  if (!node) throw new Error('[SnapDOM] The element cannot be null or undefined.')
+  // fast: false | 'auto' (#503). At entry, before any work, so paused nodes resume in order.
+  if (sessionCache.slicer?.due()) await sessionCache.slicer.pause()
   const clonedAssignedNodes = new Set()
   let pendingSelectedOptions = null
   let pendingTextAreaValue = null
@@ -286,7 +291,7 @@ export async function deepClone(node, sessionCache, options) {
     // foreignObject found in the captured DOM would become doubly nested → silently
     // skipped by browsers. Detect via closest() on the source DOM and skip.
     if (tag === 'foreignobject' && node.parentElement?.closest?.('foreignObject')) {
-      debugWarn(sessionCache, 'Nested <foreignObject> skipped (SVG spec limitation — not rendered by browsers)')
+      debugWarn(sessionCache, 'Skipped a nested <foreignObject>; it can\'t be captured.')
       return null
     }
     // A <picture>'s <source> out-ranks its <img>'s own src, so it survives into the export
@@ -327,8 +332,8 @@ export async function deepClone(node, sessionCache, options) {
             return null
           }
         }
-      } catch (err) {
-        console.warn(`Invalid selector in exclude option: ${selector}`, err)
+      } catch {
+        console.warn(`[SnapDOM] Invalid exclude selector "${selector}"; ignored.`)
       }
     }
   }
@@ -342,7 +347,7 @@ export async function deepClone(node, sessionCache, options) {
           return makeHideSpacer(node)
         }
       } catch (err) {
-        console.warn('Error in exclude predicate:', err)
+        console.warn('[SnapDOM] Your exclude function threw; the element was kept.', err)
       }
     }
   }
@@ -355,8 +360,31 @@ export async function deepClone(node, sessionCache, options) {
         if (options.filterMode === 'remove') return null
       }
     } catch (err) {
-      console.warn('Error in filter function:', err)
+      console.warn('[SnapDOM] Your filter function threw; the element was kept.', err)
     }
+  }
+  // #507: nothing under a display:none element can paint, yet every descendant was cloned,
+  // styled and had its images fetched. Clip mode never pruned it either (0x0 box). A menu of
+  // 800 hidden items under 40 visible cards: 40.4 -> 5.8 ms (clip 'viewport' 47.4 -> 8.0),
+  // SVG 233 -> 20 KB, 0 px diff; the reporter measured YouTube 10.6 -> 2.1 s in a background
+  // tab. The emptied shell keeps the tag in place for :nth-child and sibling rules of the
+  // <style> clones kept inside it, which travel into the SVG (prepare.js). Exempt: <style> itself, display:none in every UA sheet;
+  // <option>, whose hidden selected placeholder is the label its <select> paints; and SVG,
+  // where a shell keeping an id would stop svgDefs from copying the def a <use> points at.
+  // Like the clip husk, not in nodeMap. Pinned by `__tests__/core.clone.hiddenSubtree.test.js`.
+  if (node !== options.element && !HIDDEN_CLONED_TAGS.has(node.localName) && !isSVGEl(node) &&
+      getStyle(node).display === 'none') {
+    const shell = node.cloneNode(false)
+    if (node.tagName === 'IMG') {
+      shell.removeAttribute('src')
+      shell.removeAttribute('srcset')
+    }
+    shell.style.setProperty('display', 'none', 'important')
+    for (const style of node.querySelectorAll('style')) {
+      const kept = await deepClone(style, sessionCache, options)
+      if (kept) shell.appendChild(kept)
+    }
+    return shell
   }
   // Clip mode: prune subtrees painting entirely outside the window (before any plugin
   // hooks or tag handlers — no per-node work is spent on culled content).
@@ -370,7 +398,7 @@ export async function deepClone(node, sessionCache, options) {
     for (const hook of options.__resolveNodeHooks) {
       let out
       try { out = await hook(node, options) } catch (e) {
-        debugWarn(sessionCache, 'resolveNode plugin hook failed', e)
+        debugWarn(sessionCache, 'A plugin\'s resolveNode hook threw; ignored it.', e)
       }
       if (out === null) return null
       if (out?.nodeType) {
@@ -452,7 +480,7 @@ export async function deepClone(node, sessionCache, options) {
         if (w) clone.dataset.snapdomWidth = String(w)
         if (h) clone.dataset.snapdomHeight = String(h)
       } catch (e) {
-        debugWarn(sessionCache, 'getUnscaledDimensions for IMG failed', e)
+        debugWarn(sessionCache, 'Couldn\'t measure an image; kept its own size.', e)
       }
 
       // When the author used % or auto, or the effective width/height resolve to 0,
@@ -491,12 +519,12 @@ export async function deepClone(node, sessionCache, options) {
           if (h > 0) clone.style.minHeight = `${h}px`
         }
       } catch (e) {
-        debugWarn(sessionCache, 'IMG dimension freeze failed', e)
+        debugWarn(sessionCache, 'Couldn\'t fix the size of an image.', e)
       }
 
     }
   } catch (err) {
-    console.error('[Snapdom] Failed to clone node:', node, err)
+    console.error('[SnapDOM] Couldn\'t copy this element:', node, err)
     throw err
   }
   let applyInputVisual = null
@@ -579,17 +607,20 @@ export async function deepClone(node, sessionCache, options) {
     }
   }
 
-  // #315: Preserve ::placeholder color for inputs/textareas showing placeholder text
+  // #315: Preserve ::placeholder color for inputs/textareas showing placeholder text.
+  // #512: a <style> child of the void <input> left Safari's serialized SVG unclosed and
+  // was dropped by HTML serialization. Color/opacity ride as custom properties on the
+  // clone; PLACEHOLDER_RULE (prepare.js) in the prefix CSS paints them. Putting
+  // the rule on __pseudoCSS would bail the diff path on every recapture (diff.js:301).
   if ((isTag(node, 'input') || isTag(node, 'textarea')) && !node.value && node.placeholder) {
     try {
       const phStyle = window.getComputedStyle(node, '::placeholder')
       const phColor = phStyle && phStyle.color
       if (phColor && phColor !== 'rgba(0, 0, 0, 0)') {
-        const uid = 'snapdom-ph-' + (Math.random() * 1e6 | 0)
-        clone.classList.add(uid)
-        const styleEl = document.createElement('style')
-        styleEl.textContent = `.${uid}::placeholder{color:${phColor}!important;opacity:${phStyle.opacity || '1'}!important;-webkit-text-fill-color:${phColor}!important;}`
-        clone.prepend(styleEl)
+        sessionCache.__usesPlaceholder = true
+        clone.setAttribute('data-sd-ph', '')
+        clone.style.setProperty('--sd-ph', phColor)
+        clone.style.setProperty('--sd-ph-o', phStyle.opacity || '1')
       }
     } catch { /* non-blocking */ }
   }
@@ -632,13 +663,13 @@ export async function deepClone(node, sessionCache, options) {
     try {
       inlineTextFieldSelection(node, clone)
     } catch (e) {
-      debugWarn(sessionCache, 'inlineTextFieldSelection failed', e)
+      debugWarn(sessionCache, 'Couldn\'t copy the selection of a text field.', e)
     }
   }
   // #365: SVG painting elements — CSS rules override presentation attributes but aren't captured
   // via the class-based mechanism (NO_DEFAULTS_TAGS returns '' key). Copy key SVG presentation
   // properties from computed style as inline styles to ensure CSS-driven fills/strokes survive.
-  // #408: skip descendants of <symbol>/<defs>/etc. — their var() must resolve at the <use> site,
+  // #408: skip <use> templates (<symbol>, shapes in <defs>): their var() must resolve at the <use> site,
   // not be materialized to the (dead) template's fallback computed value.
   if (isSVGEl(node) && !isInSvgTemplate(node)) {
     const SVG_PAINT_PROPS = [
@@ -655,6 +686,11 @@ export async function deepClone(node, sessionCache, options) {
       for (const prop of SVG_PAINT_PROPS) {
         const val = cs.getPropertyValue(prop)
         if (val) clone.style.setProperty(prop, val)
+      }
+      // #515: a stop's color set by a stylesheet rule reaches the clone only here.
+      if (node.localName === 'stop') {
+        clone.style.setProperty('stop-color', cs.getPropertyValue('stop-color'))
+        clone.style.setProperty('stop-opacity', cs.getPropertyValue('stop-opacity'))
       }
     } catch { }
   }
@@ -782,7 +818,7 @@ export async function deepClone(node, sessionCache, options) {
 async function cloneIframe(node, sessionCache, options) {
   let sameOrigin = false
   try { sameOrigin = !!(node.contentDocument || node.contentWindow?.document) } catch (e) {
-    debugWarn(sessionCache, 'iframe same-origin probe failed', e)
+    debugWarn(sessionCache, 'Couldn\'t tell if an iframe is same-origin; treated it as cross-origin.', e)
   }
 
   if (sameOrigin) {
@@ -790,7 +826,7 @@ async function cloneIframe(node, sessionCache, options) {
       const wrapper = await rasterizeIframe(node, sessionCache, options)
       return wrapper
     } catch (err) {
-      console.warn('[SnapDOM] iframe rasterization failed, fallback:', err)
+      console.warn('[SnapDOM] Couldn\'t capture an iframe, so it was left out.', err)
       // fall through
     }
   }
@@ -799,11 +835,9 @@ async function cloneIframe(node, sessionCache, options) {
   // so what lands in the capture is the striped placeholder below; only mention the opt-out,
   // never suggest enabling an option that is already on.
   if (!sameOrigin) {
-    console.warn(
-      '[snapdom] cross-origin <iframe> skipped (its document cannot be read). Captured as a ' +
-      'placeholder that keeps the frame\'s box; pass { placeholders: false } for an invisible spacer.',
-      node
-    )
+    console.warn(options.placeholders
+      ? '[SnapDOM] Can\'t capture a cross-origin iframe; showing a placeholder. Set placeholders: false to hide it.'
+      : '[SnapDOM] Can\'t capture a cross-origin iframe; left it out.', node)
   }
 
   // Placeholder or spacer, both sized to the frame's box.
@@ -937,19 +971,19 @@ async function cloneCanvas(node, sessionCache, options) {
       }
     }
   } catch (e) {
-    debugWarn(sessionCache, 'Canvas toDataURL failed, using empty/fallback', e)
+    debugWarn(sessionCache, 'Couldn\'t read the pixels of a canvas; used its fallback content.', e)
   }
 
   // #486: a capture fired before the canvas has drawn anything (an animation still loading, a
   // chart rendered on the next frame) serializes a perfectly valid, perfectly empty PNG — the
   // capture "silently fails". Say so under debug, where it costs nothing in normal runs.
   if (options && options.debug && url && isBlankCanvas(node)) {
-    debugWarn(sessionCache, 'canvas is empty at capture time — capture it after its first frame is drawn', node)
+    debugWarn(sessionCache, 'Empty canvas; capture after its first frame', node)
   }
 
   const img = document.createElement('img')
   try { img.decoding = 'sync'; img.loading = 'eager' } catch (e) {
-    debugWarn(sessionCache, 'img decoding/loading hints failed', e)
+    debugWarn(sessionCache, 'Couldn\'t set image loading hints.', e)
   }
   if (url) img.src = url
 
@@ -1000,7 +1034,7 @@ async function cloneVideo(node, sessionCache, options) {
         if (!url || url === 'data:,') url = '' // 'data:,' is a 0x0 canvas
       }
     } catch (e) {
-      debugWarn(sessionCache, 'Video frame capture failed, using poster fallback', e)
+      debugWarn(sessionCache, 'Couldn\'t capture a video frame; used its poster.', e)
     }
   }
 
@@ -1089,7 +1123,7 @@ async function cloneObjectEmbed(node, sessionCache, options) {
       if (out) return out
     } catch { /* fall through */ }
   }
-  if (url) console.warn(`[snapdom] <${node.localName}> content could not be captured (${type || 'unknown type'}): rendering its fallback children`)
+  if (url) console.warn(`[SnapDOM] Couldn't capture <${node.localName}>${type ? ` (${type})` : ''}; showing its fallback content.`)
   return undefined // generic clone: fallback children render, matching the no-plugin browser behavior
 }
 

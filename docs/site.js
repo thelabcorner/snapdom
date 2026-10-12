@@ -1,5 +1,19 @@
 const starNodes = document.querySelectorAll('[data-star-count]')
 
+const stableDocumentation = document.getElementById('stable-documentation')
+if (stableDocumentation) {
+  fetch('https://registry.npmjs.org/@zumer%2Fsnapdom/latest')
+    .then(response => response.ok ? response.json() : Promise.reject())
+    .then(({ version }) => {
+      if (!/^\d+\.\d+\.\d+$/.test(version)) return
+      const label = document.createElement('strong')
+      label.textContent = `v${version}`
+      stableDocumentation.replaceChildren(label, ' documentation')
+      stableDocumentation.hidden = false
+    })
+    .catch(() => {})
+}
+
 if (starNodes.length) {
   const compact = value => new Intl.NumberFormat('en', {
     notation: 'compact',
@@ -10,4 +24,92 @@ if (starNodes.length) {
     .then(response => response.ok ? response.json() : Promise.reject())
     .then(repo => starNodes.forEach(node => { node.textContent = compact(repo.stargazers_count) }))
     .catch(() => {})
+}
+
+// Grouped header (navigation.css): hover or click opens a group, Esc or an outside click
+// closes it. Below 1080px the Menu button shows every group at once.
+const siteHead = document.querySelector('.site-head')
+
+if (siteHead) {
+  const groups = [...siteHead.querySelectorAll('.site-nav-group')]
+  const menuButton = siteHead.querySelector('.site-menu-button')
+  const setOpen = open => groups.forEach(group => {
+    group.classList.toggle('is-open', group === open)
+    group.querySelector('.site-nav-button').setAttribute('aria-expanded', String(group === open))
+  })
+  const setMenu = open => {
+    siteHead.classList.toggle('is-menu-open', open)
+    menuButton.setAttribute('aria-expanded', String(open))
+    menuButton.textContent = open ? 'Close' : 'Menu'
+  }
+
+  // A tap fires mouseenter right before click; without this the click closed what the tap opened.
+  let hoveredAt = 0
+  groups.forEach(group => {
+    group.addEventListener('mouseenter', () => { hoveredAt = Date.now(); setOpen(group) })
+    group.addEventListener('mouseleave', () => { if (group.classList.contains('is-open')) setOpen(null) })
+    group.querySelector('.site-nav-button').addEventListener('click', () => {
+      if (Date.now() - hoveredAt > 400) setOpen(group.classList.contains('is-open') ? null : group)
+    })
+  })
+  menuButton.addEventListener('click', () => setMenu(!siteHead.classList.contains('is-menu-open')))
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') { setOpen(null); setMenu(false) } })
+  document.addEventListener('mousedown', event => { if (!siteHead.contains(event.target)) { setOpen(null); setMenu(false) } })
+}
+
+// Search the generated local index; no account or third-party search service needed.
+if (siteHead) {
+  const root = new URL('.', [...document.scripts].find(s => /\/site\.js(?:\?|$)/.test(s.src)).src)
+  const searchButton = document.createElement('button')
+  searchButton.type = 'button'; searchButton.className = 'site-search-button'
+  searchButton.innerHTML = 'Search docs <kbd>/</kbd>'
+  searchButton.setAttribute('aria-haspopup', 'dialog')
+  siteHead.querySelector('.site-menu-button').before(searchButton)
+  const dialog = document.createElement('dialog')
+  dialog.className = 'site-search-dialog'
+  dialog.setAttribute('aria-label', 'Search SnapDOM documentation')
+  dialog.innerHTML = '<form><label>Search documentation<input type="search" placeholder="API, capture option or plugin" autocomplete="off" spellcheck="false"></label><button type="button" aria-label="Close search">Close</button></form><p role="status" aria-live="polite">Find an API method, guide or plugin.</p><div class="site-search-results"></div><p class="site-search-shortcuts"><span><kbd>Enter</kbd> Open first result</span> <span><kbd>Esc</kbd> Close</span></p>'
+  document.body.append(dialog)
+  const input = dialog.querySelector('input'), results = dialog.querySelector('.site-search-results'), status = dialog.querySelector('[role=status]')
+  let indexPromise
+  const search = async () => {
+    const query = input.value.trim().toLowerCase(), words = query.split(/\s+/)
+    results.replaceChildren()
+    if (!query) {
+      status.textContent = 'Start with a section or search the documentation.'
+      for (const [title, path, description] of [
+        ['Quick start', 'docs/#quick-start', 'Capture an element and choose an output'],
+        ['API reference', 'docs/api/', 'Capture methods and exporters'],
+        ['Capture options', 'docs/options/', 'Fonts, images, clipping and output size'],
+        ['Plugin API', 'docs/plugins/', 'Hooks and custom exporters'],
+      ]) {
+        const link = document.createElement('a'); link.href = new URL(path, root); link.textContent = title
+        const detail = document.createElement('small'); detail.textContent = description; link.append(detail); results.append(link)
+      }
+      return
+    }
+    status.textContent = 'Searching documentation…'
+    try {
+      indexPromise ||= fetch(new URL('search-index.json', root)).then(r => { if (!r.ok) throw new Error(); return r.json() }).catch(e => { indexPromise = null; throw e })
+      const pages = await indexPromise
+      if (query !== input.value.trim().toLowerCase()) return
+      const matches = pages.filter(p => words.every(w => `${p.title} ${p.text}`.toLowerCase().includes(w))).sort((a, b) => Number(b.title.toLowerCase().includes(query)) - Number(a.title.toLowerCase().includes(query))).slice(0, 12)
+      for (const page of matches) {
+        const link = document.createElement('a'); link.href = new URL(page.path, root); link.textContent = page.title
+        const path = document.createElement('small'); path.textContent = page.path; link.append(path); results.append(link)
+      }
+      status.textContent = matches.length ? `${matches.length} results` : 'No matches. Try a format, framework or API name.'
+    } catch { if (query === input.value.trim().toLowerCase()) status.textContent = 'Search could not load. Try again or browse the Learn menu.' }
+  }
+  const open = () => { if (!dialog.open) dialog.showModal(); input.focus(); search() }
+  searchButton.addEventListener('click', open)
+  input.addEventListener('input', search)
+  dialog.querySelector('button').addEventListener('click', () => dialog.close())
+  dialog.querySelector('form').addEventListener('submit', event => { event.preventDefault(); results.querySelector('a')?.click() })
+  dialog.addEventListener('close', () => searchButton.focus())
+  dialog.addEventListener('click', event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close() } })
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && dialog.open) { event.preventDefault(); dialog.close(); return }
+    if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.target.closest('input,textarea,select,[contenteditable]')) { event.preventDefault(); open() }
+  })
 }

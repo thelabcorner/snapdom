@@ -13,12 +13,16 @@
 // to catch. Each scene is a construction that a past bug placed wrong.
 import { describe, it, expect, afterEach } from 'vitest'
 import { page } from '@vitest/browser/context'
-import { snapdom } from '../src/index.js'
+// Exercise the distributed bundle, rebuilt by globalSetup. Its lazy exporters stay
+// inside the bundle, avoiding a late source-module request after the native screenshot.
+import { snapdom } from '../dist/snapdom.mjs'
 
 // One threshold for every scene. Measured chromium/firefox/webkit, correct capture vs the live
 // screenshot: grid 3.4/3.4/3.7, flex 1.7, image 2.8/1.3/2.8, translate 5.2/5.2/5.4 — the residue
 // is edge antialiasing after the tester's ~0.8x iframe downscale. With each fix reverted the
-// same scene measures 42.6 (grid), 39.6 (image) and 20.0 (translate): a misplaced solid block is
+// same scene measures 42.6 (grid), 39.6 (image) and 20.0 (translate); the part-pseudo scene
+// measures 0.0/0.1/0.0 with its fix and 43.3/25.7/56.6 without it, and the web components scene
+// 3.4/3.5/3.4 with the shadow universe and 22.6/22.6/22.5 pruned by the document's alone. A misplaced solid block is
 // a contiguous wrong region, nothing like edge noise. 10 sits with a wide margin on both sides.
 const THRESHOLD = 10
 
@@ -152,6 +156,51 @@ describe('capture matches a live screenshot of the element', { timeout: 60_000 }
       .tt{width:50%;height:120px;background:#7030c0;transform:translateX(100%)}`
     document.head.appendChild(s)
     mounted.push(s)
+    expect(await mismatchVsLive(el)).toBeLessThan(THRESHOLD)
+  })
+
+  // #502: a meter and a progress whose look lives in their UA part pseudos. The capture carries
+  // the author rules for those parts; without them the clone painted the default chrome (green
+  // and grey bars) over the authored box. The meter's CSS is the report's own.
+  it('a meter and a progress styled through their part pseudos', async () => {
+    const el = mount(
+      `<div class="mp-bar"><meter min="0" max="100" value="33" optimum="100"></meter></div>
+       <div class="mp-bar"><progress max="100" value="60"></progress></div>`,
+      'width:260px;padding:10px')
+    const s = document.createElement('style')
+    s.textContent = `
+      .mp-bar{position:relative;width:260px;height:36px;margin-bottom:10px}
+      .mp-bar meter,.mp-bar progress{position:absolute;inset:0;width:100%;height:100%;appearance:none;-webkit-appearance:none;border:1px solid #2a7;box-sizing:border-box;background:#7fd8bd}
+      .mp-bar meter::-webkit-meter-bar{background:inherit}
+      .mp-bar meter::-webkit-meter-optimum-value{background:inherit}
+      .mp-bar meter::-moz-meter-bar{background:inherit}
+      .mp-bar progress::-webkit-progress-bar{background:inherit}
+      .mp-bar progress::-webkit-progress-value{background:#e0004d}
+      .mp-bar progress::-moz-progress-bar{background:#e0004d}`
+    document.head.appendChild(s)
+    mounted.push(s)
+    expect(await mismatchVsLive(el)).toBeLessThan(THRESHOLD)
+  })
+
+  // Shadow-root content reads only the properties some root's sheets can set (#503). Each root
+  // here styles through a different route: an adopted sheet, `:host`, `::slotted`, and a
+  // `::part` rule from the root above. The scoped copy of the shadow CSS cannot match `::part`,
+  // and the background pass takes background-blend-mode from the snapshot, so the black bar
+  // (yellow multiplied over blue) paints only when that root joined the shadow universe.
+  it('web components styled through adopted sheets, :host, ::part and ::slotted', async () => {
+    const el = mount('<div></div>', 'width:300px;padding:10px')
+    const a = el.firstElementChild.attachShadow({ mode: 'open' })
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(`
+      .frame{height:30px;border:10px solid transparent;border-image:linear-gradient(#e0004d,#e0004d) 1}
+      .inner::part(bar){height:30px;background:linear-gradient(#ff0,#ff0),#00f;background-blend-mode:multiply}`)
+    a.adoptedStyleSheets = [sheet]
+    a.innerHTML = '<div class="frame"></div><div class="inner"><div class="s"></div></div>'
+    const b = a.querySelector('.inner').attachShadow({ mode: 'open' })
+    b.innerHTML = `<style>
+      :host{display:block;border-left:20px solid transparent;border-image:linear-gradient(#4060c0,#4060c0) 1}
+      ::slotted(.s){display:block;height:30px;background:#7030c0;mask-image:linear-gradient(to right,transparent 50%,#000 50%)}
+    </style><div part="bar"></div><slot></slot>`
     expect(await mismatchVsLive(el)).toBeLessThan(THRESHOLD)
   })
 })

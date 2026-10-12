@@ -317,7 +317,7 @@ async function inlineImportsAndRewrite(cssText, ownerHref, useProxy) {
 
   async function resolveOnce(text, baseHref, depth = 0) {
     if (depth > MAX_IMPORT_DEPTH) {
-      console.warn(`[snapDOM] @import depth exceeded (${MAX_IMPORT_DEPTH}) at ${baseHref}`)
+      console.warn(`[SnapDOM] Too many nested @import rules in ${baseHref}; stopped at ${MAX_IMPORT_DEPTH} levels.`)
       return text
     }
 
@@ -337,7 +337,7 @@ async function inlineImportsAndRewrite(cssText, ownerHref, useProxy) {
       const absUrl = normalizeUrl(rawUrl, baseHref)
 
       if (visited.has(absUrl)) {
-        console.warn(`[snapDOM] Skipping circular @import: ${absUrl}`)
+        console.warn(`[SnapDOM] Skipped an @import that loops back: ${absUrl}`)
         continue
       }
       visited.add(absUrl)
@@ -442,15 +442,19 @@ function extractSrcUrls(srcValue, baseHref) {
 
 /**
  * Replace every url() in a @font-face block with its payload as a data: URL, from
- * cache.resource or fetched. Icon font URLs are left alone. A fetch that fails leaves the
- * url() in place and warns. Pinned by __tests__/module.fonts.evictedResource.test.js.
+ * cache.resource or fetched. A fetch that fails leaves the url() in place and warns.
+ * Pinned by __tests__/module.fonts.evictedResource.test.js.
+ *
+ * Every caller has already dropped icon families by NAME. The URL used to be run through
+ * isIconFont as well, whose loose `/icon/` test matched `fonts.gstatic.com/s/delagothicone/`
+ * (goth-icon-e): the text font "Dela Gothic One" kept its remote url(), which is inert inside
+ * a foreignObject, and rendered in the fallback font (#508).
  * @param {string} cssBlock
  * @param {string} baseHref
  * @param {string} [useProxy='']
- * @param {RegExp[]} [iconMatchers]
  * @returns {Promise<string>}
  */
-async function inlineUrlsInCssBlock(cssBlock, baseHref, useProxy = '', iconMatchers) {
+async function inlineUrlsInCssBlock(cssBlock, baseHref, useProxy = '') {
   let out = cssBlock
   for (const m of cssBlock.matchAll(URL_RE)) {
     const raw = extractURL(m[0])
@@ -459,7 +463,6 @@ async function inlineUrlsInCssBlock(cssBlock, baseHref, useProxy = '', iconMatch
     if (!abs.startsWith('http') && !abs.startsWith('data:')) {
       try { abs = new URL(abs, baseHref || location.href).href } catch {}
     }
-    if (isIconFont(abs, iconMatchers)) continue
 
     // `cache.resource` is the ONLY proof the payload exists, here and at every other font
     // src below. It is FIFO-capped, so a font fetched earlier can be gone; having merely
@@ -479,7 +482,7 @@ async function inlineUrlsInCssBlock(cssBlock, baseHref, useProxy = '', iconMatch
         out = out.replace(m[0], `url(${b64})`)
       }
     } catch {
-      console.warn('[snapDOM] Failed to fetch font resource:', abs)
+      console.warn('[SnapDOM] Couldn\'t load font file:', abs)
     }
   }
   return out
@@ -676,11 +679,11 @@ async function collectFacesFromSheet(sheet, baseHref, emitFace, ctx) {
       const childHref = rule.href ? normalizeUrl(rule.href, baseHref) : baseHref
 
       if (ctx.depth >= MAX_IMPORT_DEPTH) {
-        console.warn(`[snapDOM] CSSOM import depth exceeded (${MAX_IMPORT_DEPTH}) at ${childHref}`)
+        console.warn(`[SnapDOM] Too many nested @import rules in ${childHref}; stopped at ${MAX_IMPORT_DEPTH} levels.`)
         continue
       }
       if (childHref && ctx.visitedSheets.has(childHref)) {
-        console.warn(`[snapDOM] Skipping circular CSSOM import: ${childHref}`)
+        console.warn(`[SnapDOM] Skipped an @import that loops back: ${childHref}`)
         continue
       }
       if (childHref) ctx.visitedSheets.add(childHref)
@@ -758,7 +761,7 @@ async function collectFacesFromSheet(sheet, baseHref, emitFace, ctx) {
       // embed while everything else looked fine.
       const familyDecl = `"${String(family).replace(/^\s*["']|["']\s*$/g, '').replace(/(["\\])/g, '\\$1')}"`
       if (/url\(/i.test(srcRaw)) {
-        const inlinedSrc = await inlineUrlsInCssBlock(srcRaw, baseHref || location.href, ctx.useProxy, ctx.iconMatchers)
+        const inlinedSrc = await inlineUrlsInCssBlock(srcRaw, baseHref || location.href, ctx.useProxy)
         await emitFace(`@font-face{font-family:${familyDecl};src:${inlinedSrc};${descriptors}}`)
       } else {
         await emitFace(`@font-face{font-family:${familyDecl};src:${srcRaw};${descriptors}}`)
@@ -1036,14 +1039,14 @@ function faceMatchesRequired(fam, styleSpec, weightSpec, stretchSpec) {
         coveredFamilies.add(family.toLowerCase())
 
         const newFace = /url\(/i.test(srcRaw)
-          ? await inlineUrlsInCssBlock(face, link.href, useProxy, iconMatchers)
+          ? await inlineUrlsInCssBlock(face, link.href, useProxy)
           : face
         facesOut += newFace
       }
 
       if (facesOut.trim()) finalCSS += facesOut
     } catch {
-      console.warn('[snapDOM] Failed to process stylesheet:', link.href)
+      console.warn('[SnapDOM] Couldn\'t read stylesheet:', link.href)
     }
   }
 
@@ -1089,7 +1092,7 @@ function faceMatchesRequired(fam, styleSpec, weightSpec, stretchSpec) {
   for (const p of provisionalFaces) {
     if (coveredFamilies.has(p.family)) continue
     finalCSS += /url\(/i.test(p.srcRaw)
-      ? await inlineUrlsInCssBlock(p.block, p.baseHref, useProxy, iconMatchers)
+      ? await inlineUrlsInCssBlock(p.block, p.baseHref, useProxy)
       : p.block
   }
 
@@ -1121,7 +1124,7 @@ function faceMatchesRequired(fam, styleSpec, weightSpec, stretchSpec) {
               continue
             }
           } catch {
-            console.warn('[snapDOM] Failed to fetch dynamic font src:', f._snapdomSrc)
+            console.warn('[SnapDOM] Couldn\'t load font file:', f._snapdomSrc)
             continue
           }
         }
@@ -1157,7 +1160,7 @@ function faceMatchesRequired(fam, styleSpec, weightSpec, stretchSpec) {
             continue
           }
         } catch {
-          console.warn('[snapDOM] Failed to fetch localFonts src:', src)
+          console.warn('[SnapDOM] Couldn\'t load font file from localFonts:', src)
           continue
         }
       }
